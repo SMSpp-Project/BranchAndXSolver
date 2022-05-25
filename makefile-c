@@ -1,0 +1,58 @@
+##############################################################################
+################################ makefile-c ##################################
+##############################################################################
+#                                                                            #
+#   complete makefile of BranchAndXSolver                                    #
+#                                                                            #
+#   The makefile defines internally all external libraries (comprised the    #
+#   SMS++ one) required by BranchAndXSolver. Accordingly, all necessary OBJ, # 
+#   H,  -I directives, external libraries + -L<libdirs> are added to the     #
+#   corresponding BAXSLV* macros.                                            #
+#                                                                            #
+#   Input:  $(CC)       = compiler command                                   #
+#           $(SW)       = compiler options                                   #
+#           $(BAXSLVSDR) = the directory where BundleSolver source is        #
+#           $(BAXSLVODR) = the directory where the objects have to be put    #
+#                                                                            #
+#   Output: $(BAXSLVOBJ) = the final object(s) / library                     #
+#           $(BAXSLVLIB) = external libraries + -L<libdirs>                  #
+#           $(BAXSLVH)   = the .h files to include for BranchAndXSolver      #
+#           $(BAXSLVINC) = the -I$( BranchAndXSolver directory )             #
+#                                                                            #
+#                                VERSION 0.0                                 #
+#                               25 - 05 - 2022                               #
+#                                                                            #
+#                              Antonio Frangioni                             #
+#                             Federica Di Pasquale                           #
+#                         Dipartimento di Informatica                        #
+#                             Universita' di Pisa                            #
+#                                                                            #
+##############################################################################
+
+# define & include the necessary modules- - - - - - - - - - - - - - - - - - -
+# if a module is not used in the current configuration, just comment out the
+# corresponding include line
+# each module outputs some macros to be used here:
+# *OBJ is the final object/library
+# *H   is the list of all include files
+# *INC is the -I<include directories>
+
+# define input macros for SMS++ library makefile, then include it
+SMS++SDR = $(BAXSLVSDR)../SMS++/
+include $(SMS++SDR)lib/makefile-inc
+
+# include the makefile requiring all external modules in input
+include $(BAXSLVSDR)/makefile
+
+# macroes to be exported- - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# append external stuff defined in the other makefiles to BAXSLVOBJ,
+# BAXSLVINC and BAXSLVH, thus the := assignment has to be used (use GNU make)
+BAXSLVOBJ := $(BAXSLVOBJ) $(SMS++OBJ)
+BAXSLVINC := $(BAXSLVINC) $(SMS++INC)
+BAXSLVH := $(BAXSLVH) $(SMS++H)
+
+# external libreries for BranchAndXSolver
+BAXSLVLIB = $(SMS++LIB)
+
+############################ End of makefile #################################
