@@ -1,7 +1,6 @@
 # BranchAndXSolver
 
-BranchAndXSolver class, which implements the Solver interface within the SMS++
-framework. 
+BranchAndXSolver class, which implements the Solver interface for a Relaxation-Agnostic Branch and X Solver within the SMS++ framework. 
 
 ## Getting started
 
