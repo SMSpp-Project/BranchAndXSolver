@@ -59,7 +59,7 @@ namespace SMSpp_di_unipi_it
 /// 
 /**  */
 
-class node {
+class Node {
  
  public:
  
@@ -67,11 +67,11 @@ class node {
 
   // - - - - - - - - - - Constructor and Destructor - - - - - - - - - - - - -
  
-  node( Block * block = nullptr ): 
+  Node( Block * block = nullptr ): 
         f_block( block ) , 
         f_bound( + Inf< double >() ) {}
   
-  ~node() { delete f_block; };
+  ~Node() { delete f_block; };
  
  // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   
@@ -90,16 +90,16 @@ class node {
 
 /*--------------------------------------------------------------------------*/
 
-class queue {
+class Queue {
  public:
-    queue( node * root ) { push( root ); }
-    ~queue() = default;
+    Queue( Node * root ) { push( root ); }
+    ~Queue() = default;
 
     bool empty() { return Q.empty(); }
-    void push( node * N ) { Q.push_back( N ); }
-    node * pop() { node * N = Q.back(); Q.pop_back(); return N; }
+    void push( Node * N ) { Q.push_back( N ); }
+    Node * pop() { Node * N = Q.back(); Q.pop_back(); return N; }
 
-    std::vector< node * > Q;
+    std::vector< Node * > Q;
 
 };
 

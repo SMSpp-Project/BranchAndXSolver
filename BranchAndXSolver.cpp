@@ -77,21 +77,20 @@ int BranchAndXSolver::compute( bool changedvars ) {
  /*-------------------------------------------------------------------------*/
  
  // The root node is the original problem
- node * root = new node( f_Block->get_R3_Block() ); 
+ Node * root = new Node( f_Block->get_R3_Block() ); 
  
  // Queue of subproblems still to be processed
- queue Q( root );
+ Queue Q( root );
 
  while( ! Q.empty() ) {
   
-  auto subproblem = Q.pop();
+  // Select next subproblem
+  auto node = Q.pop();
 
-  // compute relaxation
-  f_RelaxationSolver->set_Block( subproblem->block() );
+  // Compute the relaxation and update node bound (lb or ub)
+  f_RelaxationSolver->set_Block( node->block() );
   f_RelaxationSolver->compute();
-
-  // update bounds of node
-  subproblem->set_bound( f_RelaxationSolver->get_var_value() ); // lb or ub
+  node->set_bound( f_RelaxationSolver->get_var_value() ); 
 
   // Pruning Rules- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -100,36 +99,38 @@ int BranchAndXSolver::compute( bool changedvars ) {
   if( f_sense == Objective::eMax ) {    // MAX                           
    if( RlxSlv->get_true_lb() > f_lb )
     f_lb = RlxSlv->get_true_lb(); 
-   gap = std::abs( RlxSlv->get_true_lb() - subproblem->bound() );        
+   gap = std::abs( RlxSlv->get_true_lb() - node->bound() );        
    }
   else {                                // MIN                                   
    if( RlxSlv->get_true_ub() < f_ub )
     f_ub = RlxSlv->get_true_ub();
-   gap = std::abs( RlxSlv->get_true_ub() - subproblem->bound() ); 
-  }
+   gap = std::abs( RlxSlv->get_true_ub() - node->bound() ); 
+   }
+  
+  // Check feasibility
+  if( gap < 1e-04 ) {
+   delete node;
+   continue;
+   }
 
   // Pruning by bound
-  if( ( f_sense == Objective::eMax ) && ( subproblem->bound() < f_lb ) ) {     
-   delete subproblem; 
+  if( ( f_sense == Objective::eMax ) && ( node->bound() < f_lb ) ) {     
+   delete node; 
    continue;
    }
-  if( ( f_sense == Objective::eMin ) && ( subproblem->bound() > f_ub ) ) {    
-   delete subproblem; 
+  if( ( f_sense == Objective::eMin ) && ( node->bound() > f_ub ) ) {    
+   delete node; 
    continue;
    }
-
-  // check feasibility 
-  if( gap < 1e-04 ) {
-   delete subproblem; 
-   continue;   
-   }
+  
   // Branch - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
   std::vector< Change * > children = RlxSlv->branch();
+  
   for( auto child : children ) {
-   auto block = subproblem->block()->get_R3_Block();
+   auto block = node->block()->get_R3_Block();
    child->apply( block ); 
-   Q.push( new node( block ) );
+   Q.push( new Node( block ) );
    f_n_nodes++;                  
    }
 
