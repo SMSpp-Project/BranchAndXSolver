@@ -94,17 +94,18 @@ int BranchAndXSolver::compute( bool changedvars ) {
 
   // Pruning Rules- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-  double gap = + Inf< double >();  // to check if the problem has been solved
+  double gap = + Inf< double >();  // to check feasibility
 
-  if( f_sense == Objective::eMax ) {    // MAX                           
-   if( RlxSlv->get_true_lb() > f_lb )
-    f_lb = RlxSlv->get_true_lb(); 
-   gap = std::abs( RlxSlv->get_true_lb() - node->bound() );        
+  if( Max() ) {                              
+   double lb = RlxSlv->get_true_lb(); 
+   f_lb = std::max( lb , f_lb );  
+   gap = std::abs( lb - node->bound() );        
    }
-  else {                                // MIN                                   
-   if( RlxSlv->get_true_ub() < f_ub )
-    f_ub = RlxSlv->get_true_ub();
-   gap = std::abs( RlxSlv->get_true_ub() - node->bound() ); 
+
+  if( Min() ) {                                 
+   double ub = RlxSlv->get_true_ub();
+   f_ub = std::min( ub , f_ub );
+   gap = std::abs( ub - node->bound() ); 
    }
   
   // Check feasibility
@@ -114,11 +115,11 @@ int BranchAndXSolver::compute( bool changedvars ) {
    }
 
   // Pruning by bound
-  if( ( f_sense == Objective::eMax ) && ( node->bound() < f_lb ) ) {     
+  if( Max() && node->bound() < f_lb ) {     
    delete node; 
    continue;
    }
-  if( ( f_sense == Objective::eMin ) && ( node->bound() > f_ub ) ) {    
+  if( Min() && node->bound() > f_ub ) {    
    delete node; 
    continue;
    }
