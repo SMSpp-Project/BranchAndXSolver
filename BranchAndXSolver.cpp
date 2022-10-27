@@ -60,7 +60,7 @@ void BranchAndXSolver::set_Block( Block * block ) {
  Solver::set_Block( block );  // attach to the new Block
 
  f_RelaxationSolver->set_Block( f_Block );
- f_sense = f_Block->get_objective_sense();
+ f_sense = f_Block->get_objective_sense(); 
  }
 
 /*--------------------------------------------------------------------------*/
@@ -76,75 +76,64 @@ int BranchAndXSolver::compute( bool changedvars ) {
  
  /*-------------------------------------------------------------------------*/
  
- // Queue of subproblems still to be processed
- std::priority_queue< BaXnode * > Q;  
-
  // The root node is the original problem
- BaXnode * root = new BaXnode(); 
-
- // Initialize the queue with the original problem   
- Q.push( root );
+ node * root = new node( f_Block->get_R3_Block() ); 
  
- // last processed node
- BaXnode * old_node = nullptr;
+ // Queue of subproblems still to be processed
+ queue Q( root );
 
- // for each subproblem in the queue Q
- for( ; ! Q.empty() ; Q.pop() ) {
-
-  // select new subproblem
-  auto node = Q.top();
-
-  // update current subproblem 
-  update_subproblem( old_node , node );
+ while( ! Q.empty() ) {
   
+  auto subproblem = Q.pop();
+
   // compute relaxation
+  f_RelaxationSolver->set_Block( subproblem->block() );
   f_RelaxationSolver->compute();
 
   // update bounds of node
-  node->set_bound( f_RelaxationSolver->get_var_value() ); // lb o ub
+  subproblem->set_bound( f_RelaxationSolver->get_var_value() ); // lb or ub
 
   // Pruning Rules- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-  
+
   double gap = + Inf< double >();  // to check if the problem has been solved
 
-  if( f_sense == Objective::eMin ) {       // if it is a minimization problem
-   f_ub = std::min( f_ub , RlxSlv->get_true_ub() );     // global upper bound
-   gap = std::abs( RlxSlv->get_true_ub() - node->bound() );        // gap
-   if( node->bound() >= f_ub ){
-    //std::cout << "pruned by bound\n";
-    continue; 
-    }
+  if( f_sense == Objective::eMax ) {    // MAX                           
+   if( RlxSlv->get_true_lb() > f_lb )
+    f_lb = RlxSlv->get_true_lb(); 
+   gap = std::abs( RlxSlv->get_true_lb() - subproblem->bound() );        
    }
-  else
-  if( f_sense == Objective::eMax ) {       // if it is a maximization problem
-   f_lb = std::max( f_lb , RlxSlv->get_true_lb() );     // global lower bound 
-   gap = std::abs( RlxSlv->get_true_lb() - node->bound() );        // gap
-   if( node->bound() <= f_lb ){
-    //std::cout << "pruned by bound\n";
-    continue; 
-    }
+  else {                                // MIN                                   
+   if( RlxSlv->get_true_ub() < f_ub )
+    f_ub = RlxSlv->get_true_ub();
+   gap = std::abs( RlxSlv->get_true_ub() - subproblem->bound() ); 
+  }
+
+  // Pruning by bound
+  if( ( f_sense == Objective::eMax ) && ( subproblem->bound() < f_lb ) ) {     
+   delete subproblem; 
+   continue;
    }
-   
-   // check if the problem has been solved to optimality
-   if( gap < 1e-04 ) {
-    //std::cout << "pruned by feasibility\n";
-    continue;   
-    }
+  if( ( f_sense == Objective::eMin ) && ( subproblem->bound() > f_ub ) ) {    
+   delete subproblem; 
+   continue;
+   }
 
-
+  // check feasibility 
+  if( gap < 1e-04 ) {
+   delete subproblem; 
+   continue;   
+   }
   // Branch - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
   std::vector< Change * > children = RlxSlv->branch();
   for( auto child : children ) {
-   auto new_node = new BaXnode( node , node->depth() + 1 , child );  
-   Q.push( new_node );                  
-   node->add_child( new_node );
+   auto block = subproblem->block()->get_R3_Block();
+   child->apply( block ); 
+   Q.push( new node( block ) );
+   f_n_nodes++;                  
    }
 
-  // Stopping conditions
-  // accuracy | max_iter | ...
-  }
-
+ }
 
  /*-------------------------------------------------------------------------*/ 
 
@@ -162,27 +151,6 @@ int BranchAndXSolver::compute( bool changedvars ) {
 /*--------------------------- PRIVATE METHODS ------------------------------*/
 /*--------------------------------------------------------------------------*/
 
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
- /// update current subproblem and its path and reverse path from the root
-
- void BranchAndXSolver::update_subproblem( BaXnode * old_node , 
-                                           BaXnode * node ) {
-
-  // if it is the root node
-  if( ! node->father() )
-   return;
-
-  // compute least common ancestor (lca)
-  std::vector< Change * > path;
-
-  // apply undoChg up to lca
-
-  // apply chg from lca to the current node - 1
-
-  // store last undoChg with node->set_undoChg()
- 
-  old_node = node;
-  }
 /*--------------------------------------------------------------------------*/
 /*--------------------- End File BranchAndXSolver.cpp ----------------------*/
 /*--------------------------------------------------------------------------*/

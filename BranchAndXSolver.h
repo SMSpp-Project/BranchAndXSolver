@@ -59,7 +59,7 @@ namespace SMSpp_di_unipi_it
 /// 
 /**  */
 
-class BaXnode {
+class node {
  
  public:
  
@@ -67,50 +67,41 @@ class BaXnode {
 
   // - - - - - - - - - - Constructor and Destructor - - - - - - - - - - - - -
  
-  BaXnode( BaXnode * f = nullptr , Index depth = 0 , 
-           Change * c = nullptr ) : 
-           f_father( f ) , f_depth( depth ) , f_chg( c ) , 
-           f_undoChg( nullptr ) ,
-           f_bound( + Inf< double >() ) {}
+  node( Block * block = nullptr ): 
+        f_block( block ) , 
+        f_bound( + Inf< double >() ) {}
   
-  ~BaXnode() = default;
+  ~node() { delete f_block; };
  
  // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-  void set_chg( Change * chg ) { f_chg = chg; }
-  
-  void set_undoChg( Change * undoChg ) {f_undoChg = undoChg;}
-  
-  void set_father( BaXnode * father ) { f_father = father; }
-  
-  void add_child( BaXnode * child ) { v_children.push_back( child ); }
   
   void set_bound( double bound ) { f_bound = bound; }
-
-  void set_depth( Index depth ) { f_depth = depth; }
-
-  Change * chg() { return f_chg; }
-  
-  Change * undoChg() { return f_undoChg; }
-  
-  BaXnode * father() { return f_father; }
   
   double bound() { return f_bound; }
-
-  Index depth() { return f_depth; }
+  Block * block() { return f_block; }
 
  // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
  protected:
- 
-  Change * f_chg;      // change to apply w.r.t. father node
-  Change * f_undoChg;  // undo-change
-  BaXnode * f_father;                   // pointer to the father node
-  std::vector< BaXnode * > v_children;
+  Block * f_block;
   double f_bound;
-  Index f_depth;
 
-}; // end( class BaXnode )
+}; // end( class node )
+
+/*--------------------------------------------------------------------------*/
+
+class queue {
+ public:
+    queue( node * root ) { push( root ); }
+    ~queue() = default;
+
+    bool empty() { return Q.empty(); }
+    void push( node * N ) { Q.push_back( N ); }
+    node * pop() { node * N = Q.back(); Q.pop_back(); return N; }
+
+    std::vector< node * > Q;
+
+};
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- CLASS BranchAndXSolver ---------------------------*/
@@ -149,9 +140,10 @@ public:
 
  BranchAndXSolver() : f_RelaxationSolver( nullptr ) ,
                       f_incumbent( nullptr ) , 
-                      f_lb( + Inf< double >() ) ,
-                      f_ub( - Inf< double >() ) ,
-                      f_obj( + Inf< double >() ) , 
+                      f_lb( - Inf< double >() ) ,
+                      f_ub( + Inf< double >() ) ,
+                      f_obj( + Inf< double >() ) ,
+                      f_n_nodes( 0 ) ,  
                       f_sense( Objective::eMin ) {}
 
 /*--------------------------------------------------------------------------*/
@@ -188,14 +180,9 @@ public:
   f_RelaxationSolver = rlxslv;
   }
 
-
-/** @} ---------------------------------------------------------------------*/
-/*----------------- METHODS FOR ACCESSING THE DATA OF THE Block ------------*/
 /*--------------------------------------------------------------------------*/
-/** @name Accessing the data of the Block
- *
- *
- *  @{ */
+
+ Index get_n_nodes() { return f_n_nodes; }
 
 
 /** @} ---------------------------------------------------------------------*/
@@ -258,6 +245,8 @@ OFValue get_var_value() override { return( f_obj ); }
  RelaxationSolver * RlxSlv;
  Solution * f_incumbent;               // incumbent solution 
 
+ Index f_n_nodes;                      // number of nodes 
+ 
  double f_lb;                          // global lower bound
  double f_ub;                          // global upper bound
  double f_obj;                         // value of the objective function 
@@ -281,11 +270,6 @@ OFValue get_var_value() override { return( f_obj ); }
  /// process all the pending modifications 
 
  void process_outstanding_Modification() {}
-
-/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
- /// update current subproblem and its path and reverse path from the root
-
- void update_subproblem( BaXnode * old_node , BaXnode * node );
  
 /*--------------------------------------------------------------------------*/
 /*---------------------------- PRIVATE FIELDS  -----------------------------*/
