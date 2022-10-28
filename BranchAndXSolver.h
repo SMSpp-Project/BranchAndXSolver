@@ -69,22 +69,28 @@ class Node {
  
   Node( Block * block = nullptr ): 
         f_block( block ) , 
-        f_bound( + Inf< double >() ) {}
+        f_ub( + Inf< double >() ) ,
+        f_lb( - Inf< double >() ) {}
   
   ~Node() { delete f_block; };
  
  // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   
-  void set_bound( double bound ) { f_bound = bound; }
-  
-  double bound() { return f_bound; }
+  bool is_feasible() { return ( std::abs( f_ub - f_lb ) < 1e-04 ); }
+
+  void set_ub( double ub ) { f_ub = ub; }
+  void set_lb( double lb ) { f_lb = lb; }
+  double get_ub() { return f_ub; }
+  double get_lb() { return f_lb; }
+
   Block * block() { return f_block; }
 
  // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
  protected:
   Block * f_block;
-  double f_bound;
+  double f_ub;
+  double f_lb;
 
 }; // end( class Node )
 
@@ -138,7 +144,8 @@ public:
 
  /// constructor
 
- BranchAndXSolver() : f_RelaxationSolver( nullptr ) ,
+ BranchAndXSolver() : f_Solver( nullptr ) ,
+                      f_RelaxationSolver( nullptr ) ,
                       f_incumbent( nullptr ) , 
                       f_lb( - Inf< double >() ) ,
                       f_ub( + Inf< double >() ) ,
@@ -168,29 +175,22 @@ public:
  /// set the (pointer to the) the Relaxation Solver 
  /** */
 
- void set_RelaxationSolver( Solver * rlxslv ) {
+ void set_RelaxationSolver( Solver * slv ) {
   
-  if( f_RelaxationSolver == rlxslv )
-   return;
-  
-  RlxSlv = dynamic_cast< RelaxationSolver * >( rlxslv );
-  if( ! RlxSlv )
+  f_Solver = slv;  
+  f_RelaxationSolver = dynamic_cast< RelaxationSolver * >( slv );
+  if( ! f_RelaxationSolver )
    throw( std::invalid_argument( "Not able to cast to RelaxationSolver *" ) );
 
-  f_RelaxationSolver = rlxslv;
   }
 
- /*--------------------------------------------------------------------------*/ 
+/*--------------------------------------------------------------------------*/ 
 
  Index get_n_nodes() { return f_n_nodes; }
 
 /*--------------------------------------------------------------------------*/
 
- bool Max() { return( f_sense == Objective::eMax ); }
-
-/*--------------------------------------------------------------------------*/
-
- bool Min() { return( f_sense == Objective::eMin ); }
+ int get_objective_sense() { return f_sense; }
 
 /** @} ---------------------------------------------------------------------*/
 /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
@@ -248,17 +248,17 @@ OFValue get_var_value() override { return( f_obj ); }
 /*-------------------------- PROTECTED FIELDS  -----------------------------*/
 /*--------------------------------------------------------------------------*/
  
- Solver * f_RelaxationSolver;          // pointer to the relaxation solver
- RelaxationSolver * RlxSlv;
- Solution * f_incumbent;               // incumbent solution 
+ Solver * f_Solver;                     // pointer to the Solver
+ RelaxationSolver * f_RelaxationSolver; // pointer to the Relaxation Solver
+ Solution * f_incumbent;                // incumbent solution 
 
- Index f_n_nodes;                      // number of nodes 
+ Index f_n_nodes;                       // number of nodes 
  
- double f_lb;                          // global lower bound
- double f_ub;                          // global upper bound
- double f_obj;                         // value of the objective function 
+ double f_lb;                           // global lower bound
+ double f_ub;                           // global upper bound
+ double f_obj;                          // value of the objective function 
 
- int f_sense;                          // type of the optimization (min,max)
+ int f_sense;                           // type of the optimization (min,max)
  
  // algorithmic parameters - - - - - - - - - - - - - - - - - - - - - - - - - 
 

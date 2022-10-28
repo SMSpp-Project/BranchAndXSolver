@@ -59,7 +59,7 @@ void BranchAndXSolver::set_Block( Block * block ) {
  
  Solver::set_Block( block );  // attach to the new Block
 
- f_RelaxationSolver->set_Block( f_Block );
+ f_Solver->set_Block( f_Block );
  f_sense = f_Block->get_objective_sense(); 
  }
 
@@ -88,45 +88,44 @@ int BranchAndXSolver::compute( bool changedvars ) {
   auto node = Q.pop();
 
   // Compute the relaxation and update node bound (lb or ub)
-  f_RelaxationSolver->set_Block( node->block() );
-  f_RelaxationSolver->compute();
-  node->set_bound( f_RelaxationSolver->get_var_value() ); 
+  f_Solver->set_Block( node->block() );
+  f_Solver->compute();
 
-  // Pruning Rules- - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-  double gap = + Inf< double >();  // to check feasibility
-
-  if( Max() ) {                              
-   double lb = RlxSlv->get_true_lb(); 
-   f_lb = std::max( lb , f_lb );  
-   gap = std::abs( lb - node->bound() );        
-   }
-
-  if( Min() ) {                                 
-   double ub = RlxSlv->get_true_ub();
-   f_ub = std::min( ub , f_ub );
-   gap = std::abs( ub - node->bound() ); 
-   }
+  // Update lower and upper bounds - - - - - - - - - - - - - - - - - - - - - -
   
+  if( get_objective_sense() == Objective::eMax ) {      // MAX case
+   node->set_ub( f_Solver->get_var_value() );           // upper bound
+   node->set_lb( f_RelaxationSolver->get_true_lb() );   // lower bound
+   f_lb = std::max( node->get_lb() , f_lb );            // global lower bound
+   }
+
+  if( get_objective_sense() == Objective::eMin ) {      // MIN case
+   node->set_lb( f_Solver->get_var_value() );           // lower bound
+   node->set_ub( f_RelaxationSolver->get_true_ub() );   // upper bound
+   f_ub = std::min( node->get_ub() , f_ub );            // global upper bound
+   }
+
+  // Pruning Rules - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
   // Check feasibility
-  if( gap < 1e-04 ) {
+  if( node->is_feasible() ) {
    delete node;
    continue;
-   }
+   } 
 
   // Pruning by bound
-  if( Max() && node->bound() < f_lb ) {     
-   delete node; 
+  if( get_objective_sense() == Objective::eMax && node->get_ub() < f_lb ) {
+   delete node;
    continue;
-   }
-  if( Min() && node->bound() > f_ub ) {    
-   delete node; 
+   } 
+  if( get_objective_sense() == Objective::eMin && node->get_lb() > f_ub ) {
+   delete node;
    continue;
-   }
-  
+   } 
+
   // Branch - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-  std::vector< Change * > children = RlxSlv->branch();
+  std::vector< Change * > children = f_RelaxationSolver->branch();
   
   for( auto child : children ) {
    auto block = node->block()->get_R3_Block();
@@ -139,7 +138,7 @@ int BranchAndXSolver::compute( bool changedvars ) {
 
  /*-------------------------------------------------------------------------*/ 
 
- f_obj = ( f_sense == Objective::eMax ) ? f_lb : f_ub;
+ f_obj = ( get_objective_sense() == Objective::eMax ) ? f_lb : f_ub;
 
  Return_OK:
  
