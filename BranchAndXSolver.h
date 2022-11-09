@@ -27,7 +27,7 @@
 /*------------------------------ INCLUDES ----------------------------------*/
 /*--------------------------------------------------------------------------*/
 
-#include <queue>
+#include <ctime>
 
 #include "Block.h"
 #include "Change.h"
@@ -49,65 +49,6 @@ namespace SMSpp_di_unipi_it
 /*--------------------------------------------------------------------------*/
 /** @defgroup BranchAndXSolver_CLASSES Classes in BranchAndXSolver.h
  *  @{ */
-
-
-/*--------------------------------------------------------------------------*/
-/*--------------------------- CLASS BaXnode --------------------------------*/
-/*--------------------------------------------------------------------------*/
-/*--------------------------- GENERAL NOTES --------------------------------*/
-/*--------------------------------------------------------------------------*/
-/// 
-/**  */
-
-class Node {
- 
- public:
- 
- using Index = Block::Index;
-
-  // - - - - - - - - - - Constructor and Destructor - - - - - - - - - - - - -
- 
-  Node( Block * block = nullptr ): 
-        f_block( block ) , 
-        f_ub( + Inf< double >() ) ,
-        f_lb( - Inf< double >() ) {}
-  
-  ~Node() { delete f_block; };
- 
- // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-  
-  bool is_feasible() { return ( std::abs( f_ub - f_lb ) < 1e-04 ); }
-
-  void set_ub( double ub ) { f_ub = ub; }
-  void set_lb( double lb ) { f_lb = lb; }
-  double get_ub() { return f_ub; }
-  double get_lb() { return f_lb; }
-
-  Block * block() { return f_block; }
-
- // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
- protected:
-  Block * f_block;
-  double f_ub;
-  double f_lb;
-
-}; // end( class Node )
-
-/*--------------------------------------------------------------------------*/
-
-class Queue {
- public:
-    Queue( Node * root ) { push( root ); }
-    ~Queue() = default;
-
-    bool empty() { return Q.empty(); }
-    void push( Node * N ) { Q.push_back( N ); }
-    Node * pop() { Node * N = Q.back(); Q.pop_back(); return N; }
-
-    std::vector< Node * > Q;
-
-}; // end( class Queue )
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- CLASS BranchAndXSolver ---------------------------*/
@@ -149,9 +90,18 @@ public:
                       f_incumbent( nullptr ) , 
                       f_lb( - Inf< double >() ) ,
                       f_ub( + Inf< double >() ) ,
-                      f_obj( + Inf< double >() ) ,
                       f_n_nodes( 0 ) ,  
-                      f_sense( Objective::eMin ) {}
+                      f_sense( Objective::eMin ) {
+
+ // Initiliaze the value of the objective function
+ f_obj =  f_sense == Objective::eMin ? + Inf< double >() : - Inf< double >();
+
+ // Algorithmic parameters: default values
+ MaxIter = 100000;
+ MaxTime = 3600;
+ RelAcc = 1e-04;
+ AbsAcc = 1e-04;
+ }
 
 /*--------------------------------------------------------------------------*/
  /// destructor
@@ -240,6 +190,56 @@ OFValue get_var_value() override { return( f_obj ); }
 /*--------------------------- PROTECTED TYPES ------------------------------*/
 /*--------------------------------------------------------------------------*/
 
+class Node {
+ 
+ public:
+ 
+ using Index = Block::Index;
+
+  // - - - - - - - - - - Constructor and Destructor - - - - - - - - - - - - -
+ 
+  Node( Block * block = nullptr ): 
+        f_block( block ) , 
+        f_ub( + Inf< double >() ) ,
+        f_lb( - Inf< double >() ) {}
+  
+  ~Node() { delete f_block; };
+ 
+ // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  
+  bool is_feasible( double Acc ) { return ( std::abs( f_ub - f_lb ) < Acc ); }
+
+  void set_ub( double ub ) { f_ub = ub; }
+  void set_lb( double lb ) { f_lb = lb; }
+  double get_ub() { return f_ub; }
+  double get_lb() { return f_lb; }
+
+  Block * block() { return f_block; }
+
+ // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+ protected:
+  Block * f_block;
+  double f_ub;
+  double f_lb;
+
+}; // end( class Node )
+
+/*--------------------------------------------------------------------------*/
+
+class Queue {
+ public:
+    Queue( Node * root ) { push( root ); }
+    ~Queue() = default;
+
+    bool empty() { return Q.empty(); }
+    void push( Node * N ) { Q.push_back( N ); }
+    Node * pop() { Node * N = Q.back(); Q.pop_back(); return N; }
+
+    std::vector< Node * > Q;
+
+}; // end( class Queue )
+
 /*--------------------------------------------------------------------------*/
 /*-------------------------- PROTECTED METHODS -----------------------------*/
 /*--------------------------------------------------------------------------*/
@@ -262,6 +262,10 @@ OFValue get_var_value() override { return( f_obj ); }
  
  // algorithmic parameters - - - - - - - - - - - - - - - - - - - - - - - - - 
 
+ double RelAcc;     ///< relative accuracy for declaring a solution optimal
+ double AbsAcc;     ///< absolute accuracy for declaring a solution optimal
+ double MaxTime;    ///< maximum time (in seconds) 
+ Index MaxIter;     ///< maximum number of iterations
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- PRIVATE PART OF THE CLASS ------------------------*/

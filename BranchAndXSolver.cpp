@@ -76,18 +76,24 @@ int BranchAndXSolver::compute( bool changedvars ) {
  
  /*-------------------------------------------------------------------------*/
  
+ // Start Timer
+ auto start = std::chrono::system_clock::now();
+
  // The root node is the original problem
  Node * root = new Node( f_Block->get_R3_Block() ); 
  
  // Queue of subproblems still to be processed
  Queue Q( root );
 
+ // Number of iterations
+ Index n_iter = 0;
+
  while( ! Q.empty() ) {
   
   // Select next subproblem
   auto node = Q.pop();
 
-  // Compute the relaxation and update node bound (lb or ub)
+  // Compute the relaxation 
   f_Solver->set_Block( node->block() );
   f_Solver->compute();
 
@@ -108,7 +114,7 @@ int BranchAndXSolver::compute( bool changedvars ) {
   // Pruning Rules - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
   // Check feasibility
-  if( node->is_feasible() ) {
+  if( node->is_feasible( RelAcc ) ) {
    delete node;
    continue;
    } 
@@ -125,14 +131,27 @@ int BranchAndXSolver::compute( bool changedvars ) {
 
   // Branch - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-  std::vector< Change * > children = f_RelaxationSolver->branch();
+  auto branches = f_RelaxationSolver->branch();
   
-  for( auto child : children ) {
+  for( auto branch : branches ) {
    auto block = node->block()->get_R3_Block();
-   child->apply( block ); 
+   branch->apply( block ); 
    Q.push( new Node( block ) );
-   f_n_nodes++;                  
+   f_n_nodes++;
+   delete branch;                  
    }
+
+   // Check time/iteration limits - - - - - - - - - - - - - - - - - - - - - -
+
+   if( n_iter > MaxIter )
+    break;
+   n_iter++;
+
+   auto end = std::chrono::system_clock::now();
+   std::chrono::duration< double > elapsed = end - start;
+
+   if( elapsed.count() > MaxTime )
+    break;
 
  }
 
