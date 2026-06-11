@@ -60,71 +60,39 @@ Change * GreedyRelaxationSolver::apply( Change * chg , bool doUndo )
 
  if( ( CHG->type() != BinaryKnapsackBlockChange::eFixX ) &&
      ( CHG->type() != BinaryKnapsackBlockChange::eUnfixX ) )
-  return( CHG->apply( f_Block , doUndo ) );
+  return( CHG->apply( f_Block , doUndo ) );   // not an (un)fix: to the Block
 
+ // an (un)fixing Change is applied to the internal mirror only, reading the
+ // acted-upon items via the uniform polymorphic view of the Change (see
+ // BinaryKnapsackBlockChange::num_items() / item()): the concrete (ranged /
+ // subset) type of the Change is never needed
  const bool fixing = ( CHG->type() == BinaryKnapsackBlockChange::eFixX );
+ const Index n = CHG->num_items();
+ const auto & data = CHG->data();
 
- // the new value of v_fxd for an index being (un)fixed: 2 = fixed to 1,
- // 1 = fixed to 0, 0 = free
- auto new_fxd = [ & ]( double value ) -> unsigned char {
-  return( fixing ? ( value == 1 ? 2 : 1 ) : 0 );
-  };
-
- // the (captured) data for the undo Change of an index: the value it is
- // currently fixed to when un-doing an unfix, immaterial when un-doing a fix
- auto old_val = [ & ]( Index i ) -> double {
-  return( v_fxd[ i ] == 2 ? 1 : 0 );
-  };
-
- // ranged change (the branching case) - - - - - - - - - - - - - - - - - - - -
- if( auto change = dynamic_cast< BinaryKnapsackBlockRngdChange * >( CHG ) ) {
-  Block::Range rng = change->rng();
-  const auto & data = change->data();
-
-  Change * undo = nullptr;
-  if( doUndo ) {
-   std::vector< double > old_data;
-   old_data.reserve( rng.second - rng.first );
-   for( Index i = rng.first ; i < rng.second ; ++i )
-    old_data.push_back( old_val( i ) );
-   undo = new BinaryKnapsackBlockRngdChange(
+ Change * undo = nullptr;
+ if( doUndo ) {
+  // the undo under the LIFO discipline of BranchAndXSolver: un-fixing the
+  // same items, or re-fixing them to the values captured at call time
+  std::vector< double > old_data;
+  Block::Subset nms;
+  old_data.reserve( n );
+  nms.reserve( n );
+  for( Index k = 0 ; k < n ; ++k ) {
+   const Index i = CHG->item( k );
+   nms.push_back( i );
+   old_data.push_back( v_fxd[ i ] == 2 ? 1 : 0 );
+   }
+  undo = new BinaryKnapsackBlockSbstChange(
                      fixing ? BinaryKnapsackBlockChange::eUnfixX
                             : BinaryKnapsackBlockChange::eFixX ,
-                     std::move( old_data ) , Block::Range( rng ) );
-   }
-
-  for( Index i = rng.first ; i < rng.second ; ++i )
-   v_fxd[ i ] = new_fxd( fixing ? data[ i - rng.first ] : 0 );
-
-  return( undo );
+                     std::move( old_data ) , std::move( nms ) );
   }
 
- // subset change - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
- if( auto change = dynamic_cast< BinaryKnapsackBlockSbstChange * >( CHG ) ) {
-  const auto & subset = change->nms();
-  const auto & data = change->data();
+ for( Index k = 0 ; k < n ; ++k )
+  v_fxd[ CHG->item( k ) ] = fixing ? ( data[ k ] == 1 ? 2 : 1 ) : 0;
 
-  Change * undo = nullptr;
-  if( doUndo ) {
-   std::vector< double > old_data;
-   old_data.reserve( subset.size() );
-   for( auto i : subset )
-    old_data.push_back( old_val( i ) );
-   undo = new BinaryKnapsackBlockSbstChange(
-                     fixing ? BinaryKnapsackBlockChange::eUnfixX
-                            : BinaryKnapsackBlockChange::eFixX ,
-                     std::move( old_data ) , Block::Subset( subset ) );
-   }
-
-  Index idx = 0;
-  for( auto i : subset )
-   v_fxd[ i ] = new_fxd( fixing ? data[ idx++ ] : 0 );
-
-  return( undo );
-  }
-
- throw( std::invalid_argument( "GreedyRelaxationSolver::apply: the Change "
-        "must be a BinaryKnapsackBlock[Rngd/Sbst]Change" ) );
+ return( undo );
 
  }  // end( GreedyRelaxationSolver::apply )
 
