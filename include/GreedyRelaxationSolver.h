@@ -114,26 +114,17 @@ class GreedyRelaxationSolver : public GreedyRelaxationBinaryKnapsackSolver ,
   }
 
 /*--------------------------------------------------------------------------*/
- /// valid lower bound on the optimal value (the relaxation / rounded one)
-
- OFValue get_lb( void ) override { return( get_true_lb() ); }
-
- /// valid upper bound on the optimal value (the relaxation / rounded one)
-
- OFValue get_ub( void ) override { return( get_true_ub() ); }
-
-/*--------------------------------------------------------------------------*/
  /// a true (rounded greedy) solution is always available after compute()
 
- bool has_true_var_solution( void ) override { return( true ); }
+ bool has_true_var_solution( void ) override {
+  return( GreedyRelaxationBinaryKnapsackSolver::has_true_var_solution() );
+  }
 
 /*--------------------------------------------------------------------------*/
  /// write the rounded greedy solution in the Variable of the Block
 
  void get_true_var_solution( Configuration * solc = nullptr ) override {
-  auto BKB = static_cast< BinaryKnapsackBlock * >( f_Block );
-  auto sol = rounded_x();
-  BKB->set_x( sol.begin() );
+  GreedyRelaxationBinaryKnapsackSolver::get_true_var_solution( solc );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -160,29 +151,6 @@ class GreedyRelaxationSolver : public GreedyRelaxationBinaryKnapsackSolver ,
   * fixed values captured at call time. */
 
  Change * apply( Change * chg , bool doUndo = false ) override;
-
-/*--------------------------------------------------------------------------*/
-/*--------------------- PROTECTED PART OF THE CLASS ------------------------*/
-/*--------------------------------------------------------------------------*/
-
- protected:
-
-/*--------------------------------------------------------------------------*/
-/*--------------------------- PROTECTED METHODS ----------------------------*/
-/*--------------------------------------------------------------------------*/
-
- /// the greedy solution rounded to a true-feasible one
- /** Returns the greedy solution with the critical item, if any and not a
-  * continuous one, rounded away (to 0, i.e., to 1 in the original space if
-  * complemented): the solution whose value get_true_lb() / get_true_ub()
-  * return. */
-
- std::vector< double > rounded_x( void ) {
-  std::vector< double > sol( f_x );
-  if( ( f_fi.orig >= 0 ) && ( ! f_fi.cont ) )
-   sol[ f_fi.orig ] = f_fi.comp ? 1 : 0;
-  return( sol );
-  }
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- PRIVATE PART OF THE CLASS ------------------------*/

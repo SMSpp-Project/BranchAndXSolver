@@ -62,37 +62,10 @@ Change * GreedyRelaxationSolver::apply( Change * chg , bool doUndo )
      ( CHG->type() != BinaryKnapsackBlockChange::eUnfixX ) )
   return( CHG->apply( f_Block , doUndo ) );   // not an (un)fix: to the Block
 
- // an (un)fixing Change is applied to the internal mirror only, reading the
- // acted-upon items via the uniform polymorphic view of the Change (see
- // BinaryKnapsackBlockChange::num_items() / item()): the concrete (ranged /
- // subset) type of the Change is never needed
- const bool fixing = ( CHG->type() == BinaryKnapsackBlockChange::eFixX );
- const Index n = CHG->num_items();
- const auto & data = CHG->data();
-
- Change * undo = nullptr;
- if( doUndo ) {
-  // the undo under the LIFO discipline of BranchAndXSolver: un-fixing the
-  // same items, or re-fixing them to the values captured at call time
-  std::vector< double > old_data;
-  Block::Subset nms;
-  old_data.reserve( n );
-  nms.reserve( n );
-  for( Index k = 0 ; k < n ; ++k ) {
-   const Index i = CHG->item( k );
-   nms.push_back( i );
-   old_data.push_back( v_fxd[ i ] == 2 ? 1 : 0 );
-   }
-  undo = new BinaryKnapsackBlockSbstChange(
-                     fixing ? BinaryKnapsackBlockChange::eUnfixX
-                            : BinaryKnapsackBlockChange::eFixX ,
-                     std::move( old_data ) , std::move( nms ) );
-  }
-
- for( Index k = 0 ; k < n ; ++k )
-  v_fxd[ CHG->item( k ) ] = fixing ? ( data[ k ] == 1 ? 2 : 1 ) : 0;
-
- return( undo );
+ // an (un)fixing Change is applied to the internal mirror only [see
+ // BinaryKnapsackSolver::apply_to_mirror()]: the next compute() re-solves
+ // the relaxation under the new fixings without any access to the Block
+ return( apply_to_mirror( CHG , doUndo ) );
 
  }  // end( GreedyRelaxationSolver::apply )
 
