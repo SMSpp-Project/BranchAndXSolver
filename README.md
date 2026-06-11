@@ -1,124 +1,118 @@
 # BranchAndXSolver
 
-BranchAndXSolver class, which implements the Solver interface for a Relaxation-Agnostic Branch and X Solver within the SMS++ framework. 
+`BranchAndXSolver` implements the Solver interface for a Relaxation-Agnostic
+Branch-and-X (RABaX) Solver within the SMS++ framework: a generic enumerative
+solver where "X" stands for Bound / Cut / Price (cuts and pricing still to
+come). It is built on top of two new abstract Solver concepts:
+
+- `ChangeSolver`, a :Solver that can apply() a `Change` [see Change.h in the
+  SMS++ core] to the Block it is attached to - and the undo Change that
+  apply() returns - so that the same Solver object can be efficiently moved
+  between the nodes of an enumeration tree;
+
+- `RelaxationSolver`, a :ChangeSolver solving a *relaxation* of the problem:
+  besides the relaxation value (a valid dual bound) it can produce *true*
+  solutions of the original problem (valid primal bounds) and, foremost, it
+  can branch(), i.e., produce the Changes generating the children of the
+  current node.
+
+The module provides:
+
+- `BranchAndXSolver`, the enumerative :Solver itself: depth-first,
+  breadth-first or best-first exploration (`intSolveMethod`), node / time
+  limits (the inherited `intMaxIter` / `dblMaxTime`), tolerance-based pruning
+  (the inherited `dblRelAcc` / `dblAbsAcc`), inner Solver provided either directly or through a
+  BlockSolverConfig (`strNameOfBlockSolverConfigurationFile`);
+
+- `GreedyChangeSolver` / `GreedyRelaxationSolver`, the ChangeSolver /
+  RelaxationSolver implementations for the continuous relaxation of a
+  BinaryKnapsackBlock, with incremental re-solves across branching;
+
+- `GroupChange`, a Change grouping several Changes applied as one (not used
+  yet);
+
+- `ParallelSolver`, a sketch of the master / clones machinery for the future
+  parallel exploration (not used yet).
+
+**WARNING: WORK IN PROGRESS.** The B&B works on small instances but has
+known correctness (incremental bookkeeping in `GreedyChangeSolver::apply()`,
+true bounds) and performance issues, no cuts, and no parallelism yet.
 
 ## Getting started
 
-These instructions will let you build BranchAndXSolver on your system.
-
+These instructions will let you build the `BranchAndXSolver` module on
+your system.
 
 ### Requirements
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
 
+- The [BinaryKnapsackBlock](https://gitlab.com/smspp/binaryknapsackblock)
+  module (for `GreedyChangeSolver` / `GreedyRelaxationSolver`).
 
 ### Build and install with CMake
 
-Still to be implemented.
+Configure and build the library with:
+
+```sh
+mkdir build
+cd build
+cmake ..
+cmake --build .
+```
+
+The library has the same configuration options of
+[SMS++](https://gitlab.com/smspp/smspp-project/-/wikis/Customize-the-configuration).
+When built from the SMS++ umbrella project, enable it with
+`-DBUILD_BranchAndXSolver=ON` (this automatically enables
+BinaryKnapsackBlock).
+
+Optionally, install the library in the system with:
+
+```sh
+cmake --install .
+```
 
 ### Usage with CMake
 
-Still to be implemented.
+After the library is built, you can use it in your CMake project with:
 
-### Build and install with makefiles
-
-Carefully hand-crafted makefiles have also been developed for those unwilling
-to use CMake. General instructions are:
-
-- The arrangements of folders must be that envisioned by the
-  [Umbrella SMS++ Project](https://gitlab.com/smspp/smspp-project)
-
-- The main step is to edit the makefiles into ../extlib/. There is one for
-  each of the external libraries that any module requires, starting with
-
-  = [Boost](https://www.boost.org)
-
-  = [Eigen](http://eigen.tuxfamily.org)
-
-  = [netCDF-C++](https://www.unidata.ucar.edu/software/netcdf)
-
-  that are required by the "core" SMS++ library and therefore by everyone.
-  Setting the
-
-```make
-lib*INC = -I<paths to include files directories>
-lib*LIB = -L<paths to lib files directories> -l<libs>
+```cmake
+find_package(BranchAndXSolver)
+target_link_libraries(<my_target> SMS++::BranchAndXSolver)
 ```
 
-  in each allows one to set any non-standard path if the library is not
-  installed in the system (or leave them empty if they are).
+### Build with makefiles
 
-- The "core" SMS++ classes have a makefile for building the corresponding
-  library in
-
-```sh
-SMS++/lib/makefile-lib
-```
-
-  The makefile allow to choose the compiler name and the optimization/debug.
-  This builds the lib/libSMS++.a that can be linked upon. Also, the
-
-```sh
-SMS++/lib/makefile-inc
-```
-
-  file is provided for allowing external makefiles to ensure that the library
-  is up-to-date (useful in case one is actually developing it). The simplest
-  way to learn how to use it is to check the makefiles of the "main" file
-
-```sh
-Main/makefile
-```
-
-  Note that the "basic" makefile macros
-
-```make
-CC =
-SW =
-```
-
-  for setting the c++ compiler and its options are "automatically forwarded"
-  from the makefile to these of the other SMS++ components, and therefore
-  (possibly at the cost of a make clean) ensure consistency during the
-  building process.
+The `makefile` exports the usual SMS++ module macros (`$(BAXSLVOBJ)`,
+`$(BAXSLVH)`, `$(BAXSLVINC)`) given `$(BAXSLVSDR)`, the SMS++ core macros and the
+BinaryKnapsackBlock ones (`$(BKBkOBJ)`, `$(BKBkH)`, `$(BKBkINC)`).
 
 ## Getting help
 
-If you need support, you want to submit bugs or propose a new feature, you can
-[open a new issue](https://gitlab.com/smspp/BranchAndXSolver/-/issues/new).
+If you need support, you want to submit bugs or propose a new feature, you
+can [open a new issue](https://gitlab.com/smspp/BranchAndXSolver/-/issues/new).
 
-## Contributing
+## Current Lead Authors
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of
-conduct, and the process for submitting merge requests to us.
-
-## Authors
-
-### Current Lead Authors
+- **Antonio Frangioni**  
+  Dipartimento di Informatica  
+  Università di Pisa
 
 - **Federica Di Pasquale**  
-  Dipartimento di Informatica   
-  Universita' di Pisa
-
-- **Antonio Frangioni**   
   Dipartimento di Informatica  
-  Universita' di Pisa
+  Università di Pisa
 
-### Contributors
+- **Filippo Magi**  
+  Dipartimento di Informatica  
+  Università di Pisa
+
+- **Donato Meoli**  
+  Dipartimento di Informatica  
+  Università di Pisa
 
 ## License
 
 This code is provided free of charge under the [GNU Lesser General Public
-License version 3.0](https://opensource.org/licenses/lgpl-3.0.html) -
-see the [LICENSE](LICENSE) file for details.
-
-## Disclaimer
-
-The code is currently provided free of charge under an open-source license.
-As such, it is provided "*as is*", without any explicit or implicit warranty
-that it will properly behave or it will suit your needs. The Authors of
-the code cannot be considered liable, either directly or indirectly, for
-any damage or loss that anybody could suffer for having used it. More
-details about the non-warranty attached to this code are available in the
-license description file.
+License version 3.0](https://opensource.org/licenses/lgpl-3.0.html).

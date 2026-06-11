@@ -2,32 +2,28 @@
 ################################ makefile-s ##################################
 ##############################################################################
 #                                                                            #
-#   makefile of BranchAndXSolver and its dependencies, excluding SMS++       #
-#									     #
+#   makefile of BranchAndXSolver and its dependencies, excluding SMS++   #
+#                                                                            #
 #   The makefile defines internally all external libraries required by       #
-#   BranchAndXSolver, exluding the SMS++ core ones whose symbols are assumed #
-#   to have been defined already (typically by including SMS++/lib/makefile).#
-#   Accordingly, all necessary OBJ, H, -I directives, external libraries     #
-#   + -L<libdirs> are added to the corresponding BAXSLV* macros.             #
-#   complete makefile of BranchAndXSolver                                    #
+#   BranchAndXSolver, excluding the SMS++ core ones whose symbols are    #
+#   assumed to have been defined already (typically by including             #
+#   SMS++/lib/makefile). Accordingly, all necessary OBJ, H, -I directives,   #
+#   external libraries + -L< libdirs > are added to the corresponding BnBS*  #
+#   macros.                                                                  #
 #                                                                            #
-#   Input:  $(CC)        = compiler command                                  #
-#           $(SW)        = compiler options                                  #
-#           $(SMS++INC)  = the -I$( core SMS++ directory )                   #
-#           $(SMS++OBJ)  = the core SMS++ library                            #
-#           $(BAXSLVSDR) = the directory where BranchAndXSolver source is    #
-#           $(BAXSLVODR) = the directory where the objects have to be put    #
+#   Input:  $(CC)       = compiler command                                   #
+#           $(SW)       = compiler options                                   #
+#           $(SMS++INC) = the -I$( core SMS++ directory )                    #
+#           $(SMS++OBJ) = the core SMS++ library                             #
+#           $(BAXSLVSDR)  = the directory where BranchAndXSolver source is #
 #                                                                            #
-#   Output: $(BAXSLVOBJ) = the final object(s) / library                     #
-#           $(BAXSLVLIB) = external libraries + -L<libdirs>                  #
-#           $(BAXSLVH)   = the .h files to include for BranchAndXSolver      #
-#           $(BAXSLVINC) = the -I$( BranchAndXSolver directory )             #
+#   Output: $(BAXSLVOBJ)  = the final object(s) / library                      #
+#           $(BAXSLVLIB)  = external libraries + -L< libdirs >                 #
+#           $(BAXSLVH)    = the .h files to include for BranchAndXSolver   #
+#           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )          #
 #                                                                            #
-#                                VERSION 0.0                                 #
-#                               25 - 05 - 2022                               #
-#                                                                            #
-#                              Antonio Frangioni                             #
-#                             Federica Di Pasquale                           #
+#                              Filippo Magi                                  #
+#                              Donato Meoli                                  #
 #                         Dipartimento di Informatica                        #
 #                             Universita' di Pisa                            #
 #                                                                            #
@@ -39,20 +35,25 @@
 # each module outputs some macros to be used here:
 # *OBJ is the final object/library
 # *H   is the list of all include files
-# *INC is the -I<include directories>
+# *INC is the -I< include directories >
+
+# define input macros for BinaryKnapsackBlock makefile excluding SMS++,
+# then include it
+BKBkSDR = $(BAXSLVSDR)/../BinaryKnapsackBlock
+include $(BKBkSDR)/makefile-s
 
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
 
-# macroes to be exported- - - - - - - - - - - - - - - - - - - - - - - - - - -
+# macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-# append external stuff defined in the other makefiles to BAXSLVOBJ,
-# BAXSLVINC and BAXSLVH, thus the := assignment has to be used (use GNU make)
-BAXSLVOBJ := $(BAXSLVOBJ) 
-BAXSLVINC := $(BAXSLVINC) 
-BAXSLVH := $(BAXSLVH) 
+# append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
+# by the makefile, thus the := assignment has to be used (use GNU make)
+BAXSLVOBJ := $(BAXSLVOBJ) $(BKBkOBJ)
+BAXSLVINC := $(BAXSLVINC) $(BKBkINC)
+BAXSLVH   := $(BAXSLVH) $(BKBkH)
 
-# external libreries for BranchAndXSolver
-BAXSLVLIB = 
+# external libraries for BranchAndXSolver
+BAXSLVLIB = $(BKBkLIB)
 
-########################### End of makefile-s ################################
+############################ End of makefile #################################

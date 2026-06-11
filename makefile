@@ -2,31 +2,29 @@
 ################################ makefile ####################################
 ##############################################################################
 #                                                                            #
-#   makefile of BranchAndXSolver                                             #
+#   makefile of BranchAndXSolver                                         #
 #                                                                            #
-#   The makefile takes in input the -I directives for all the external       #
-#   libraries needed by BranchAndXSolver, i.e., core SMS++.                  #
+#   Note that $(SMS++INC) is assumed to include any -I directive             #
+#   corresponding to external libraries needed by SMS++, at least to the     #
+#   extent in which they are needed by the parts of SMS++ used by            #
+#   BranchAndXSolver, and that $(BKBkINC) / $(BKBkH) / $(BKBkOBJ) come   #
+#   from the makefile of the required BinaryKnapsackBlock module.            #
 #                                                                            #
-#   Note that, conversely, $(SMS++INC) is also assumed to include any        #
-#   -I directive corresponding to external libraries needed by SMS++, at     #
-#   least to the extent in which they are needed by the parts of SMS++       #
-#   used by BranchAndXSolver.                                                #
+#   Input:  $(CC)       = compiler command                                   #
+#           $(SW)       = compiler options                                   #
+#           $(SMS++INC) = the -I$( core SMS++ directory )                    #
+#           $(SMS++OBJ) = the libSMS++ library itself                        #
+#           $(BKBkINC)  = the -I$( BinaryKnapsackBlock directory )           #
+#           $(BKBkH)    = the .h files of BinaryKnapsackBlock                #
+#           $(BKBkOBJ)  = the BinaryKnapsackBlock object(s)                  #
+#           $(BAXSLVSDR)  = the directory where the source is                  #
 #                                                                            #
-#   Input:  $(CC)          = compiler command                                #
-#           $(SW)          = compiler options                                #
-#           $(SMS++INC)    = the -I$( core SMS++ include directory )         #
-#           $(SMS++OBJ)    = the core SMS++ library                          #
-#           $(BAXSLVSDR)   = the directory where the source is               #
+#   Output: $(BAXSLVOBJ)  = the final object(s) / library                      #
+#           $(BAXSLVH)    = the .h files to include                            #
+#           $(BAXSLVINC)  = the -I$( source directory )                        #
 #                                                                            #
-#   Output: $(BAXSLVOBJ)   = the final object(s) / library                   #
-#           $(BAXSLVH)     = the .h files to include                         #
-#           $(BAXSLVINC)   = the -I$( source directory )                     #
-#                                                                            #
-#                                VERSION 0.0                                 #
-#                               25 - 05 - 2022                               #
-#                                                                            #
-#                              Antonio Frangioni                             #
-#                            Federica Di Pasquale                            #
+#                              Filippo Magi                                  #
+#                              Donato Meoli                                  #
 #                         Dipartimento di Informatica                        #
 #                             Universita' di Pisa                            #
 #                                                                            #
@@ -34,21 +32,32 @@
 
 # macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-BAXSLVOBJ = $(BAXSLVSDR)BranchAndXSolver.o 
+BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o \
+          $(BAXSLVSDR)/obj/GreedyRelaxationSolver.o
 
-BAXSLVINC = -I$(BAXSLVSDR)
+BAXSLVINC = -I$(BAXSLVSDR)/include
 
-BAXSLVH   = $(BAXSLVSDR)BranchAndXSolver.h
+BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
+          $(BAXSLVSDR)/include/ChangeSolver.h \
+          $(BAXSLVSDR)/include/GreedyRelaxationSolver.h \
+          $(BAXSLVSDR)/include/GroupChange.h \
+          $(BAXSLVSDR)/include/ParallelSolver.h
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 clean::
-	rm -f $(BAXSLVOBJ) $(BAXSLVSDR)*~
+	rm -f $(BAXSLVOBJ) $(BAXSLVSDR)/*~
 
 # dependencies: every .o from its .cpp + every recursively included .h- - - -
 
-$(BAXSLVSDR)BranchAndXSolver.o: $(BAXSLVSDR)BranchAndXSolver.cpp \
-	$(BAXSLVSDR)BranchAndXSolver.h $(SMS++OBJ) 
-	$(CC) -c $*.cpp -o $@ $(BAXSLVINC) $(SMS++INC) $(SW)
+$(BAXSLVSDR)/obj/BranchAndXSolver.o: \
+	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(BKBkH) $(SMS++OBJ)
+	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
+	$(BAXSLVINC) $(BKBkINC) $(SMS++INC) $(SW)
 
-########################## End of makefile ###################################
+$(BAXSLVSDR)/obj/GreedyRelaxationSolver.o: \
+	$(BAXSLVSDR)/src/GreedyRelaxationSolver.cpp $(BAXSLVH) $(BKBkH) $(SMS++OBJ)
+	$(CC) -c $(BAXSLVSDR)/src/GreedyRelaxationSolver.cpp -o $@ \
+	$(BAXSLVINC) $(BKBkINC) $(SMS++INC) $(SW)
+
+############################ End of makefile #################################
