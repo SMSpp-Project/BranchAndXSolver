@@ -5,7 +5,7 @@
 #   complete makefile of BranchAndXSolver                                #
 #                                                                            #
 #   The makefile defines internally all external libraries (comprised the    #
-#   SMS++ and BinaryKnapsackBlock ones) required by BranchAndXSolver.    #
+#   SMS++ one) required by BranchAndXSolver. Accordingly,                #
 #   Accordingly, all necessary OBJ, H, -I directives, external libraries +   #
 #   -L< libdirs > are added to the corresponding BnBS* macros.               #
 #                                                                            #
@@ -33,10 +33,9 @@
 # *H   is the list of all include files
 # *INC is the -I< include directories >
 
-# define input macros for BinaryKnapsackBlock complete makefile (which in
-# turn includes the SMS++ one), then include it
-BKBkSDR = $(BAXSLVSDR)/../BinaryKnapsackBlock
-include $(BKBkSDR)/makefile-c
+# define input macros for SMS++ complete makefile, then include it
+SMS++SDR = $(BAXSLVSDR)/../SMS++
+include $(SMS++SDR)/lib/makefile-c
 
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
@@ -45,11 +44,11 @@ include $(BAXSLVSDR)/makefile
 
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
-BAXSLVOBJ := $(BAXSLVOBJ) $(BKBkOBJ)
-BAXSLVINC := $(BAXSLVINC) $(BKBkINC)
-BAXSLVH   := $(BAXSLVH) $(BKBkH)
+BAXSLVOBJ := $(BAXSLVOBJ) $(SMS++OBJ)
+BAXSLVINC := $(BAXSLVINC) $(SMS++INC)
+BAXSLVH   := $(BAXSLVH) $(SMS++H)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB = $(BKBkLIB)
+BAXSLVLIB = $(SMS++LIB)
 
 ############################ End of makefile #################################

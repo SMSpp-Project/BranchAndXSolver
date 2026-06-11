@@ -37,11 +37,6 @@
 # *H   is the list of all include files
 # *INC is the -I< include directories >
 
-# define input macros for BinaryKnapsackBlock makefile excluding SMS++,
-# then include it
-BKBkSDR = $(BAXSLVSDR)/../BinaryKnapsackBlock
-include $(BKBkSDR)/makefile-s
-
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
 
@@ -49,11 +44,11 @@ include $(BAXSLVSDR)/makefile
 
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
-BAXSLVOBJ := $(BAXSLVOBJ) $(BKBkOBJ)
-BAXSLVINC := $(BAXSLVINC) $(BKBkINC)
-BAXSLVH   := $(BAXSLVH) $(BKBkH)
+BAXSLVOBJ := $(BAXSLVOBJ)
+BAXSLVINC := $(BAXSLVINC)
+BAXSLVH   := $(BAXSLVH)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB = $(BKBkLIB)
+BAXSLVLIB =
 
 ############################ End of makefile #################################

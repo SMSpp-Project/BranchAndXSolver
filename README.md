@@ -25,19 +25,15 @@ The module provides:
   (the inherited `dblRelAcc` / `dblAbsAcc`), inner Solver provided either directly or through a
   BlockSolverConfig (`strNameOfBlockSolverConfigurationFile`);
 
-- `GreedyChangeSolver` / `GreedyRelaxationSolver`, the ChangeSolver /
-  RelaxationSolver implementations for the continuous relaxation of a
-  BinaryKnapsackBlock, with incremental re-solves across branching;
-
 - `GroupChange`, a Change grouping several Changes applied as one (not used
   yet);
 
 - `ParallelSolver`, a sketch of the master / clones machinery for the future
   parallel exploration (not used yet).
 
-**WARNING: WORK IN PROGRESS.** The B&B works on small instances but has
-known correctness (incremental bookkeeping in `GreedyChangeSolver::apply()`,
-true bounds) and performance issues, no cuts, and no parallelism yet.
+**WARNING: WORK IN PROGRESS.** The Branch-and-Bound core is functional and
+validated (see the batches of the SMS++ tests project), but cuts, pricing,
+the reoptimization machinery and the parallel exploration are still to come.
 
 ## Getting started
 
@@ -49,8 +45,6 @@ your system.
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
 
-- The [BinaryKnapsackBlock](https://gitlab.com/smspp/binaryknapsackblock)
-  module (for `GreedyChangeSolver` / `GreedyRelaxationSolver`).
 
 ### Build and install with CMake
 
@@ -66,8 +60,7 @@ cmake --build .
 The library has the same configuration options of
 [SMS++](https://gitlab.com/smspp/smspp-project/-/wikis/Customize-the-configuration).
 When built from the SMS++ umbrella project, enable it with
-`-DBUILD_BranchAndXSolver=ON` (this automatically enables
-BinaryKnapsackBlock).
+`-DBUILD_BranchAndXSolver=ON`.
 
 Optionally, install the library in the system with:
 
@@ -88,7 +81,7 @@ target_link_libraries(<my_target> SMS++::BranchAndXSolver)
 
 The `makefile` exports the usual SMS++ module macros (`$(BAXSLVOBJ)`,
 `$(BAXSLVH)`, `$(BAXSLVINC)`) given `$(BAXSLVSDR)`, the SMS++ core macros and the
-BinaryKnapsackBlock ones (`$(BKBkOBJ)`, `$(BKBkH)`, `$(BKBkINC)`).
+core SMS++ ones (`$(SMS++OBJ)`, `$(SMS++H)`, `$(SMS++INC)`).
 
 ## Getting help
 
