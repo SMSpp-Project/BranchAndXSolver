@@ -44,7 +44,9 @@ include(BuildType)
 # look for the system-installed libraries.
 if (NOT hasParent)
     find_package(SMS++ REQUIRED)
-    find_package(BinaryKnapsackBlock REQUIRED)
+    # BinaryKnapsackBlock is NOT required: it only gates the BKB-specific
+    # GreedyRelaxationSolver (see below)
+    find_package(BinaryKnapsackBlock QUIET)
 endif ()
 
 # ----- Configuration header ------------------------------------------------ #
@@ -66,8 +68,7 @@ endif ()
 # added to this library and to any target that links to it.
 # Note: do not GLOB files here.
 target_sources(${modName} PRIVATE
-        src/BranchAndXSolver.cpp
-        src/GreedyRelaxationSolver.cpp)
+        src/BranchAndXSolver.cpp)
 
 # Different INSTALL_INTERFACE and BUILD_INTERFACE paths are used when
 # generating the target import file (***Targets.cmake).
@@ -79,9 +80,23 @@ target_include_directories(
 # When linking other targets to the library with target_link_libraries(),
 # PUBLIC means they will be linked also to the targets that depend on this
 # library.
-target_link_libraries(${modName} PUBLIC
-        ${modNamespace}::BinaryKnapsackBlock
-        ${modNamespace}::SMS++)
+target_link_libraries(${modName} PUBLIC ${modNamespace}::SMS++)
+
+# The BKB-specific GreedyRelaxationSolver is built only when the
+# BinaryKnapsackBlock module is part of the build: the BranchAndXSolver
+# itself is fully generic and does not require it. (Note that with the
+# makefiles the BinaryKnapsackBlock chain is always pulled in, see
+# makefile-c / makefile-s.)
+if (TARGET ${modNamespace}::BinaryKnapsackBlock)
+    message(STATUS "${modName}: BinaryKnapsackBlock found, "
+                   "building GreedyRelaxationSolver")
+    target_sources(${modName} PRIVATE src/GreedyRelaxationSolver.cpp)
+    target_link_libraries(${modName} PUBLIC
+            ${modNamespace}::BinaryKnapsackBlock)
+    set(BAXSLV_WITH_BKB ON)
+else ()
+    set(BAXSLV_WITH_BKB OFF)
+endif ()
 
 # This alias is defined so that executables in this same project can use
 # the library with this notation.

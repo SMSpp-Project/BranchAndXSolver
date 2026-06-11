@@ -18,7 +18,9 @@ include(CMakeFindDependencyMacro)
 
 # ----- Requirements -------------------------------------------------------- #
 find_dependency(SMS++)
-find_dependency(BinaryKnapsackBlock)
+if (@BAXSLV_WITH_BKB@)
+    find_dependency(BinaryKnapsackBlock)
+endif ()
 
 # ----- Import target ------------------------------------------------------- #
 if (NOT TARGET @modNamespace@::@modName@)

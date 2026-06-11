@@ -38,9 +38,7 @@ BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o \
 BAXSLVINC = -I$(BAXSLVSDR)/include
 
 BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
-          $(BAXSLVSDR)/include/ChangeSolver.h \
           $(BAXSLVSDR)/include/GreedyRelaxationSolver.h \
-          $(BAXSLVSDR)/include/GroupChange.h \
           $(BAXSLVSDR)/include/ParallelSolver.h
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

@@ -42,8 +42,6 @@
 
 #include "BranchAndXSolver.h"
 
-#include "GroupChange.h"
-
 #include "Objective.h"
 
 /*--------------------------------------------------------------------------*/
@@ -59,10 +57,6 @@ using namespace SMSpp_di_unipi_it;
 // register BranchAndXSolver to the Solver factory
 
 SMSpp_insert_in_factory_cpp_0( BranchAndXSolver );
-
-// register GroupChange to the Change factory
-
-SMSpp_insert_in_factory_cpp_0( GroupChange );
 
 /*--------------------------------------------------------------------------*/
 /*-------------------------- INTERNAL FUNCTIONS ----------------------------*/

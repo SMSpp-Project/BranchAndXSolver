@@ -3,7 +3,8 @@
 `BranchAndXSolver` implements the Solver interface for a Relaxation-Agnostic
 Branch-and-X (RABaX) Solver within the SMS++ framework: a generic enumerative
 solver where "X" stands for Bound / Cut / Price (cuts and pricing still to
-come). It is built on top of two new abstract Solver concepts:
+come). It is built on top of two abstract Solver concepts that live in the SMS++
+core (`ChangeSolver.h`, currently on the `BnXSolver` core branch):
 
 - `ChangeSolver`, a :Solver that can apply() a `Change` [see Change.h in the
   SMS++ core] to the Block it is attached to - and the undo Change that
@@ -97,10 +98,6 @@ can [open a new issue](https://gitlab.com/smspp/BranchAndXSolver/-/issues/new).
 ## Current Lead Authors
 
 - **Antonio Frangioni**  
-  Dipartimento di Informatica  
-  Università di Pisa
-
-- **Federica Di Pasquale**  
   Dipartimento di Informatica  
   Università di Pisa
 

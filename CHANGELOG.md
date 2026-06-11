@@ -18,10 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GreedyRelaxationSolver for BinaryKnapsackBlock (thin extension of
   GreedyRelaxationBinaryKnapsackSolver with internal apply() of the
   branching Changes)
-- GroupChange and the ParallelSolver sketch
+- the ParallelSolver sketch
 - SMS++-style CMake build system and module makefiles
 
 ### Changed
+
+- the ChangeSolver / RelaxationSolver concepts and GroupChange moved to the
+  SMS++ core (BnXSolver branch), where they belong
 
 - the R3-Block-per-node prototype of the original BranchAndXSolver is
   superseded (kept in the repository history as the reference design for
