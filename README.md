@@ -77,7 +77,7 @@ find_package(BranchAndXSolver)
 target_link_libraries(<my_target> SMS++::BranchAndXSolver)
 ```
 
-### Build with makefiles
+### Build and install with makefiles
 
 The `makefile` exports the usual SMS++ module macros (`$(BAXSLVOBJ)`,
 `$(BAXSLVH)`, `$(BAXSLVINC)`) given `$(BAXSLVSDR)`, the SMS++ core macros and the
@@ -88,7 +88,9 @@ core SMS++ ones (`$(SMS++OBJ)`, `$(SMS++H)`, `$(SMS++INC)`).
 If you need support, you want to submit bugs or propose a new feature, you
 can [open a new issue](https://gitlab.com/smspp/BranchAndXSolver/-/issues/new).
 
-## Current Lead Authors
+## Contributing
+
+### Current Lead Authors
 
 - **Antonio Frangioni**  
   Dipartimento di Informatica  
@@ -106,3 +108,13 @@ can [open a new issue](https://gitlab.com/smspp/BranchAndXSolver/-/issues/new).
 
 This code is provided free of charge under the [GNU Lesser General Public
 License version 3.0](https://opensource.org/licenses/lgpl-3.0.html).
+
+## Disclaimer
+
+The code is currently provided free of charge under an open-source license.
+As such, it is provided "*as is*", without any explicit or implicit warranty
+that it will properly behave or it will suit your needs. The Authors of
+the code cannot be considered liable, either directly or indirectly, for
+any damage or loss that anybody could suffer for having used it. More
+details about the non-warranty attached to this code are available in the
+license description file.

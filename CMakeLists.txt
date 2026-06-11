@@ -83,6 +83,11 @@ target_link_libraries(${modName} PUBLIC ${modNamespace}::SMS++)
 # the library with this notation.
 add_library(${modNamespace}::${modName} ALIAS ${modName})
 
+# ----- Subdirectories ------------------------------------------------------ #
+if (BUILD_TESTING)
+    # Just consuming BUILD_TESTING to avoid warnings
+endif ()
+
 # ----- Install instructions ------------------------------------------------ #
 # The following commands are used when installing the library
 # and its CMake configuration files on the system.
@@ -132,4 +137,34 @@ install(FILES
         ${CMAKE_CURRENT_BINARY_DIR}/${modName}ConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${modName})
 
+# ----- Add the build tree to RPATH------------------------------------------ #
+# Add the binary directory to RPATH, so executables that use
+# dynamic loading will look into it.
+if (hasParent)
+    set(SMSPP_BUILD_RPATH
+            "${SMSPP_BUILD_RPATH};${CMAKE_CURRENT_BINARY_DIR}"
+            PARENT_SCOPE)
+endif ()
+
+# ----- Packaging support --------------------------------------------------- #
+# The following commands allow one to build a proper package using CPack.
+# See: https://cmake.org/cmake/help/latest/manual/cpack.1.html
+
+# Using this with the umbrella project is too messy.
+if (NOT hasParent)
+    set(CPACK_PACKAGE_VENDOR "SMS++ Team")
+    set(CPACK_PACKAGE_CONTACT "Donato Meoli")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY ${PROJECT_DESCRIPTION})
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_LIST_DIR}/LICENSE")
+    set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_LIST_DIR}/README.md")
+    set(CPACK_SOURCE_IGNORE_FILES
+            \\\\.git/
+            \\\\.gitignore$
+            \\\\.gitattributes$)
+    include(CPack)
+endif ()
+
 # --------------------------------------------------------------------------- #
+# Remove from the search paths the cmake directory we added at the beginning.
+list(REMOVE_AT CMAKE_MODULE_PATH -1)
+
