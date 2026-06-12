@@ -21,12 +21,11 @@
  * knowledge lives in the attached :ChangeSolver. WARNING: WORK IN PROGRESS:
  * cuts and pricing, the reoptimization machinery (see
  * process_outstanding_Modification()) and the parallel exploration are
- * sketched but not implemented yet. For the parallel exploration, besides
- * the ParallelSolver machinery [see ParallelSolver.h], a complementary
- * design has been explored where each node carries its own R3 copy of the
- * Block (so that subtrees become fully independent and embarrassingly
- * parallel, at the price of one Block per node): see the repository history
- * for the prototype.
+ * sketched but not implemented yet. For the parallel exploration a
+ * complementary design has also been explored where each node carries its
+ * own R3 copy of the Block (so that subtrees become fully independent and
+ * embarrassingly parallel, at the price of one Block per node): see the
+ * repository history for the prototype.
  *
  * \author Antonio Frangioni \n
  *         Dipartimento di Informatica \n
@@ -59,6 +58,8 @@
 /*------------------------------ INCLUDES ----------------------------------*/
 /*--------------------------------------------------------------------------*/
 
+#include <atomic>
+#include <chrono>
 #include <climits>
 #include <list>
 #include <mutex>
@@ -114,6 +115,17 @@ class BranchAndXSolver : public Solver {
  enum int_par_type_BXS {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
+  intReoptimize ,                   /**< retain the tree to reoptimize:
+   * with it the (BestFS, serial) exploration keeps the tree and its fenced
+   * frontier alive across compute() calls, and a re-solve under class 1-3
+   * changes [see RelaxationSolver::classify()] re-seeds the search from
+   * the re-evaluated frontier instead of re-deriving the whole tree. Note
+   * that in a binary enumeration the fenced frontier is about as large as
+   * the interior, so this pays off when evaluating a node is expensive
+   * (say, LP-like relaxations) and/or few nodes re-open, while for very
+   * cheap relaxations re-evaluating the frontier may cost as much as
+   * solving from scratch; it is off by default, also because retaining
+   * the tree can use a lot of memory. */
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -145,6 +157,8 @@ class BranchAndXSolver : public Solver {
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
                       bestBound( 0 ) , bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
+                      maxThread( 0 ) , reoptimize( 0 ) ,
+                      f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) , changes( 4 ) ,
@@ -171,6 +185,7 @@ class BranchAndXSolver : public Solver {
  /// destructor
 
  ~BranchAndXSolver() override {
+  discardRetainedTree();
   delete bestSolution;
   delete configurationRS;
   for( auto slvr : v_created ) {
@@ -203,7 +218,10 @@ class BranchAndXSolver : public Solver {
   * - intThreadForDifferentSolvers [1]: maximum number of threads used to
   *   run the inner Solver at each node (NOT implemented yet).
   *
-  * The inherited intMaxIter bounds the number of explored nodes, and the
+  * The inherited intMaxThread [0] sets the number of workers of the
+  * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
+  * base Solver classes do not store it, so it is stored here]. The
+  * inherited intMaxIter bounds the number of explored nodes, and the
   * inherited dblMaxTime / dblRelAcc / dblAbsAcc respectively bound the
   * total solve time and set the optimality tolerances of the pruning. */
 
@@ -212,11 +230,17 @@ class BranchAndXSolver : public Solver {
    case( intSolveMethod ):
     solveType = static_cast< SolveMethod >( value );
     break;
+   case( intMaxThread ):
+    maxThread = std::max( 0 , value );
+    break;
    case( intThreadForDifferentSolvers ):
     if( value <= 0 )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "intThreadForDifferentSolvers must be positive" ) );
     maxThreadForSolvers = value;
+    break;
+   case( intReoptimize ):
+    reoptimize = value;
     break;
    default:
     Solver::set_par( par , value );
@@ -300,6 +324,7 @@ class BranchAndXSolver : public Solver {
   switch( par ) {
    case( intSolveMethod ):               return( int( BestFS ) );
    case( intThreadForDifferentSolvers ): return( 1 );
+   case( intReoptimize ):                return( 0 );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -318,7 +343,9 @@ class BranchAndXSolver : public Solver {
  [[nodiscard]] int get_int_par( idx_type par ) const override {
   switch( par ) {
    case( intSolveMethod ):               return( int( solveType ) );
+   case( intMaxThread ):                 return( maxThread );
    case( intThreadForDifferentSolvers ): return( maxThreadForSolvers );
+   case( intReoptimize ):                return( reoptimize );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -338,6 +365,8 @@ class BranchAndXSolver : public Solver {
    return( intSolveMethod );
   if( name == "intThreadForDifferentSolvers" )
    return( intThreadForDifferentSolvers );
+  if( name == "intReoptimize" )
+   return( intReoptimize );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -353,7 +382,8 @@ class BranchAndXSolver : public Solver {
  [[nodiscard]] const std::string & int_par_idx2str( idx_type idx )
   const override {
   static const std::string pars[] = { "intSolveMethod" ,
-                                      "intThreadForDifferentSolvers" };
+                                      "intThreadForDifferentSolvers" ,
+                                      "intReoptimize" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -416,6 +446,43 @@ class BranchAndXSolver : public Solver {
   * [see add_Modification()]; this way they never appear in the Block's
   * registered-Solver list (whose order and content belong to the user). */
 
+ /// create the per-worker private Solver sets for the parallel exploration
+ /** Creates \p K additional sets of inner Solver out of configurationRS,
+  * one per worker of the parallel exploration (see v_workerSolvers): each
+  * worker drives its own clones, so that the (cheap, internal) application
+  * of the branching Changes never needs synchronization; the incumbent and
+  * the pool of open subtrees are the only shared state. The clones are
+  * attached to the Block (set_Block, no registration) and owned. */
+
+ void createWorkerSolvers( Index K ) {
+  if( ! ( configurationRS && f_Block ) )
+   throw( std::logic_error( "BranchAndXSolver::createWorkerSolvers: "
+          "configurationRS or f_Block not set" ) );
+  v_workerSolvers.resize( K );
+  for( Index w = 0 ; w < K ; ++w ) {
+   auto & ws = v_workerSolvers[ w ];
+   if( ! ws.relaxation.empty() )    // already created (re-solve)
+    continue;
+   for( Index i = 0 ; i < configurationRS->num_ComputeConfig() ; ++i ) {
+    auto slvr = Solver::new_Solver( configurationRS->get_SolverName( i ) );
+    if( auto cfg = configurationRS->get_SolverConfig( i ) )
+     slvr->set_ComputeConfig( cfg );
+    slvr->set_Block( f_Block );
+    v_created.push_back( slvr );    // owned like the serial ones
+    if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) )
+     ws.relaxation.push_back( rs );
+    else if( auto hs = dynamic_cast< ChangeSolver * >( slvr ) )
+     ws.heuristic.push_back( hs );
+    else
+     throw( std::invalid_argument( "BranchAndXSolver::"
+            "createWorkerSolvers: the BlockSolverConfig must only "
+            "describe :ChangeSolver" ) );
+    }
+   }
+  }
+
+/*--------------------------------------------------------------------------*/
+
  void applyConfigurationToSolvers( void ) {
   if( ! ( configurationRS && f_Block ) )
    throw( std::logic_error( "BranchAndXSolver::"
@@ -449,6 +516,48 @@ class BranchAndXSolver : public Solver {
                int & nameCounter );
 
 /*--------------------------------------------------------------------------*/
+ /// parallel depth-first exploration with \p K workers
+ /** Parallel version of DFSSolve(), used when the inherited intMaxThread
+  * parameter is > 1: a serial, ordered (FIFO, i.e., discovery order)
+  * ramp-up expands the tree BestFS-style until enough open subtrees exist,
+  * then \p K workers - each driving its own private set of inner Solver
+  * [see createWorkerSolvers()] - repeatedly claim the OLDEST open subtree
+  * (preserving the sequential search order, which is what keeps parallel
+  * performance replicable) and explore it depth-first, sharing only the
+  * incumbent (under mutex) and the pool of open subtrees.
+  *
+  * The distribution of work is dynamic: when the pool runs low a worker
+  * DONATES one of the (eagerly evaluated, hence claimable) top-level
+  * branches of its current subtree instead of exploring it, so that
+  * deep-and-narrow trees keep all the workers busy; donated children hang
+  * off the claimed node, which always outlives them, keeping their path
+  * replayable and the final cleanup single-owner. Plain std::thread is
+  * used on purpose: at this granularity (one whole subtree per claim) a
+  * task framework would add nothing. */
+
+ int ParallelDFSSolve( std::mutex & globalMutex , int K );
+
+/*--------------------------------------------------------------------------*/
+ /// delete the tree retained for reoptimization (if any) and its frontier
+
+ void discardRetainedTree( void );
+
+/*--------------------------------------------------------------------------*/
+ /// the depth-first subtree exploration of one worker
+ /** The recursive core of one worker of ParallelDFSSolve(): same protocol
+  * as DFSSolve(), but on the worker's own Solver set, with the shared
+  * incumbent updated under \p incumbentMutex, a shared atomic node budget
+  * and a wall-clock deadline. */
+
+ int workerDFS( Node * currentNode , std::list< ChangeSolver * > & solvers ,
+                std::vector< RelaxationSolver * > & relaxation ,
+                std::vector< ChangeSolver * > & heuristic ,
+                bool minimizing , std::mutex & incumbentMutex ,
+                std::atomic< int > & nodeBdg ,
+                std::chrono::steady_clock::time_point deadline ,
+                int & nameCounter );
+
+/*--------------------------------------------------------------------------*/
  /// solve the tree breadth-first
  /** @param globalMutex mutex protecting the shared state of this class
   *  @return the sol_type [see Solver.h] of the computation */
@@ -479,6 +588,14 @@ class BranchAndXSolver : public Solver {
 
  int maxThreadForSolvers;     ///< max threads for solvers at each node
 
+ int maxThread;               ///< workers of the parallel tree exploration
+
+ int reoptimize;              ///< retain the tree to reoptimize (see
+                              ///< intReoptimize / BestFirstSolve())
+
+ /// the root of the tree retained for reoptimization, nullptr if none
+ ExploringNode * f_treeRoot;
+
  /// residual node budget of the current solve (from the inherited
  /// intMaxIter), consumed by the exploration
  int nodeBudget;
@@ -498,19 +615,28 @@ class BranchAndXSolver : public Solver {
  /// the (private) inner Solver created out of configurationRS, owned
  std::vector< Solver * > v_created;
 
+ /// the private Solver set of one worker of the parallel exploration
+ struct WorkerSolvers {
+  std::vector< RelaxationSolver * > relaxation;
+  std::vector< ChangeSolver * > heuristic;
+  };
+
+ /// the per-worker Solver sets [see createWorkerSolvers()]
+ std::vector< WorkerSolvers > v_workerSolvers;
+
  /// classification of the outstanding changes, for future reoptimization:
  /// 0 = none, 1 = objective only, 2 = r.h.s. only, 3 = both objective and
  /// r.h.s., anything else = general change (solve from scratch)
  char changes;
 
  /// nodes pruned as sub-optimal, to be revisited on an objective change
- std::list< Node * > subOptimalNodes;
+ std::list< ExploringNode * > subOptimalNodes;
 
  /// nodes pruned as infeasible, to be revisited on a r.h.s. change
- std::list< Node * > infeasibleNodes;
+ std::list< ExploringNode * > infeasibleNodes;
 
  /// nodes pruned as integer-feasible, to be revisited on reoptimization
- std::list< Node * > integerNodes;
+ std::list< ExploringNode * > integerNodes;
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 

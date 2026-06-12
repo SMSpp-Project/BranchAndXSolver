@@ -28,9 +28,6 @@ The module provides:
 - `GroupChange`, a Change grouping several Changes applied as one (not used
   yet);
 
-- `ParallelSolver`, a sketch of the master / clones machinery for the future
-  parallel exploration (not used yet).
-
 **WARNING: WORK IN PROGRESS.** The Branch-and-Bound core is functional and
 validated (see the batches of the SMS++ tests project), but cuts, pricing,
 the reoptimization machinery and the parallel exploration are still to come.

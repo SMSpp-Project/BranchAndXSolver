@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private to the BranchAndXSolver (Modification forwarded to them)
 - tolerance-based pruning on the inherited dblRelAcc / dblAbsAcc; node and
   time budgets on the inherited intMaxIter / dblMaxTime
-- the ParallelSolver sketch
 - SMS++-style CMake build system and module makefiles
 
 ### Changed

@@ -31,8 +31,7 @@ BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o
 
 BAXSLVINC = -I$(BAXSLVSDR)/include
 
-BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
-          $(BAXSLVSDR)/include/ParallelSolver.h
+BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
