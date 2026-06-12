@@ -115,6 +115,7 @@ class BranchAndXSolver : public Solver {
  enum int_par_type_BXS {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
+  intCutRounds ,                    ///< rounds of separation at each node
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it the (BestFS, serial) exploration keeps the tree and its fenced
    * frontier alive across compute() calls, and a re-solve under class 1-3
@@ -157,7 +158,8 @@ class BranchAndXSolver : public Solver {
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
                       bestBound( 0 ) , bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
-                      maxThread( 0 ) , reoptimize( 0 ) ,
+                      maxThread( 0 ) , cutRounds( 0 ) ,
+                      reoptimize( 0 ) ,
                       f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
@@ -238,6 +240,9 @@ class BranchAndXSolver : public Solver {
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "intThreadForDifferentSolvers must be positive" ) );
     maxThreadForSolvers = value;
+    break;
+   case( intCutRounds ):
+    cutRounds = std::max( 0 , value );
     break;
    case( intReoptimize ):
     reoptimize = value;
@@ -324,6 +329,7 @@ class BranchAndXSolver : public Solver {
   switch( par ) {
    case( intSolveMethod ):               return( int( BestFS ) );
    case( intThreadForDifferentSolvers ): return( 1 );
+   case( intCutRounds ):                 return( 0 );
    case( intReoptimize ):                return( 0 );
    }
   return( Solver::get_dflt_int_par( par ) );
@@ -345,6 +351,7 @@ class BranchAndXSolver : public Solver {
    case( intSolveMethod ):               return( int( solveType ) );
    case( intMaxThread ):                 return( maxThread );
    case( intThreadForDifferentSolvers ): return( maxThreadForSolvers );
+   case( intCutRounds ):                 return( cutRounds );
    case( intReoptimize ):                return( reoptimize );
    }
   return( Solver::get_int_par( par ) );
@@ -365,6 +372,8 @@ class BranchAndXSolver : public Solver {
    return( intSolveMethod );
   if( name == "intThreadForDifferentSolvers" )
    return( intThreadForDifferentSolvers );
+  if( name == "intCutRounds" )
+   return( intCutRounds );
   if( name == "intReoptimize" )
    return( intReoptimize );
   return( Solver::int_par_str2idx( name ) );
@@ -383,7 +392,7 @@ class BranchAndXSolver : public Solver {
   const override {
   static const std::string pars[] = { "intSolveMethod" ,
                                       "intThreadForDifferentSolvers" ,
-                                      "intReoptimize" };
+                                      "intCutRounds" , "intReoptimize" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -589,6 +598,8 @@ class BranchAndXSolver : public Solver {
  int maxThreadForSolvers;     ///< max threads for solvers at each node
 
  int maxThread;               ///< workers of the parallel tree exploration
+
+ int cutRounds;               ///< rounds of separation at each node
 
  int reoptimize;              ///< retain the tree to reoptimize (see
                               ///< intReoptimize / BestFirstSolve())

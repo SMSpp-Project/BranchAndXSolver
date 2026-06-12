@@ -44,6 +44,8 @@
 
 #include "BranchAndXSolver.h"
 
+#include "GroupChange.h"
+
 #include "Objective.h"
 
 /*--------------------------------------------------------------------------*/
@@ -276,6 +278,71 @@ static int computeHeuristicParallel(
  }
 
 /*--------------------------------------------------------------------------*/
+/// rounds of separation at the current node
+/** Runs up to \p rounds rounds of separation [see
+ * RelaxationSolver::separate()] at the current node: the returned
+ * tightening Changes are applied internally to all the :ChangeSolver and
+ * the relaxation is re-computed, which can only improve the node dual
+ * bound (possibly fencing or outright pruning the node, reported via
+ * \p toPrune). The undos of the applied tightenings are composed with the
+ * undo of the branching Change of the node (a GroupChange), so that the
+ * standard climb-the-tree discipline removes them when leaving the
+ * subtree. The root is never separated: its tightenings would outlive the
+ * solve inside the inner Solver. */
+
+static int separateLoop( Node * currentNode ,
+                         std::list< ChangeSolver * > & solvers ,
+                         std::vector< RelaxationSolver * > * relaxation ,
+                         const bool minimizing , double & bestBound ,
+                         Solution * & bestSol , bool & toPrune ,
+                         RelaxationSolver * & branchSolver , int rounds ,
+                         double relAcc , double absAcc ,
+                         std::mutex * incumbentMutex = nullptr )
+{
+ if( ( rounds <= 0 ) || ( ! currentNode->get_toFather() ) ||
+     ( ! branchSolver ) )
+  return( Solver::kOK );
+
+ std::list< Change * > undos;
+ int res = Solver::kOK;
+
+ for( int r = 0 ; r < rounds ; ++r ) {
+  auto cuts = branchSolver->separate( bestBound );
+  if( cuts.empty() )
+   break;
+
+  for( auto cut : cuts ) {
+   Change * undo = nullptr;
+   for( auto s : solvers )
+    if( ! undo )
+     undo = s->apply( cut , true );
+    else
+     s->apply( cut , false );
+   if( undo )
+    undos.push_front( undo );
+   delete cut;                 // the tightening Change has been consumed
+   }
+
+  res = computeRelaxations( relaxation , currentNode , minimizing ,
+                            bestBound , bestSol , toPrune , branchSolver ,
+                            relAcc , absAcc , incumbentMutex );
+  if( ( res != ThinComputeInterface::kOK ) || toPrune )
+   break;
+  }
+
+ if( ! undos.empty() ) {       // compose the undos with the branching one
+  auto grp = new GroupChange();
+  for( auto u : undos )
+   grp->add( u );
+  grp->add( currentNode->get_toFather() );
+  currentNode->set_toFather( grp );
+  }
+
+ return( res );
+
+ }  // end( separateLoop )
+
+/*--------------------------------------------------------------------------*/
 /// evaluate the root node and produce its branching list
 
 static int initializeRoot(
@@ -424,6 +491,10 @@ int BranchAndXSolver::DFSSolve( std::mutex & globalMutex ,
                                   minimizing , bestBound , bestSolution ,
                                   toPrune , globalMutex ,
                                   maxThreadForSolvers );
+ if( ( res == ThinComputeInterface::kOK ) && ( ! toPrune ) )
+  res = separateLoop( currentNode , solvers , &f_RelaxationSolvers ,
+                      minimizing , bestBound , bestSolution , toPrune ,
+                      branchSolver , cutRounds , relTol , absTol );
  if( res != ThinComputeInterface::kOK )
   return( res );
  if( toPrune ) {
@@ -640,6 +711,10 @@ int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
     if( ! toPrune ) {
      res = computeHeuristic( &f_HeuristicSolvers , new_node , minimizing ,
                              bestBound , bestSolution , toPrune );
+     if( res == Solver::kOK && ! toPrune )
+      res = separateLoop( new_node , *solvers , &f_RelaxationSolvers ,
+                          minimizing , bestBound , bestSolution , toPrune ,
+                          branchSolver , cutRounds , relTol , absTol );
      if( res != Solver::kOK ) {
       cleanupAll( rootNode , pq , solvers );
       return( res );
@@ -800,6 +875,10 @@ int BranchAndXSolver::BFSSolve( std::mutex & globalMutex )
     if( ! toPrune ) {
      res = computeHeuristic( &f_HeuristicSolvers , new_node , minimizing ,
                              bestBound , bestSolution , toPrune );
+     if( res == Solver::kOK && ! toPrune )
+      res = separateLoop( new_node , *solvers , &f_RelaxationSolvers ,
+                          minimizing , bestBound , bestSolution , toPrune ,
+                          nodeBranchSolver , cutRounds , relTol , absTol );
      if( res != Solver::kOK )
       return( res );
      }
@@ -886,6 +965,10 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  if( ! toPrune ) {
   res = computeHeuristic( &heuristic , currentNode , minimizing , bestBound ,
                           bestSolution , toPrune , &incumbentMutex );
+  if( ( res == ThinComputeInterface::kOK ) && ( ! toPrune ) )
+   res = separateLoop( currentNode , solvers , &relaxation , minimizing ,
+                       bestBound , bestSolution , toPrune , branchSolver ,
+                       cutRounds , relTol , absTol , &incumbentMutex );
   if( res != ThinComputeInterface::kOK )
    return( res );
   }
