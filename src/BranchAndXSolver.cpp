@@ -8,9 +8,7 @@
  * RelaxationSolver(s) provide dual bounds, true solutions and the branching
  * Changes, the attached heuristic ChangeSolver(s) further primal bounds,
  * and the enumeration tree is navigated by applying (undo) Changes to the
- * Solver. Bound, cut, reoptimization and parallel exploration are
- * implemented; pricing is the remaining work in progress - see the
- * file-level comment of BranchAndXSolver.h.
+ * Solver. See the file-level comment of BranchAndXSolver.h for an overview.
  *
  * \author Antonio Frangioni \n
  *         Dipartimento di Informatica \n
@@ -146,8 +144,8 @@ static void moveSolverToFather( Node * currentNode ,
 /*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
- * dual bound, the branching solver, and - when a true solution improves it
- * - the incumbent bestBound / bestSol; sets \p toPrune when the node can
+ * dual bound, the branching solver, and, when a true solution improves it,
+ * the incumbent bestBound / bestSol; sets \p toPrune when the node can
  * be discarded.
  *  @return the sol_type [see Solver.h] of the computation */
 
@@ -283,8 +281,8 @@ static void computeAllParallel( const std::vector< SolverPtr > & slvrs ,
 /// parallel version of computeRelaxations()
 /** Computes every RelaxationSolver at the current node in parallel (only the
  * compute() is parallel, see computeAllParallel()), then reduces the results
- * with EXACTLY the serial logic of computeRelaxations() - same order of the
- * incumbent updates, same dual bound, same pruning - so that the outcome is
+ * with EXACTLY the serial logic of computeRelaxations(), same order of the
+ * incumbent updates, same dual bound, same pruning, so that the outcome is
  * bit-identical to the serial path, only faster when several (expensive)
  * relaxations are attached. */
 

@@ -23,6 +23,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SMS++ core (BnXSolver branch), where they belong
 
 - the R3-Block-per-node prototype of the original BranchAndXSolver is
-  superseded (kept in the repository history as the reference design for
-  the fully-independent-subtrees parallel exploration)
+  superseded
 

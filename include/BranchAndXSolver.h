@@ -18,16 +18,12 @@
  *
  * The solver is generic ("X" is for Bound / Cut / Price): nothing in here
  * depends on the specific :Block being solved, all the problem-specific
- * knowledge lives in the attached :ChangeSolver. Bound, cut (see
- * separate()), reoptimization (see intReoptimize /
- * process_outstanding_Modification()) and parallel exploration - both at the
- * tree level (see ParallelDFSSolve()) and across the solvers of a single node
- * (see intThreadForDifferentSolvers) - are implemented; PRICING is the
- * remaining WORK IN PROGRESS [see RelaxationSolver::separate()]. For the
- * parallel exploration a complementary design has also been explored where
- * each node carries its own R3 copy of the Block (so that subtrees become
- * fully independent and embarrassingly parallel, at the price of one Block
- * per node): see the repository history for the prototype.
+ * knowledge lives in the attached :ChangeSolver, which provides the dual
+ * bounds, the branching Changes and the cuts (see separate()). The tree is
+ * explored serially or in parallel, both at the tree level (see
+ * ParallelDFSSolve()) and across the solvers of a single node (see
+ * intThreadForDifferentSolvers), and can be retained across re-solves for
+ * reoptimization (see intReoptimize).
  *
  * \author Antonio Frangioni \n
  *         Dipartimento di Informatica \n
@@ -536,8 +532,8 @@ class BranchAndXSolver : public Solver {
  /** Parallel version of DFSSolve(), used when the inherited intMaxThread
   * parameter is > 1: a serial, ordered (FIFO, i.e., discovery order)
   * ramp-up expands the tree BestFS-style until enough open subtrees exist,
-  * then \p K workers - each driving its own private set of inner Solver
-  * [see createWorkerSolvers()] - repeatedly claim the OLDEST open subtree
+  * then \p K workers, each driving its own private set of inner Solver
+  * [see createWorkerSolvers()], repeatedly claim the OLDEST open subtree
   * (preserving the sequential search order, which is what keeps parallel
   * performance replicable) and explore it depth-first, sharing only the
   * incumbent (under mutex) and the pool of open subtrees.
