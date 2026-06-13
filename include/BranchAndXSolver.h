@@ -18,14 +18,16 @@
  *
  * The solver is generic ("X" is for Bound / Cut / Price): nothing in here
  * depends on the specific :Block being solved, all the problem-specific
- * knowledge lives in the attached :ChangeSolver. WARNING: WORK IN PROGRESS:
- * cuts and pricing, the reoptimization machinery (see
- * process_outstanding_Modification()) and the parallel exploration are
- * sketched but not implemented yet. For the parallel exploration a
- * complementary design has also been explored where each node carries its
- * own R3 copy of the Block (so that subtrees become fully independent and
- * embarrassingly parallel, at the price of one Block per node): see the
- * repository history for the prototype.
+ * knowledge lives in the attached :ChangeSolver. Bound, cut (see
+ * separate()), reoptimization (see intReoptimize /
+ * process_outstanding_Modification()) and parallel exploration - both at the
+ * tree level (see ParallelDFSSolve()) and across the solvers of a single node
+ * (see intThreadForDifferentSolvers) - are implemented; PRICING is the
+ * remaining WORK IN PROGRESS [see RelaxationSolver::separate()]. For the
+ * parallel exploration a complementary design has also been explored where
+ * each node carries its own R3 copy of the Block (so that subtrees become
+ * fully independent and embarrassingly parallel, at the price of one Block
+ * per node): see the repository history for the prototype.
  *
  * \author Antonio Frangioni \n
  *         Dipartimento di Informatica \n
@@ -218,7 +220,12 @@ class BranchAndXSolver : public Solver {
   * - intSolveMethod [BestFS]: how to explore the tree (see SolveMethod);
   *
   * - intThreadForDifferentSolvers [1]: maximum number of threads used to
-  *   run the inner Solver at each node (NOT implemented yet).
+  *   evaluate the (multiple) inner Solver at each node in parallel [see
+  *   computeRelaxationsParallel() / computeHeuristicParallel()]; 1 = serial.
+  *   It only pays when several (expensive) relaxations / heuristics are
+  *   attached: their compute() is run concurrently and the results reduced
+  *   exactly as in the serial path. Active in all the (serial-tree)
+  *   explorations: depth-, breadth- and best-first.
   *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
