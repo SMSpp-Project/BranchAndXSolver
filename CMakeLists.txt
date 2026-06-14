@@ -20,7 +20,7 @@ cmake_policy(VERSION 3.15)
 project(BranchAndXSolver
         VERSION 0.1.0
         DESCRIPTION "SMS++ BranchAndXSolver module"
-        HOMEPAGE_URL https://gitlab.com/smspp/BranchAndXSolver
+        HOMEPAGE_URL https://gitlab.com/smspp/branchandxsolver
         LANGUAGES CXX)
 
 # These variables make the code harder to read but easier to change.
