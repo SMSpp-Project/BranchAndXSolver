@@ -12,14 +12,16 @@
  * and the branching Changes, and the attached heuristic ChangeSolver(s), if
  * any, provide further primal bounds. The tree can be explored depth-first,
  * breadth-first or best-first (see intSolveMethod); nodes are pruned by the
- * standard inherited tolerances (dblRelAcc / dblAbsAcc), and the inherited
- * intMaxIter / dblMaxTime bound the number of explored nodes and the total
+ * standard inherited tolerances (dblRelAcc / dblAbsAcc), and intMaxNodes /
+ * the inherited dblMaxTime bound the number of explored nodes and the total
  * time.
  *
  * The solver is generic ("X" is for Bound / Cut / Price): nothing in here
  * depends on the specific :Block being solved, all the problem-specific
  * knowledge lives in the attached :ChangeSolver, which provides the dual
- * bounds, the branching Changes and the cuts (see separate()). The tree is
+ * bounds and the branching Changes (any tightening it does --- preprocessing,
+ * reduced-cost fixing, cuts --- it does on its own terms, reading the search-
+ * global data through a GlobalInformation [see ChangeSolver.h]). The tree is
  * explored serially or in parallel, both at the tree level (see
  * ParallelDFSSolve()) and across the solvers of a single node (see
  * intThreadForDifferentSolvers), and can be retained across re-solves for
@@ -80,6 +82,7 @@ namespace SMSpp_di_unipi_it
  class Node;            // forward declaration of Node
  class DFSNode;         // forward declaration of DFSNode
  class ExploringNode;   // forward declaration of ExploringNode
+ class OpenList;        // forward declaration of OpenList
 
 /*--------------------------------------------------------------------------*/
 /*---------------------- CLASS BranchAndXSolver ------------------------*/
@@ -113,7 +116,6 @@ class BranchAndXSolver : public Solver {
  enum int_par_type_BXS {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
-  intCutRounds ,                    ///< rounds of separation at each node
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it the (BestFS, serial) exploration keeps the tree and its fenced
    * frontier alive across compute() calls, and a re-solve under class 1-3
@@ -125,6 +127,7 @@ class BranchAndXSolver : public Solver {
    * cheap relaxations re-evaluating the frontier may cost as much as
    * solving from scratch; it is off by default, also because retaining
    * the tree can use a lot of memory. */
+  intMaxNodes ,                     ///< max number of nodes to explore
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -156,14 +159,17 @@ class BranchAndXSolver : public Solver {
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
                       bestBound( 0 ) , bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
-                      maxThread( 0 ) , cutRounds( 0 ) ,
-                      reoptimize( 0 ) ,
-                      f_treeRoot( nullptr ) ,
+                      maxThread( 0 ) , reoptimize( 0 ) ,
+                      maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) , changes( 4 ) ,
                       subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() {}
+                      integerNodes() {
+  // the relaxations read the incumbent (for reduced-cost fixing and the like)
+  // through the global information, kept bound to the live best-bound cell
+  f_globalInfo.bind_incumbent( &bestBound );
+  }
 
 /*--------------------------------------------------------------------------*/
  /// constructor taking the inner Solver and the Block directly
@@ -223,12 +229,16 @@ class BranchAndXSolver : public Solver {
   *   exactly as in the serial path. Active in all the (serial-tree)
   *   explorations: depth-, breadth- and best-first.
   *
+  * - intMaxNodes [no limit]: the budget of tree nodes a solve may explore;
+  *   <= 0 means no limit. It is the enumerative counterpart of the inherited
+  *   intMaxIter (a node is not an iteration: a node may take several inner
+  *   iterations), which is left to the inner Solvers.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
-  * base Solver classes do not store it, so it is stored here]. The
-  * inherited intMaxIter bounds the number of explored nodes, and the
-  * inherited dblMaxTime / dblRelAcc / dblAbsAcc respectively bound the
-  * total solve time and set the optimality tolerances of the pruning. */
+  * base Solver classes do not store it, so it is stored here]. The inherited
+  * dblMaxTime / dblRelAcc / dblAbsAcc respectively bound the total solve time
+  * and set the optimality tolerances of the pruning. */
 
  void set_par( idx_type par , int value ) override {
   switch( par ) {
@@ -244,11 +254,11 @@ class BranchAndXSolver : public Solver {
             "intThreadForDifferentSolvers must be positive" ) );
     maxThreadForSolvers = value;
     break;
-   case( intCutRounds ):
-    cutRounds = std::max( 0 , value );
-    break;
    case( intReoptimize ):
     reoptimize = value;
+    break;
+   case( intMaxNodes ):
+    maxNodes = ( value <= 0 ) ? INT_MAX : value;
     break;
    default:
     Solver::set_par( par , value );
@@ -332,8 +342,8 @@ class BranchAndXSolver : public Solver {
   switch( par ) {
    case( intSolveMethod ):               return( int( BestFS ) );
    case( intThreadForDifferentSolvers ): return( 1 );
-   case( intCutRounds ):                 return( 0 );
    case( intReoptimize ):                return( 0 );
+   case( intMaxNodes ):                  return( INT_MAX );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -354,8 +364,8 @@ class BranchAndXSolver : public Solver {
    case( intSolveMethod ):               return( int( solveType ) );
    case( intMaxThread ):                 return( maxThread );
    case( intThreadForDifferentSolvers ): return( maxThreadForSolvers );
-   case( intCutRounds ):                 return( cutRounds );
    case( intReoptimize ):                return( reoptimize );
+   case( intMaxNodes ):                  return( maxNodes );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -375,10 +385,10 @@ class BranchAndXSolver : public Solver {
    return( intSolveMethod );
   if( name == "intThreadForDifferentSolvers" )
    return( intThreadForDifferentSolvers );
-  if( name == "intCutRounds" )
-   return( intCutRounds );
   if( name == "intReoptimize" )
    return( intReoptimize );
+  if( name == "intMaxNodes" )
+   return( intMaxNodes );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -395,7 +405,7 @@ class BranchAndXSolver : public Solver {
   const override {
   static const std::string pars[] = { "intSolveMethod" ,
                                       "intThreadForDifferentSolvers" ,
-                                      "intCutRounds" , "intReoptimize" };
+                                      "intReoptimize" , "intMaxNodes" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -481,8 +491,10 @@ class BranchAndXSolver : public Solver {
      slvr->set_ComputeConfig( cfg );
     slvr->set_Block( f_Block );
     v_created.push_back( slvr );    // owned like the serial ones
-    if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) )
+    if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
+     rs->set_global_information( &f_globalInfo );
      ws.relaxation.push_back( rs );
+     }
     else if( auto hs = dynamic_cast< ChangeSolver * >( slvr ) )
      ws.heuristic.push_back( hs );
     else
@@ -506,8 +518,10 @@ class BranchAndXSolver : public Solver {
     slvr->set_ComputeConfig( cfg );
    slvr->set_Block( f_Block );
    v_created.push_back( slvr );
-   if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) )
+   if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
+    rs->set_global_information( &f_globalInfo );
     f_RelaxationSolvers.push_back( rs );
+    }
    else if( auto hs = dynamic_cast< ChangeSolver * >( slvr ) )
     f_HeuristicSolvers.push_back( hs );
    else
@@ -518,18 +532,8 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
- /// solve the tree depth-first (by recursion), starting at currentNode
- /** @param globalMutex mutex protecting the shared state of this class
-  *  @param currentNode the node to be explored
-  *  @param nameCounter counter used to name the newly created nodes
-  *  @return the sol_type [see Solver.h] of the computation */
-
- int DFSSolve( std::mutex & globalMutex , DFSNode * currentNode ,
-               int & nameCounter );
-
-/*--------------------------------------------------------------------------*/
  /// parallel depth-first exploration with \p K workers
- /** Parallel version of DFSSolve(), used when the inherited intMaxThread
+ /** Parallel depth-first exploration, used when the inherited intMaxThread
   * parameter is > 1: a serial, ordered (FIFO, i.e., discovery order)
   * ramp-up expands the tree BestFS-style until enough open subtrees exist,
   * then \p K workers, each driving its own private set of inner Solver
@@ -556,8 +560,8 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// the depth-first subtree exploration of one worker
- /** The recursive core of one worker of ParallelDFSSolve(): same protocol
-  * as DFSSolve(), but on the worker's own Solver set, with the shared
+ /** The recursive core of one worker of ParallelDFSSolve(): a depth-first
+  * exploration on the worker's own Solver set, with the shared
   * incumbent updated under \p incumbentMutex, a shared atomic node budget
   * and a wall-clock deadline. */
 
@@ -577,11 +581,45 @@ class BranchAndXSolver : public Solver {
  int BFSSolve( std::mutex & globalMutex );
 
 /*--------------------------------------------------------------------------*/
+ /// solve the tree depth-first
+ /** Depth-first exploration: the same explore() loop as the breadth- and
+  * best-first ones, only with a LIFO stack as the open set, over the common
+  * ExploringNode tree.
+  *  @param globalMutex mutex protecting the shared state of this class
+  *  @return the sol_type [see Solver.h] of the computation */
+
+ int DFSSolve( std::mutex & globalMutex );
+
+/*--------------------------------------------------------------------------*/
  /// solve the tree best-first
  /** @param globalMutex mutex protecting the shared state of this class
   *  @return the sol_type [see Solver.h] of the computation */
 
  int BestFirstSolve( std::mutex & globalMutex );
+
+/*--------------------------------------------------------------------------*/
+ /// the single serial tree exploration, driven by the open-list discipline
+ /** The one exploration loop shared by every (serial) strategy: it
+  * repeatedly takes the next node from \p open [see OpenList], moves the
+  * :ChangeSolver to it, evaluates and branches it, and pushes the surviving
+  * children back into \p open; the discipline of \p open (stack / queue /
+  * priority) is what makes it a depth- / breadth- / best-first search.
+  * \p currentNode is where the :ChangeSolver currently sits (the root, or
+  * the last re-seeded node in a reoptimization), \p retain keeps the tree
+  * and its fenced frontier alive for a later reoptimization [see
+  * intReoptimize]. */
+
+ int explore( OpenList & open , std::mutex & globalMutex ,
+              std::list< ChangeSolver * > * solvers , bool minimizing ,
+              int & counter , ExploringNode * rootNode ,
+              ExploringNode * currentNode , bool retain ,
+              std::chrono::high_resolution_clock::time_point start );
+
+/*--------------------------------------------------------------------------*/
+ /// tear down a retained / in-progress tree and its open set and frontier
+
+ void discardTree( ExploringNode * root , OpenList & open ,
+                   std::list< ChangeSolver * > * solvers );
 
 /*--------------------------------------------------------------------------*/
  /// process the outstanding Modification
@@ -602,16 +640,20 @@ class BranchAndXSolver : public Solver {
 
  int maxThread;               ///< workers of the parallel tree exploration
 
- int cutRounds;               ///< rounds of separation at each node
-
  int reoptimize;              ///< retain the tree to reoptimize (see
                               ///< intReoptimize / BestFirstSolve())
+
+ int maxNodes;                ///< node budget of a solve (see intMaxNodes)
+
+ /// the search-global information shared with the relaxations (incumbent,
+ /// global cuts/columns); its incumbent is bound to the live bestBound
+ GlobalInformation f_globalInfo;
 
  /// the root of the tree retained for reoptimization, nullptr if none
  ExploringNode * f_treeRoot;
 
- /// residual node budget of the current solve (from the inherited
- /// intMaxIter), consumed by the exploration
+ /// residual node budget of the current solve (from intMaxNodes), consumed
+ /// by the exploration
  int nodeBudget;
 
  /// residual time budget of the current solve (from the inherited
@@ -682,7 +724,8 @@ class Node {
 
  Node( Change * change , int nodeName = 0 )
   : dual_bound( - Inf< double >() ) , f_change( change ) ,
-    toFather( nullptr ) , branches() , name( nodeName ) {}
+    toFather( nullptr ) , branches() , f_infeasible( false ) ,
+    name( nodeName ) {}
 
 /*--------------------------------------------------------------------------*/
  /// destructor: deletes the owned Changes
@@ -717,7 +760,14 @@ class Node {
  /// initialize the dual bound to the appropriate infinity
  void initializeBound( bool minimizing ) {
   dual_bound = minimizing ? - Inf< double >() : Inf< double >();
+  f_infeasible = false;
   }
+
+ /// whether the node was found infeasible (its relaxation has no solution)
+ bool is_infeasible( void ) const { return( f_infeasible ); }
+
+ /// record that the node is infeasible
+ void set_infeasible( bool i ) { f_infeasible = i; }
 
  /// have the given RelaxationSolver produce the branching Changes
  void obtainBranchList( RelaxationSolver * solver ) {
@@ -741,6 +791,8 @@ class Node {
 
  /// the Changes to reach each child from this node
  std::vector< Change * > branches;
+
+ bool f_infeasible;     ///< whether the node's relaxation has no solution
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- PRIVATE PART OF THE CLASS ------------------------*/
@@ -894,6 +946,42 @@ class ExploringNode : public Node {
 /*--------------------------------------------------------------------------*/
 
  };  // end( class( ExploringNode ) )
+
+/*--------------------------------------------------------------------------*/
+/*------------------------------ CLASS OpenList ----------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the set of open nodes of an exploration, abstracted over its discipline
+/** The frontier of open nodes that a tree exploration keeps and picks the
+ * next node from. Abstracting the discipline (which node comes next) behind
+ * this interface lets a single exploration loop [see
+ * BranchAndXSolver::explore()] serve every strategy: a LIFO stack gives
+ * depth-first, a FIFO queue gives breadth-first, a priority queue ordered by
+ * dual bound gives best-first. A new strategy is just a new OpenList. */
+
+class OpenList {
+
+ public:
+
+ virtual ~OpenList() = default;
+
+ /// whether there are no open nodes left
+ [[nodiscard]] virtual bool empty( void ) const = 0;
+
+ /// add a node to the open set
+ virtual void push( ExploringNode * node ) = 0;
+
+ /// remove and return the next node to explore
+ virtual ExploringNode * pop( void ) = 0;
+
+ /// whether the discipline is last-in first-out (a stack)
+ /** Tells the exploration how to order a node's freshly generated children
+  * in the open set so that the most promising one [the first returned by
+  * RelaxationSolver::branch()] is explored first: a LIFO stack must receive
+  * them in reverse, the other disciplines in branching order. */
+
+ [[nodiscard]] virtual bool isLIFO( void ) const { return( false ); }
+
+ };  // end( class( OpenList ) )
 
 /*--------------------------------------------------------------------------*/
 
