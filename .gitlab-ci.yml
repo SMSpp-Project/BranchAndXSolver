@@ -1,0 +1,70 @@
+default:
+  image: registry.gitlab.com/smspp/smspp-project
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - smspp-project
+
+stages:
+  - build
+  - test
+  - deploy
+
+# NOTE: BranchAndXSolver is not yet integrated into the umbrella build and
+# depends on the BnXSolver branch of the SMS++ core, so build/test/deploy are
+# expected to fail for now -> allow_failure: true.
+build:
+  stage: build
+  allow_failure: true
+  script:
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SMSPP_DEPLOY_KEY")
+    - mkdir -p ~/.ssh && ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+    - if [ -d smspp-project ]; then (cd smspp-project && git pull); else git clone --branch develop git@gitlab.com:smspp/smspp-project.git; fi
+    - cmake -S smspp-project -B smspp-project/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_BranchAndXSolver=ON
+    - cmake --build smspp-project/build --target install
+  artifacts:
+    paths:
+      - smspp-project/build
+  only:
+    refs:
+      - develop
+      - tags
+    changes:
+      - cmake/*
+      - include/*
+      - src/*
+      - test/*
+      - tools/*
+      - CMakeLists.txt
+
+test:
+  stage: test
+  allow_failure: true
+  script:
+    - ctest -V -C Release --test-dir smspp-project/build
+  only:
+    refs:
+      - develop
+      - tags
+    changes:
+      - cmake/*
+      - include/*
+      - src/*
+      - test/*
+      - tools/*
+      - CMakeLists.txt
+
+deploy:
+  stage: deploy
+  allow_failure: true
+  script:
+    - cd smspp-project/build && cpack -G "TGZ;ZIP;TBZ2"
+  artifacts:
+    paths:
+      - smspp-project/build/*.tar.gz
+      - smspp-project/build/*.tar.bz2
+      - smspp-project/build/*.zip
+  only:
+    - tags

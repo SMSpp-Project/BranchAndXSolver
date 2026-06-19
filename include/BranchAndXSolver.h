@@ -31,10 +31,6 @@
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
  *
- * \author Federica Di Pasquale \n
- *         Dipartimento di Informatica \n
- *         Universita' di Pisa \n
- *
  * \author Filippo Magi \n
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
@@ -43,8 +39,7 @@
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
  *
- * Copyright &copy by Antonio Frangioni, Federica Di Pasquale, Filippo Magi,
- * Donato Meoli
+ * \copyright &copy; by Antonio Frangioni, Filippo Magi, Donato Meoli
  */
 /*--------------------------------------------------------------------------*/
 /*----------------------------- DEFINITIONS --------------------------------*/
