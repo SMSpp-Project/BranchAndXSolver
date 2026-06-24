@@ -38,6 +38,7 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <memory>
 #include <stack>
 #include <thread>
 #include <functional>
@@ -143,11 +144,20 @@ static void moveSolverToFather( Node * currentNode ,
  }
 
 /*--------------------------------------------------------------------------*/
+// runs every Solver's compute() concurrently [defined below]; used by the
+// parallel evaluation path of computeRelaxations() / computeHeuristic()
+template< typename SolverPtr >
+static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
+                                std::vector< int > & zs , int maxThreads );
+
+/*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
  * dual bound, the branching solver, and, when a true solution improves it,
  * the incumbent bestBound / bestSol; sets \p toPrune when the node can
- * be discarded.
+ * be discarded. With \p nThreads > 1 (and no shared incumbent lock) the
+ * several relaxations are computed concurrently, bit-identically to the serial
+ * reduction [see computeAllParallel()].
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeRelaxations(
@@ -156,8 +166,50 @@ static int computeRelaxations(
                   double & bestBound , Solution * & bestSol ,
                   bool & toPrune , RelaxationSolver * & branchSolver ,
                   double relAcc = 0 , double absAcc = 0 ,
-                  std::mutex * incumbentMutex = nullptr )
+                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
+ // parallel evaluation of the (several) relaxations of this node: only when more
+ // than one thread is asked, there are at least two solvers, and no shared
+ // incumbent lock is in force (a parallel-tree worker evaluates its per-node
+ // solvers serially); the reduction is bit-identical to the serial path below
+ if( ( nThreads > 1 ) && ( f_RelaxationSolvers->size() > 1 ) &&
+     ( ! incumbentMutex ) ) {
+  const std::size_t n = f_RelaxationSolvers->size();
+  std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
+  if( computeAllParallel( *f_RelaxationSolvers , zs , nThreads ) ) {
+   if( ! currentNode->get_toFather() )    // the root is infeasible
+    return( Solver::kInfeasible );
+   toPrune = true;
+   currentNode->set_infeasible( true );
+   return( Solver::kOK );
+   }
+  for( std::size_t i = 0 ; i < n ; ++i ) {
+   auto s = (*f_RelaxationSolvers)[ i ];
+   if( zs[ i ] != ThinComputeInterface::kOK )
+    return( zs[ i ] );
+   if( s->has_true_var_solution() ) {
+    double primal_bound = minimizing ? s->get_true_ub() : s->get_true_lb();
+    if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
+     bestBound = primal_bound;
+     delete bestSol;
+     bestSol = s->get_true_solution();
+     }
+    }
+   auto dualBound = minimizing ? s->get_lb() : s->get_ub();
+   if( cannot_improve( dualBound , bestBound , minimizing , relAcc , absAcc ) ) {
+    toPrune = true;
+    return( Solver::kOK );
+    }
+   if( minimizing ? dualBound > currentNode->get_dual_bound()
+                  : dualBound < currentNode->get_dual_bound() ) {
+    currentNode->set_dual_bound( dualBound );
+    branchSolver = s;
+    }
+   }
+  return( Solver::kOK );
+  }
+
+ // serial evaluation
  for( auto s : *f_RelaxationSolvers ) {
   auto z = s->compute();
   if( z == Solver::kInfeasible ) {
@@ -214,8 +266,37 @@ static int computeHeuristic(
                   std::vector< ChangeSolver * > * f_HeuristicSolvers ,
                   Node * currentNode , const bool minimizing ,
                   double & bestBound , Solution * & bestSol , bool & toPrune ,
-                  std::mutex * incumbentMutex = nullptr )
+                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
+ // parallel evaluation of the (several) heuristics of this node, bit-identical
+ // to the serial path below [see computeRelaxations()]
+ if( ( nThreads > 1 ) && ( f_HeuristicSolvers->size() > 1 ) &&
+     ( ! incumbentMutex ) ) {
+  const std::size_t n = f_HeuristicSolvers->size();
+  std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
+  if( computeAllParallel( *f_HeuristicSolvers , zs , nThreads ) ) {
+   if( ! currentNode->get_toFather() )    // the root is infeasible
+    return( Solver::kInfeasible );
+   toPrune = true;
+   return( Solver::kOK );
+   }
+  for( std::size_t i = 0 ; i < n ; ++i ) {
+   auto s = (*f_HeuristicSolvers)[ i ];
+   if( zs[ i ] != ThinComputeInterface::kOK )
+    return( zs[ i ] );
+   double primal_bound = minimizing ? s->get_ub() : s->get_lb();
+   if( s->has_var_solution() && s->is_var_feasible() &&
+       ( minimizing ? primal_bound < bestBound
+                    : primal_bound > bestBound ) ) {
+    bestBound = primal_bound;
+    delete bestSol;
+    bestSol = s->get_Solution();
+    }
+   }
+  return( Solver::kOK );
+  }
+
+ // serial evaluation
  for( auto s : *f_HeuristicSolvers ) {
   auto z = s->compute();
   if( z == Solver::kInfeasible ) {
@@ -290,160 +371,6 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
  }
 
 /*--------------------------------------------------------------------------*/
-/// parallel version of computeRelaxations()
-/** Computes every RelaxationSolver at the current node in parallel (only the
- * compute() is parallel, see computeAllParallel()), then reduces the results
- * with EXACTLY the serial logic of computeRelaxations(), same order of the
- * incumbent updates, same dual bound, same pruning, so that the outcome is
- * bit-identical to the serial path, only faster when several (expensive)
- * relaxations are attached. */
-
-static int computeRelaxationsParallel(
-                  std::vector< RelaxationSolver * > * f_RelaxationSolvers ,
-                  Node * currentNode , const bool minimizing ,
-                  double & bestBound , Solution * & bestSol , bool & toPrune ,
-                  RelaxationSolver * & branchSolver ,
-                  double relAcc , double absAcc ,
-                  std::mutex & globalMutex , int maxThreads )
-{
- const std::size_t n = f_RelaxationSolvers->size();
- if( n <= 1 )                  // nothing to parallelize
-  return( computeRelaxations( f_RelaxationSolvers , currentNode , minimizing ,
-                              bestBound , bestSol , toPrune , branchSolver ,
-                              relAcc , absAcc , nullptr ) );
-
- std::vector< int > zs( n , INT_MIN );      // INT_MIN: not computed (early stop)
- if( computeAllParallel( *f_RelaxationSolvers , zs , maxThreads ) ) {
-  // one relaxation proved the node infeasible: prune it, the others were
-  // skipped and their entries of zs are not to be read
-  if( ! currentNode->get_toFather() )       // the root is infeasible
-   return( Solver::kInfeasible );
-  toPrune = true;
-  currentNode->set_infeasible( true );
-  return( Solver::kOK );
-  }
-
- // no infeasibility: every relaxation was computed, reduce with EXACTLY the
- // serial logic of computeRelaxations() but reading the pre-computed codes
- for( std::size_t i = 0 ; i < n ; ++i ) {
-  auto s = (*f_RelaxationSolvers)[ i ];
-  const auto z = zs[ i ];
-  if( z != ThinComputeInterface::kOK )
-   return( z );
-
-  if( s->has_true_var_solution() ) {
-   double primal_bound = minimizing ? s->get_true_ub() : s->get_true_lb();
-   if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
-    bestBound = primal_bound;
-    delete bestSol;
-    bestSol = s->get_true_solution();
-    }
-   }
-
-  auto dualBound = minimizing ? s->get_lb() : s->get_ub();
-  if( cannot_improve( dualBound , bestBound , minimizing , relAcc ,
-                      absAcc ) ) {
-   toPrune = true;
-   return( Solver::kOK );
-   }
-  if( minimizing ? dualBound > currentNode->get_dual_bound()
-                 : dualBound < currentNode->get_dual_bound() ) {
-   currentNode->set_dual_bound( dualBound );
-   branchSolver = s;
-   }
-  }
- return( Solver::kOK );
- }
-
-/*--------------------------------------------------------------------------*/
-/// parallel version of computeHeuristic()
-/** Computes every heuristic ChangeSolver at the current node in parallel
- * (only the compute() is parallel), then reduces with the serial logic of
- * computeHeuristic(), bit-identical to the serial path. */
-
-static int computeHeuristicParallel(
-                  std::vector< ChangeSolver * > * f_HeuristicSolvers ,
-                  Node * currentNode , const bool minimizing ,
-                  double & bestBound , Solution * & bestSol , bool & toPrune ,
-                  std::mutex & globalMutex , int maxThreads )
-{
- const std::size_t n = f_HeuristicSolvers->size();
- if( n <= 1 )                  // nothing to parallelize
-  return( computeHeuristic( f_HeuristicSolvers , currentNode , minimizing ,
-                            bestBound , bestSol , toPrune ) );
-
- std::vector< int > zs( n , INT_MIN );      // INT_MIN: not computed (early stop)
- if( computeAllParallel( *f_HeuristicSolvers , zs , maxThreads ) ) {
-  // one heuristic proved the node infeasible: prune it, the others were
-  // skipped and their entries of zs are not to be read
-  if( ! currentNode->get_toFather() )       // the root is infeasible
-   return( Solver::kInfeasible );
-  toPrune = true;
-  return( Solver::kOK );
-  }
-
- for( std::size_t i = 0 ; i < n ; ++i ) {
-  auto s = (*f_HeuristicSolvers)[ i ];
-  const auto z = zs[ i ];
-  if( z != ThinComputeInterface::kOK )
-   return( z );
-
-  double primal_bound = minimizing ? s->get_ub() : s->get_lb();
-  if( s->has_var_solution() && s->is_var_feasible() &&
-      ( minimizing ? primal_bound < bestBound
-                   : primal_bound > bestBound ) ) {
-   bestBound = primal_bound;
-   delete bestSol;
-   bestSol = s->get_Solution();
-   }
-  }
- return( Solver::kOK );
- }
-
-/*--------------------------------------------------------------------------*/
-/// evaluate the node relaxations, serially or in parallel per \p nThreads
-/** Thin dispatcher used by every (serial-tree) exploration: with
- * \p nThreads <= 1 it calls computeRelaxations(), otherwise
- * computeRelaxationsParallel(); both give the same result [see the latter]. */
-
-static int evalRelaxations(
-                  int nThreads ,
-                  std::vector< RelaxationSolver * > * f_RelaxationSolvers ,
-                  Node * currentNode , const bool minimizing ,
-                  double & bestBound , Solution * & bestSol , bool & toPrune ,
-                  RelaxationSolver * & branchSolver , double relAcc ,
-                  double absAcc , std::mutex & globalMutex )
-{
- if( nThreads <= 1 )
-  return( computeRelaxations( f_RelaxationSolvers , currentNode , minimizing ,
-                              bestBound , bestSol , toPrune , branchSolver ,
-                              relAcc , absAcc , nullptr ) );
- return( computeRelaxationsParallel( f_RelaxationSolvers , currentNode ,
-                                     minimizing , bestBound , bestSol ,
-                                     toPrune , branchSolver , relAcc , absAcc ,
-                                     globalMutex , nThreads ) );
- }
-
-/*--------------------------------------------------------------------------*/
-/// evaluate the node heuristics, serially or in parallel per \p nThreads
-
-static int evalHeuristics(
-                  int nThreads ,
-                  std::vector< ChangeSolver * > * f_HeuristicSolvers ,
-                  Node * currentNode , const bool minimizing ,
-                  double & bestBound , Solution * & bestSol , bool & toPrune ,
-                  std::mutex & globalMutex )
-{
- if( nThreads <= 1 )
-  return( computeHeuristic( f_HeuristicSolvers , currentNode , minimizing ,
-                            bestBound , bestSol , toPrune ) );
- return( computeHeuristicParallel( f_HeuristicSolvers , currentNode ,
-                                   minimizing , bestBound , bestSol , toPrune ,
-                                   globalMutex , nThreads ) );
- }
-
-
-/*--------------------------------------------------------------------------*/
 /// evaluate the root node and produce its branching list
 
 static int initializeRoot(
@@ -495,28 +422,17 @@ static int evaluateNode(
  moveSolverToSon( node , &solvers );
  node->initializeBound( minimizing );
 
- // the per-node-solvers parallelism does not lock the incumbent, so a worker
- // of the parallel tree exploration (incumbentMutex set) runs the solvers
- // serially; otherwise nThreads decides
- int res;
- if( incumbentMutex || ( nThreads <= 1 ) )
-  res = computeRelaxations( relaxation , node , minimizing , bestBound ,
-                            bestSol , toPrune , branchSolver , relAcc ,
-                            absAcc , incumbentMutex );
- else
-  res = computeRelaxationsParallel( relaxation , node , minimizing , bestBound ,
-                                    bestSol , toPrune , branchSolver , relAcc ,
-                                    absAcc , globalMutex , nThreads );
+ // computeRelaxations() / computeHeuristic() dispatch internally on nThreads:
+ // a worker of the parallel tree exploration (incumbentMutex set) evaluates its
+ // per-node solvers serially, otherwise nThreads > 1 runs them in parallel
+ int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
+                               bestSol , toPrune , branchSolver , relAcc ,
+                               absAcc , nThreads , incumbentMutex );
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
- if( incumbentMutex || ( nThreads <= 1 ) )
-  res = computeHeuristic( heuristic , node , minimizing , bestBound , bestSol ,
-                          toPrune , incumbentMutex );
- else
-  res = computeHeuristicParallel( heuristic , node , minimizing , bestBound ,
-                                  bestSol , toPrune , globalMutex , nThreads );
- return( res );
+ return( computeHeuristic( heuristic , node , minimizing , bestBound , bestSol ,
+                           toPrune , nThreads , incumbentMutex ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -530,36 +446,132 @@ static int evaluateNode(
 
 namespace {
 
+/// LIFO open list: a std::stack, giving depth-first exploration
+
 class StackOpenList final : public OpenList {
- std::stack< ExploringNode * > c;
+
  public:
+
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
+
  void push( ExploringNode * node ) override { c.push( node ); }
- ExploringNode * pop( void ) override
-  { auto node = c.top(); c.pop(); return( node ); }
+
+ ExploringNode * pop( void ) override {
+  auto node = c.top();
+  c.pop();
+  return( node );
+  }
+
  [[nodiscard]] bool isLIFO( void ) const override { return( true ); }
- };
+
+ private:
+
+ std::stack< ExploringNode * > c;
+
+ };  // end( class( StackOpenList ) )
+
+/*--------------------------------------------------------------------------*/
+/// FIFO open list: a std::queue, giving breadth-first exploration
 
 class QueueOpenList final : public OpenList {
- std::queue< ExploringNode * > c;
+
  public:
+
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
+
  void push( ExploringNode * node ) override { c.push( node ); }
- ExploringNode * pop( void ) override
-  { auto node = c.front(); c.pop(); return( node ); }
- };
+
+ ExploringNode * pop( void ) override {
+  auto node = c.front();
+  c.pop();
+  return( node );
+  }
+
+ private:
+
+ std::queue< ExploringNode * > c;
+
+ };  // end( class( QueueOpenList ) )
+
+/*--------------------------------------------------------------------------*/
+/// dual-bound priority open list: a std::priority_queue, giving best-first
 
 class PriorityOpenList final : public OpenList {
+
  using Cmp = std::function< bool( ExploringNode * , ExploringNode * ) >;
+
+ public:
+
+ explicit PriorityOpenList( Cmp cmp ) : c( std::move( cmp ) ) {}
+
+ [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
+
+ void push( ExploringNode * node ) override { c.push( node ); }
+
+ ExploringNode * pop( void ) override {
+  auto node = c.top();
+  c.pop();
+  return( node );
+  }
+
+ private:
+
  std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
   c;
+
+ };  // end( class( PriorityOpenList ) )
+
+/*--------------------------------------------------------------------------*/
+/// best-first open list with depth-first dives
+/** The global frontier is a dual-bound priority queue, but once a node is taken
+ * the search dives straight into its most promising child down to a leaf,
+ * leaving the siblings to the global frontier. The dive reaches a complete
+ * (feasible) solution quickly, so the incumbent tightens early and the pruning
+ * bites sooner. The children of the just-expanded node arrive through push()
+ * before the next pop(): pop() routes the most promising of them onward
+ * (continuing the dive) and spills the rest to the priority queue; when no child
+ * arrives the dive has bottomed out and the next global best is taken. */
+
+class DiveOpenList final : public OpenList {
+
+ using Cmp = std::function< bool( ExploringNode * , ExploringNode * ) >;
+
  public:
- explicit PriorityOpenList( Cmp cmp ) : c( std::move( cmp ) ) {}
- [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
- void push( ExploringNode * node ) override { c.push( node ); }
- ExploringNode * pop( void ) override
-  { auto node = c.top(); c.pop(); return( node ); }
- };
+
+ explicit DiveOpenList( Cmp cmp ) : best( std::move( cmp ) ) {}
+
+ [[nodiscard]] bool empty( void ) const override {
+  return( best.empty() && children.empty() );
+  }
+
+ void push( ExploringNode * node ) override { children.push_back( node ); }
+
+ ExploringNode * pop( void ) override {
+  if( ! children.empty() ) {
+   // the loop is isLIFO(), so it pushed the children in reverse branching
+   // order: back() is the first (most promising) branch, the dive follows it
+   auto node = children.back();
+   children.pop_back();
+   for( auto sibling : children )
+    best.push( sibling );
+   children.clear();
+   return( node );
+   }
+  auto node = best.top();
+  best.pop();
+  return( node );
+  }
+
+ [[nodiscard]] bool isLIFO( void ) const override { return( true ); }
+
+ private:
+
+ std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
+  best;
+
+ std::vector< ExploringNode * > children;  // pushed since the last pop()
+
+ };  // end( class( DiveOpenList ) )
 
 }  // anonymous namespace
 
@@ -620,6 +632,7 @@ int BranchAndXSolver::compute( bool changedvars )
     f_state = BFSSolve( globalMutex );
     break;
    case( BestFS ):
+   case( BestFSDive ):
     f_state = BestFirstSolve( globalMutex );
     break;
    default:
@@ -824,11 +837,20 @@ int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
   return( minimizing ? a->get_dual_bound() > b->get_dual_bound()
                      : a->get_dual_bound() < b->get_dual_bound() );
   };
- PriorityOpenList open( cmp );
+ // plain best-first uses the dual-bound priority queue; the dive variant wraps
+ // it so that each best node is followed depth-first to a leaf [see
+ // DiveOpenList]
+ std::unique_ptr< OpenList > openPtr =
+  ( solveType == BestFSDive )
+  ? std::unique_ptr< OpenList >( new DiveOpenList( cmp ) )
+  : std::unique_ptr< OpenList >( new PriorityOpenList( cmp ) );
+ OpenList & open = *openPtr;
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
 
- const bool retain = ( reoptimize > 0 );
+ // the tree is retained for reoptimization only by plain best-first; the dive
+ // variant always solves from scratch
+ const bool retain = ( reoptimize > 0 ) && ( solveType == BestFS );
  int res;
  ExploringNode * currentNode;
  if( f_treeRoot ) {
@@ -867,13 +889,12 @@ int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
    F->initializeBound( minimizing );
    bool toPrune = false;
    RelaxationSolver * nodeBranchSolver = nullptr;
-   res = evalRelaxations( maxThreadForSolvers , &f_RelaxationSolvers , F ,
-                          minimizing , bestBound , bestSolution , toPrune ,
-                          nodeBranchSolver , relTol , absTol , globalMutex );
+   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
+                             bestSolution , toPrune , nodeBranchSolver ,
+                             relTol , absTol , maxThreadForSolvers );
    if( ( res == Solver::kOK ) && ( ! toPrune ) )
-    res = evalHeuristics( maxThreadForSolvers , &f_HeuristicSolvers , F ,
-                          minimizing , bestBound , bestSolution , toPrune ,
-                          globalMutex );
+    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
+                            bestSolution , toPrune , maxThreadForSolvers );
    if( res != Solver::kOK )
     break;
    if( ( ! toPrune ) &&
@@ -1199,11 +1220,11 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        int RV = computeRelaxations( &ws.relaxation , new_node , minimizing ,
                                     bestBound , bestSolution , toPrune ,
                                     nodeBranchSolver , relTol , absTol ,
-                                    &incumbentMutex );
+                                    1 , &incumbentMutex );
        if( RV == Solver::kOK && ! toPrune )
         RV = computeHeuristic( &ws.heuristic , new_node , minimizing ,
                                bestBound , bestSolution , toPrune ,
-                               &incumbentMutex );
+                               1 , &incumbentMutex );
        moveSolverToFather( new_node , &wsolvers );
        if( RV != Solver::kOK ) {
         delete new_node;

@@ -139,7 +139,8 @@ class BranchAndXSolver : public Solver {
  enum SolveMethod {
   DFS = 0 ,                         ///< depth-first search
   BFS = 1 ,                         ///< breadth-first search
-  BestFS = 2                        ///< best-first search
+  BestFS = 2 ,                      ///< best-first search
+  BestFSDive = 3                    ///< best-first search with depth-first dives
   };
 
 /** @} ---------------------------------------------------------------------*/
