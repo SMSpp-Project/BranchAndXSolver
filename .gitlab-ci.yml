@@ -52,7 +52,7 @@ test:
         export GRB_LICENSE_FILE=/tmp/gurobi.lic
       fi
   script:
-    - ctest -V -C Release --test-dir smspp-project/build
+    - ctest -V -C Release --test-dir smspp-project/build --no-tests=error
   only:
     refs:
       - develop
