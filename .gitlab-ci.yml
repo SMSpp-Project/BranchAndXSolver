@@ -22,7 +22,7 @@ build:
     - ssh-add <(echo "$SMSPP_DEPLOY_KEY")
     - mkdir -p ~/.ssh && ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
     - if [ -d smspp-project ]; then (cd smspp-project && git pull); else git clone --branch develop git@gitlab.com:smspp/smspp-project.git; fi
-    - cmake -S smspp-project -B smspp-project/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_BranchAndXSolver=ON
+    - cmake -S smspp-project -B smspp-project/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_BranchAndXSolver=ON
     - cmake --build smspp-project/build --target install
   artifacts:
     paths:
