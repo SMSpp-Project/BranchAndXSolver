@@ -234,7 +234,7 @@ namespace SMSpp_di_unipi_it
          *   explorations: depth-, breadth- and best-first.
          *
          * - intMaxNodes [no limit]: the budget of tree nodes a solve may explore;
-         *   <= 0 means no limit. It is the enumerative counterpart of the inherited
+         *   <= 0 or INT_MAX means no limit. It is the enumerative counterpart of the inherited
          *   intMaxIter (a node is not an iteration: a node may take several inner
          *   iterations), which is left to the inner Solvers.
          *
@@ -255,7 +255,7 @@ namespace SMSpp_di_unipi_it
                 boundingProtocol = static_cast<BoundingProtocol>(value);
                 break;
             case (intMaxThread):
-                maxThread = std::max(0, value);
+                maxThread = std::max(1, value);
                 break;
             case (intThreadForDifferentSolvers):
                 if (value <= 0)
@@ -648,6 +648,7 @@ namespace SMSpp_di_unipi_it
         {
             delete f_change;
             delete toFather;
+            // TODO capire se serve veramente
             for (auto ch : branches)
                 delete ch;
         }

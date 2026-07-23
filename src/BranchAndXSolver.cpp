@@ -269,27 +269,6 @@ int BranchAndXSolver::compute(bool changedvars)
                         ? -Inf<double>()
                         : Inf<double>();
         f_state = treeSolve(globalMutex);
-        /*switch (solveType)
-        { 		case (DFS):
-                    {
-                        if (const int K = get_int_par(intMaxThread); K > 1)
-                            f_state = ParallelDFSSolve(globalMutex, K);
-                        else
-                            f_state = DFSSolve(globalMutex);
-                        break;
-                    }
-                    case (BFS):
-                        f_state = BFSSolve(globalMutex);
-                        break;
-                    case (BestFS):
-                    case (BestFSDive):
-                        f_state = BestFirstSolve(globalMutex);
-                        break;
-                    default:
-                        throw(std::invalid_argument("BranchAndXSolver::compute: invalid "
-                                                    "intSolveMethod"));
-                    }
-        */
     }
     changes = 0;
     unlock();
@@ -316,7 +295,8 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                              std::chrono::high_resolution_clock::now() - start)
                              .count()))
     {
-        nodeBudget--;
+        if (nodeBudget != INT_MAX)
+            nodeBudget--;
         oldNode = currentNode;
         currentNode = open.pop();
         if (currentNode->get_parent()) // the root: the solvers are already there
@@ -325,18 +305,13 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
         if (this->boundingProtocol == Lazy)
         {
             bool toPrune = false;
-            /* 			res = evaluateNode(currentNode, *solvers, &f_RelaxationSolvers,
-                                           &f_HeuristicSolvers, minimizing, bestBound,
-                                           bestSolution, toPrune, branchSolver,
-                                           maxThreadForSolvers, globalMutex);
-             */
+
             res = computeRelaxations(&f_RelaxationSolvers, currentNode, minimizing,
                                      bestBound, bestSolution, toPrune, branchSolver,
                                      this //, maxThreadForSolvers, &globalMutex
             );
             if (res != Solver::kOK)
             {
-                // discardTree(rootNode, open, solvers);
                 return (res);
             }
             if (toPrune)
@@ -394,8 +369,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                         // the kept child now owns the branching Change as its f_change: null
                         // the entry so that ~Node does not double-delete it on teardown
                         // TODO controllare che l'idea sia giusta, che non mi pare che lo sia così tanto
-                        *(std::find(branches.begin(), branches.end(),
-                                    new_node->get_f_change())) = nullptr;
+                        *(std::find(branches.begin(), branches.end(), new_node->get_f_change())) = nullptr;
                         moveSolverToFather(new_node, solvers);
                         // kept.push_back(new_node); // pushed to the open set after the loop
                         open.push(new_node); // pushed to the open set after the loop
@@ -403,17 +377,8 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                     else
                     { // fenced or pruned child
                         moveSolverToFather(new_node, solvers);
-                        *(std::find(branches.begin(), branches.end(),
-                                    new_node->get_f_change())) = nullptr;
-                        /* 					if (retain)
-                                            { // it belongs to the fenced frontier:
-                                                currentNode->get_children().push_back(new_node);
-                                                if (new_node->is_infeasible())			 // infeasibility certificates survive
-                                                    infeasibleNodes.push_back(new_node); //  objective-only changes
-                                                else
-                                                    subOptimalNodes.push_back(new_node);
-                                            }
-                                            else */
+                        // TODO capire quanto possa essere costoso e come evitarlo
+                        *(std::find(branches.begin(), branches.end(), new_node->get_f_change())) = nullptr;
                         delete new_node;
                     }
                 }
@@ -423,41 +388,17 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                     open.push(new_node);
                 }
             }
-            // hand the surviving children to the open set so that the most promising
-            // (the first from branch()) is explored first whatever the discipline:
-            // a LIFO stack receives them in reverse, the others in branching order
-            /* 			if (open.isLIFO())
-                            for (auto it = kept.rbegin(); it != kept.rend(); ++it)
-                                open.push(*it);
-                        else
-                            for (auto n : kept)
-                                open.push(n); */
+
             branches.erase(std::remove(branches.begin(), branches.end(), nullptr), branches.end());
             if (currentNode->get_children().empty() && currentNode->get_toFather())
             {
-                /* 				if (retain)
-                                { // fathomed leaf: fenced frontier
-                                    subOptimalNodes.push_back(currentNode);
-                                    for (const auto s : *solvers)
-                                        s->apply(currentNode->get_toFather(), false);
-                                    currentNode = currentNode->get_parent();
-                                }
-                                else
-                 */
+
                 currentNode = ExploringNode::prune(currentNode, solvers);
             }
         }
         else if (currentNode->get_toFather())
         {
-            /* 			if (retain)
-                        { // fenced at pop: fenced frontier
-                            subOptimalNodes.push_back(currentNode);
-                            for (const auto s : *solvers)
-                                s->apply(currentNode->get_toFather(), false);
-                            currentNode = currentNode->get_parent();
-                        }
-                        else
-             */
+
             currentNode = ExploringNode::prune(currentNode, solvers);
         }
     }
@@ -501,7 +442,8 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
     //}
     delete solvers;
 
-    if (nodeBudget <= 0)
+    // consider also root node that don't decrease nodeBudget
+    if (nodeBudget <= 1)
         return (Solver::kStopIter);
     if (timeBudget <= std::chrono::duration<double>(
                           std::chrono::high_resolution_clock::now() - start)
@@ -575,17 +517,19 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
     RelaxationSolver *branchSolver = nullptr;
     // initialize variables
     rootNode->initializeBound(minimizing);
-    bool toPrune = false;
-    int res = computeRelaxations(&f_RelaxationSolvers, rootNode, minimizing,
-                                 bestBound, bestSolution, toPrune, branchSolver, this); // nThreads, &globalMutex);
-    if (toPrune || (res != ThinComputeInterface::kOK))
-        return (res);
-    res = computeHeuristic(&f_HeuristicSolvers, rootNode, minimizing,
-                           bestBound, bestSolution, toPrune);
-    if (toPrune || (res != ThinComputeInterface::kOK))
-        return (res);
-    rootNode->obtainBranchList(branchSolver);
-    // finish init variable
+    if (boundingProtocol == Eager)
+    {
+        bool toPrune = false;
+        int res = computeRelaxations(&f_RelaxationSolvers, rootNode, minimizing,
+                                     bestBound, bestSolution, toPrune, branchSolver, this); // nThreads, &globalMutex);
+        if (toPrune || (res != ThinComputeInterface::kOK))
+            return (res);
+        res = computeHeuristic(&f_HeuristicSolvers, rootNode, minimizing,
+                               bestBound, bestSolution, toPrune);
+        if (toPrune || (res != ThinComputeInterface::kOK))
+            return (res);
+        rootNode->obtainBranchList(branchSolver);
+    }
     open->push(rootNode);
     int returnValue = explore(*open, globalMutex, solvers, minimizing, counter,
                               rootNode, rootNode, start);
