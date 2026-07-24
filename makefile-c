@@ -37,6 +37,10 @@
 SMS++SDR = $(BAXSLVSDR)/../SMS++
 include $(SMS++SDR)/lib/makefile-c
 
+#fastflow
+FF_SDR ?= $(HOME)/fastflow
+FF_INC  = -I$(FF_SDR)
+
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
 
@@ -45,10 +49,10 @@ include $(BAXSLVSDR)/makefile
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
 BAXSLVOBJ := $(BAXSLVOBJ) $(SMS++OBJ)
-BAXSLVINC := $(BAXSLVINC) $(SMS++INC)
+BAXSLVINC := $(BAXSLVINC) $(FF_INC) $(SMS++INC)
 BAXSLVH   := $(BAXSLVH) $(SMS++H)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB = $(SMS++LIB)
+BAXSLVLIB = $(SMS++LIB) -pthread
 
 ############################ End of makefile #################################

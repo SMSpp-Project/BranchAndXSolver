@@ -154,7 +154,7 @@ static int computeRelaxations(
                 bestBound = primal_bound;
                 delete bestSol;
                 bestSol = s->get_true_solution();
-                //}
+                tree->globalInfoWrite("incumbent", "bestBound", bestBound);
             }
         }
 
@@ -194,7 +194,9 @@ static int computeHeuristic(
     std::vector<ChangeSolver *> *f_HeuristicSolvers,
     Node *currentNode, const bool minimizing,
     double &bestBound, Solution *&bestSol, bool &toPrune,
-    int nThreads = 1, std::mutex *incumbentMutex = nullptr)
+    BranchAndXSolver *tree
+    // int nThreads = 1, std::mutex *incumbentMutex = nullptr
+)
 {
     for (auto s : *f_HeuristicSolvers)
     {
@@ -224,11 +226,150 @@ static int computeHeuristic(
             bestBound = primal_bound;
             delete bestSol;
             bestSol = s->get_Solution();
+            tree->globalInfoWrite("incumbent", "bestBound", bestBound);
             //}
         }
     }
     return (Solver::kOK);
 }
+
+/*--------------------------------------------------------------------------*/
+/*-------------------------- OPEN-LIST DISCIPLINES -------------------------*/
+/*--------------------------------------------------------------------------*/
+// the three open-list disciplines, as thin adapters that give the standard
+// container adapters a common interface [see OpenList]: a LIFO stack (depth-
+// first), a FIFO queue (breadth-first), a dual-bound priority queue (best-
+// first). The storage is entirely std::stack / std::queue / std::priority_-
+// queue, there is no hand-rolled data structure here
+
+namespace
+{
+    /// LIFO open list: a std::stack, giving depth-first exploration
+
+    class StackOpenList final : public OpenList
+    {
+
+    public:
+        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
+
+        void push(ExploringNode *node) override { c.push(node); }
+
+        ExploringNode *pop(void) override
+        {
+            auto node = c.top();
+            c.pop();
+            return (node);
+        }
+
+    private:
+        std::stack<ExploringNode *> c;
+
+    }; // end( class( StackOpenList ) )
+
+    /*--------------------------------------------------------------------------*/
+    /// FIFO open list: a std::queue, giving breadth-first exploration
+
+    class QueueOpenList final : public OpenList
+    {
+
+    public:
+        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
+
+        void push(ExploringNode *node) override { c.push(node); }
+
+        ExploringNode *pop(void) override
+        {
+            auto node = c.front();
+            c.pop();
+            return (node);
+        }
+
+    private:
+        std::queue<ExploringNode *> c;
+
+    }; // end( class( QueueOpenList ) )
+
+    /*--------------------------------------------------------------------------*/
+    /// dual-bound priority open list: a std::priority_queue, giving best-first
+
+    class PriorityOpenList final : public OpenList
+    {
+
+        using Cmp = std::function<bool(ExploringNode *, ExploringNode *)>;
+
+    public:
+        explicit PriorityOpenList(Cmp cmp) : c(std::move(cmp)) {}
+
+        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
+
+        void push(ExploringNode *node) override { c.push(node); }
+
+        ExploringNode *pop(void) override
+        {
+            auto node = c.top();
+            c.pop();
+            return (node);
+        }
+
+    private:
+        std::priority_queue<ExploringNode *, std::vector<ExploringNode *>, Cmp>
+            c;
+
+    }; // end( class( PriorityOpenList ) )
+
+    /*--------------------------------------------------------------------------*/
+    /// best-first open list with depth-first dives
+    /** The global frontier is a dual-bound priority queue, but once a node is taken
+     * the search dives straight into its most promising child down to a leaf,
+     * leaving the siblings to the global frontier. The dive reaches a complete
+     * (feasible) solution quickly, so the incumbent tightens early and the pruning
+     * bites sooner. The children of the just-expanded node arrive through push()
+     * before the next pop(): pop() routes the most promising of them onward
+     * (continuing the dive) and spills the rest to the priority queue; when no child
+     * arrives the dive has bottomed out and the next global best is taken. */
+
+    class DiveOpenList final : public OpenList
+    {
+
+        using Cmp = std::function<bool(ExploringNode *, ExploringNode *)>;
+
+    public:
+        explicit DiveOpenList(Cmp cmp) : best(std::move(cmp)) {}
+
+        [[nodiscard]] bool empty(void) const override
+        {
+            return (best.empty() && children.empty());
+        }
+
+        void push(ExploringNode *node) override { children.push_back(node); }
+
+        ExploringNode *pop(void) override
+        {
+            if (!children.empty())
+            {
+                // the loop is isLIFO(), so it pushed the children in reverse branching
+                // order: back() is the first (most promising) branch, the dive follows it
+                auto node = children.back();
+                children.pop_back();
+                for (auto sibling : children)
+                    best.push(sibling);
+                children.clear();
+                return (node);
+            }
+            auto node = best.top();
+            best.pop();
+            return (node);
+        }
+
+    private:
+        std::priority_queue<ExploringNode *, std::vector<ExploringNode *>, Cmp>
+            best;
+
+        std::vector<ExploringNode *> children; // pushed since the last pop()
+
+    }; // end( class( DiveOpenList ) )
+
+} // anonymous namespace
 
 /*--------------------------------------------------------------------------*/
 /*----------------- METHODS OF BranchAndXSolver ------------------------*/
@@ -257,6 +398,7 @@ int BranchAndXSolver::compute(bool changedvars)
     // unsafe when the tree is retained across re-solves with different
     // incumbents: forbid it in that case, allow it otherwise [see
     // GlobalInformation::local_fixing_allowed()]
+
     /* 	f_globalInfo.set_local_fixing_allowed(
             !((reoptimize > 0) && (solveType == BestFS)));
      */
@@ -265,9 +407,13 @@ int BranchAndXSolver::compute(bool changedvars)
     else
     {
 
+        f_globalInfo.add_to_Universe<double>("DoubleProperties");
         bestBound = (f_Block->get_objective_sense() == Objective::eMax)
                         ? -Inf<double>()
                         : Inf<double>();
+        auto doubleValues = f_globalInfo.get_from_Universe<double>("DoubleProperties");
+        if (doubleValues)
+            doubleValues->write("incumbent", bestBound);
         f_state = treeSolve(globalMutex);
     }
     changes = 0;
@@ -321,7 +467,9 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
             }
             res = computeHeuristic(&f_HeuristicSolvers, currentNode, minimizing,
                                    bestBound, bestSolution, toPrune,
-                                   maxThreadForSolvers, &globalMutex);
+                                   this
+                                   // maxThreadForSolvers, &globalMutex);
+            );
             if (res != Solver::kOK)
                 return res;
             // keep the node only if its dual bound can improve the incumbent
@@ -358,7 +506,9 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                     if (!toPrune)
                         computeHeuristic(&f_HeuristicSolvers, new_node, minimizing,
                                          bestBound, bestSolution, toPrune,
-                                         maxThreadForSolvers, &globalMutex);
+                                         this //,
+                                              // maxThreadForSolvers, &globalMutex
+                        );
                     // keep the node only if its dual bound can improve the incumbent
                     if ((!toPrune) &&
                         (!cannot_improve(new_node->get_dual_bound(), bestBound,
@@ -525,7 +675,7 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
         if (toPrune || (res != ThinComputeInterface::kOK))
             return (res);
         res = computeHeuristic(&f_HeuristicSolvers, rootNode, minimizing,
-                               bestBound, bestSolution, toPrune);
+                               bestBound, bestSolution, toPrune, this); // nThreads, &globalMutex);
         if (toPrune || (res != ThinComputeInterface::kOK))
             return (res);
         rootNode->obtainBranchList(branchSolver);
@@ -571,145 +721,6 @@ void BranchAndXSolver::process_outstanding_Modification(void)
     v_mod_tmp.clear(); // clear the temporary list of Modification
 
 } // end( BranchAndXSolver::process_outstanding_Modification )
-
-/*--------------------------------------------------------------------------*/
-/*-------------------------- OPEN-LIST DISCIPLINES -------------------------*/
-/*--------------------------------------------------------------------------*/
-// the three open-list disciplines, as thin adapters that give the standard
-// container adapters a common interface [see OpenList]: a LIFO stack (depth-
-// first), a FIFO queue (breadth-first), a dual-bound priority queue (best-
-// first). The storage is entirely std::stack / std::queue / std::priority_-
-// queue, there is no hand-rolled data structure here
-
-namespace
-{
-
-    /// LIFO open list: a std::stack, giving depth-first exploration
-
-    class StackOpenList final : public OpenList
-    {
-
-    public:
-        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
-
-        void push(ExploringNode *node) override { c.push(node); }
-
-        ExploringNode *pop(void) override
-        {
-            auto node = c.top();
-            c.pop();
-            return (node);
-        }
-
-    private:
-        std::stack<ExploringNode *> c;
-
-    }; // end( class( StackOpenList ) )
-
-    /*--------------------------------------------------------------------------*/
-    /// FIFO open list: a std::queue, giving breadth-first exploration
-
-    class QueueOpenList final : public OpenList
-    {
-
-    public:
-        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
-
-        void push(ExploringNode *node) override { c.push(node); }
-
-        ExploringNode *pop(void) override
-        {
-            auto node = c.front();
-            c.pop();
-            return (node);
-        }
-
-    private:
-        std::queue<ExploringNode *> c;
-
-    }; // end( class( QueueOpenList ) )
-
-    /*--------------------------------------------------------------------------*/
-    /// dual-bound priority open list: a std::priority_queue, giving best-first
-
-    class PriorityOpenList final : public OpenList
-    {
-
-        using Cmp = std::function<bool(ExploringNode *, ExploringNode *)>;
-
-    public:
-        explicit PriorityOpenList(Cmp cmp) : c(std::move(cmp)) {}
-
-        [[nodiscard]] bool empty(void) const override { return (c.empty()); }
-
-        void push(ExploringNode *node) override { c.push(node); }
-
-        ExploringNode *pop(void) override
-        {
-            auto node = c.top();
-            c.pop();
-            return (node);
-        }
-
-    private:
-        std::priority_queue<ExploringNode *, std::vector<ExploringNode *>, Cmp>
-            c;
-
-    }; // end( class( PriorityOpenList ) )
-
-    /*--------------------------------------------------------------------------*/
-    /// best-first open list with depth-first dives
-    /** The global frontier is a dual-bound priority queue, but once a node is taken
-     * the search dives straight into its most promising child down to a leaf,
-     * leaving the siblings to the global frontier. The dive reaches a complete
-     * (feasible) solution quickly, so the incumbent tightens early and the pruning
-     * bites sooner. The children of the just-expanded node arrive through push()
-     * before the next pop(): pop() routes the most promising of them onward
-     * (continuing the dive) and spills the rest to the priority queue; when no child
-     * arrives the dive has bottomed out and the next global best is taken. */
-
-    class DiveOpenList final : public OpenList
-    {
-
-        using Cmp = std::function<bool(ExploringNode *, ExploringNode *)>;
-
-    public:
-        explicit DiveOpenList(Cmp cmp) : best(std::move(cmp)) {}
-
-        [[nodiscard]] bool empty(void) const override
-        {
-            return (best.empty() && children.empty());
-        }
-
-        void push(ExploringNode *node) override { children.push_back(node); }
-
-        ExploringNode *pop(void) override
-        {
-            if (!children.empty())
-            {
-                // the loop is isLIFO(), so it pushed the children in reverse branching
-                // order: back() is the first (most promising) branch, the dive follows it
-                auto node = children.back();
-                children.pop_back();
-                for (auto sibling : children)
-                    best.push(sibling);
-                children.clear();
-                return (node);
-            }
-            auto node = best.top();
-            best.pop();
-            return (node);
-        }
-
-    private:
-        std::priority_queue<ExploringNode *, std::vector<ExploringNode *>, Cmp>
-            best;
-
-        std::vector<ExploringNode *> children; // pushed since the last pop()
-
-    }; // end( class( DiveOpenList ) )
-
-} // anonymous namespace
 
 /*--------------------------------------------------------------------------*/
 /*------------------ End File BranchAndXSolver.cpp ---------------------*/

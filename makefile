@@ -43,7 +43,7 @@ clean::
 $(BAXSLVSDR)/obj/BranchAndXSolver.o: \
 	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(SMS++OBJ)
 	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
-	$(BAXSLVINC) $(SMS++INC) $(SW)
+	$(BAXSLVINC) $(FF_INC) $(SMS++INC) $(SW)
 
 
 ############################ End of makefile #################################

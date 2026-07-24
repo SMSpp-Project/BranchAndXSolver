@@ -37,6 +37,10 @@
 # *H   is the list of all include files
 # *INC is the -I< include directories >
 
+#fastflow
+FF_SDR ?= $(HOME)/fastflow
+FF_INC  = -I$(FF_SDR)
+
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
 
@@ -45,10 +49,10 @@ include $(BAXSLVSDR)/makefile
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
 BAXSLVOBJ := $(BAXSLVOBJ)
-BAXSLVINC := $(BAXSLVINC)
+BAXSLVINC := $(BAXSLVINC) $(FF_INC)
 BAXSLVH   := $(BAXSLVH)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB =
+BAXSLVLIB = -pthread
 
 ############################ End of makefile #################################

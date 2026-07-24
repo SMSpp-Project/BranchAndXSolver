@@ -445,15 +445,76 @@ namespace SMSpp_di_unipi_it
             }
             return (Solver::str_par_idx2str(idx));
         }
-
+        /*--------------------------------------------------------------------------*/
+        /*--------------------------- UTILITIES METHODS  ---------------------------*/
+        /*--------------------------------------------------------------------------*/
         bool cannot_improve(double dual, double best, bool minimizing)
         {
             if (std::isinf(best)) // no incumbent yet: everything can improve
                 return (false);
             // an absAcc at its default +Inf means "not active" [see Solver::dblAbsAcc]
-            const double eps = std::max(this->dblAbsAcc == Inf<double>() ? 0.0 : this->dblAbsAcc,
-                                        this->dblRelAcc * std::max(std::abs(best), 1.0));
+
+            double absAcc = get_dbl_par(dblAbsAcc);
+            double relAcc = get_dbl_par(dblRelAcc);
+            const double eps = std::max(absAcc == Inf<double>() ? 0.0 : absAcc,
+                                        relAcc * std::max(std::abs(best), 1.0));
             return (minimizing ? dual >= best - eps : dual <= best + eps);
+        }
+        /*--------------------------------------------------------------------------*/
+        /*----------------- METHODS FOR HANDLING GLOBALINFORMATION -----------------*/
+        /*--------------------------------------------------------------------------*/
+        /// thread-safe write of a piece of search-global data (incumbent, cuts,
+        /// columns, ...); creates the underlying storage on first use
+        template <typename T>
+        void globalInfoWrite(const std::string &collection, const std::string &key, T value)
+        {
+            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
+                if (collection)
+                    collection->write(key, value);
+                else
+                {
+                    f_globalInfo.add_to_Universe<T>(collection);
+                    f_globalInfo.get_from_Universe<T>(collection)->write(key, value);
+                }
+        }
+
+        /// thread-safe read of a piece of search-global data; returns false if
+        /// nothing was ever written under that collection/key
+        template <typename T>
+        bool globalInfoRead(const std::string &collection, const std::string &key, T &out) const
+        {
+            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
+                if (collection)
+                    return (collection->read(key, out));
+            return false;
+        }
+
+        /// thread-safe read-modify-write, e.g. for incumbent updates that must
+        /// check-and-update atomically under a single lock
+        template <typename T, typename Func>
+        void globalInfoWriteWith(const std::string &collection, const std::string &key,
+                                 Func &&func)
+        {
+            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
+                if (collection)
+                    collection->write_with(key, std::forward<Func>(func));
+                else
+                {
+                    f_globalInfo.add_to_Universe<T>(collection);
+                    f_globalInfo.get_from_Universe<T>(collection)->write_with(key, std::forward<Func>(func));
+                }
+        }
+
+        /// thread-safe read of a piece of search-global data through Funci; returns false if
+        /// nothing was ever written under that collection/key
+        template <typename T, typename Func>
+        void globalInfoReadWith(const std::string &collection, const std::string &key,
+                                Func &&func)
+        {
+            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
+                if (collection)
+                    return collection->read_with(key, std::forward<Func>(func));
+            return false
         }
 
         /** @} ---------------------------------------------------------------------*/
@@ -569,6 +630,10 @@ namespace SMSpp_di_unipi_it
                         ///< intReoptimize / BestFirstSolve())
 
         int maxNodes; ///< node budget of a solve (see intMaxNodes)
+
+        /// the search-global information shared with the relaxations (incumbent,
+        /// global cuts/columns); its incumbent is bound to the live bestBound
+        GlobalInformation f_globalInfo;
 
         /// residual node budget of the current solve (from intMaxNodes), consumed
         /// by the exploration
