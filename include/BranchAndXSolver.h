@@ -468,9 +468,9 @@ namespace SMSpp_di_unipi_it
         template <typename T>
         void globalInfoWrite(const std::string &collection, const std::string &key, T value)
         {
-            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
-                if (collection)
-                    collection->write(key, value);
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    coll->write(key, value);
                 else
                 {
                     f_globalInfo.add_to_Universe<T>(collection);
@@ -483,9 +483,9 @@ namespace SMSpp_di_unipi_it
         template <typename T>
         bool globalInfoRead(const std::string &collection, const std::string &key, T &out) const
         {
-            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
-                if (collection)
-                    return (collection->read(key, out));
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    return (coll->read(key, out));
             return false;
         }
 
@@ -495,9 +495,9 @@ namespace SMSpp_di_unipi_it
         void globalInfoWriteWith(const std::string &collection, const std::string &key,
                                  Func &&func)
         {
-            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
-                if (collection)
-                    collection->write_with(key, std::forward<Func>(func));
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    coll->write_with(key, std::forward<Func>(func));
                 else
                 {
                     f_globalInfo.add_to_Universe<T>(collection);
@@ -508,13 +508,13 @@ namespace SMSpp_di_unipi_it
         /// thread-safe read of a piece of search-global data through Funci; returns false if
         /// nothing was ever written under that collection/key
         template <typename T, typename Func>
-        void globalInfoReadWith(const std::string &collection, const std::string &key,
+        bool globalInfoReadWith(const std::string &collection, const std::string &key,
                                 Func &&func)
         {
-            if (auto collection = f_globalInfo.get_from_Universe<T>(collection))
-                if (collection)
-                    return collection->read_with(key, std::forward<Func>(func));
-            return false
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    return coll->read_with(key, std::forward<Func>(func));
+            return false;
         }
 
         /** @} ---------------------------------------------------------------------*/
