@@ -446,6 +446,9 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
     int res = Solver::kOK;
     ExploringNode *oldNode = nullptr;
 
+    unsigned int iterations = 0;
+    std::chrono::high_resolution_clock::time_point evaluationTime;
+
     while ((!open.empty()) && (nodeBudget > 1) &&
            (timeBudget > std::chrono::duration<double>(
                              std::chrono::high_resolution_clock::now() - start)
@@ -460,6 +463,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
         // Lazy evaluation
         if (this->boundingProtocol == Lazy)
         {
+            evaluationTime = std::chrono::high_resolution_clock::now();
             bool toPrune = false;
 
             res = computeRelaxations(&f_RelaxationSolvers, currentNode, minimizing,
@@ -468,10 +472,36 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
             );
             if (res != Solver::kOK)
             {
+                if (f_log_file)
+                {
+                    *f_log << iterations++ << "," << currentNode->get_name() << "," << currentNode->get_level() << "," << bestBound << "," << currentNode->get_dual_bound() << ","
+                           // times
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                           // pruning
+                           << cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing) << ","
+                           << (toPrune && !cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing)) << ","
+                           << (std::abs(bestBound - currentNode->get_dual_bound()) <= 1e-6) << ","
+                           // father
+                           << (currentNode->get_f_change() ? std::to_string(currentNode->get_parent()->get_name()) : "-1") << std::endl;
+                }
                 return (res);
             }
             if (toPrune)
             {
+                if (f_log_file)
+                {
+                    *f_log << iterations++ << "," << currentNode->get_name() << "," << currentNode->get_level() << "," << bestBound << "," << currentNode->get_dual_bound() << ","
+                           // times
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                           // pruning
+                           << cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing) << ","
+                           << (toPrune && !cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing)) << ","
+                           << (std::abs(bestBound - currentNode->get_dual_bound()) <= 1e-6) << ","
+                           // father
+                           << (currentNode->get_f_change() ? std::to_string(currentNode->get_parent()->get_name()) : "-1") << std::endl;
+                }
                 currentNode = ExploringNode::prune(currentNode, solvers);
                 continue;
             }
@@ -481,14 +511,35 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                                    // maxThreadForSolvers, &globalMutex);
             );
             if (res != Solver::kOK)
+            {
+                if (f_log_file)
+                {
+                    *f_log << iterations++ << "," << currentNode->get_name() << "," << currentNode->get_level() << "," << bestBound << "," << currentNode->get_dual_bound() << ","
+                           // times
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                           // pruning
+                           << cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing) << ","
+                           << (toPrune && !cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing)) << ","
+                           << (std::abs(bestBound - currentNode->get_dual_bound()) <= 1e-6) << ","
+                           // father
+                           << (currentNode->get_f_change() ? std::to_string(currentNode->get_parent()->get_name()) : "-1") << std::endl;
+                }
                 return res;
-            // keep the node only if its dual bound can improve the incumbent
-            if (!cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing))
-                currentNode->obtainBranchList(branchSolver);
-            else
-            { // fenced or pruned child
-                currentNode = ExploringNode::prune(currentNode, solvers);
-                continue;
+            } // keep the node only if its dual bound can improve the incumbent
+            currentNode->obtainBranchList(branchSolver);
+            if (f_log_file)
+            {
+                *f_log << iterations++ << "," << currentNode->get_name() << "," << currentNode->get_level() << "," << bestBound << "," << currentNode->get_dual_bound() << ","
+                       // times
+                       << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                       << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                       // pruning
+                       << cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing) << ","
+                       << (toPrune && !cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing)) << ","
+                       << (std::abs(bestBound - currentNode->get_dual_bound()) <= 1e-6) << ","
+                       // father
+                       << (currentNode->get_f_change() ? std::to_string(currentNode->get_parent()->get_name()) : "-1") << std::endl;
             }
         }
 
@@ -503,6 +554,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                                                             currentNode->get_level() + 1, ++counter);
                 if (this->boundingProtocol == Eager)
                 {
+                    evaluationTime = std::chrono::high_resolution_clock::now();
                     bool toPrune = false;
                     computeRelaxations(&f_RelaxationSolvers, new_node, minimizing,
                                        bestBound, bestSolution, toPrune, branchSolver,
@@ -511,6 +563,20 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                     );
                     if (res != Solver::kOK)
                     {
+                        if (f_log_file)
+                        {
+                            *f_log << iterations++ << "," << new_node->get_name() << "," << new_node->get_level() << "," << bestBound << "," << new_node->get_dual_bound() << ","
+                                   // times
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                                   // pruning
+                                   << cannot_improve(new_node->get_dual_bound(), bestBound, minimizing) << ","
+                                   << (toPrune && !cannot_improve(new_node->get_dual_bound(), bestBound, minimizing)) << ","
+                                   << (std::abs(bestBound - new_node->get_dual_bound()) <= 1e-6) << ","
+                                   // father
+                                   << (new_node->get_f_change() ? std::to_string(new_node->get_parent()->get_name()) : "-1") << std::endl;
+                        }
+
                         return (res);
                     }
                     if (!toPrune)
@@ -533,12 +599,39 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
                         moveSolverToFather(new_node, solvers);
                         // kept.push_back(new_node); // pushed to the open set after the loop
                         open.push(new_node); // pushed to the open set after the loop
+                        if (f_log_file)
+                        {
+                            *f_log << iterations++ << "," << new_node->get_name() << "," << new_node->get_level() << "," << bestBound << "," << new_node->get_dual_bound() << ","
+                                   // times
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                                   // pruning
+                                   << cannot_improve(new_node->get_dual_bound(), bestBound, minimizing) << ","
+                                   << (toPrune && !cannot_improve(new_node->get_dual_bound(), bestBound, minimizing)) << ","
+                                   << (std::abs(bestBound - new_node->get_dual_bound()) <= 1e-6) << ","
+                                   // father
+                                   << (new_node->get_f_change() ? std::to_string(new_node->get_parent()->get_name()) : "-1") << std::endl;
+                        }
                     }
                     else
                     { // fenced or pruned child
                         moveSolverToFather(new_node, solvers);
                         // TODO capire quanto possa essere costoso e come evitarlo
                         *(std::find(branches.begin(), branches.end(), new_node->get_f_change())) = nullptr;
+                        if (f_log_file)
+                        {
+                            *f_log << iterations++ << "," << new_node->get_name() << "," << new_node->get_level() << "," << bestBound << "," << new_node->get_dual_bound() << ","
+                                   // times
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                                   << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                                   // pruning
+                                   << cannot_improve(new_node->get_dual_bound(), bestBound, minimizing) << ","
+                                   << (toPrune && !cannot_improve(new_node->get_dual_bound(), bestBound, minimizing)) << ","
+                                   << (std::abs(bestBound - new_node->get_dual_bound()) <= 1e-6) << ","
+                                   // father
+                                   << (new_node->get_f_change() ? std::to_string(new_node->get_parent()->get_name()) : "-1") << std::endl;
+                        }
+
                         delete new_node;
                     }
                 }
@@ -552,13 +645,23 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
             branches.erase(std::remove(branches.begin(), branches.end(), nullptr), branches.end());
             if (currentNode->get_children().empty() && currentNode->get_toFather())
             {
-
                 currentNode = ExploringNode::prune(currentNode, solvers);
             }
         }
         else if (currentNode->get_toFather())
         {
-
+            if (f_log_file)
+            {
+                *f_log << iterations++ << "," << currentNode->get_name() << "," << currentNode->get_level() << "," << bestBound << "," << currentNode->get_dual_bound() << ","
+                       // times
+                       << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                       << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                       // pruning
+                       << "1,0"
+                       << (std::abs(bestBound - currentNode->get_dual_bound()) <= 1e-6) << ","
+                       // father
+                       << (currentNode->get_f_change() ? std::to_string(currentNode->get_parent()->get_name()) : "-1") << std::endl;
+            }
             currentNode = ExploringNode::prune(currentNode, solvers);
         }
     }
@@ -617,6 +720,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
 
 int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
 {
+    auto start = std::chrono::high_resolution_clock::now();
     auto *solvers = new std::list<ChangeSolver *>();
     bool minimizing;
 
@@ -633,7 +737,6 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
     solvers->insert(solvers->end(), f_HeuristicSolvers.begin(),
                     f_HeuristicSolvers.end());
 
-    auto start = std::chrono::high_resolution_clock::now();
     int counter = 0;
     // the open set is a plain FIFO queue
     OpenList *open = nullptr;
@@ -677,17 +780,42 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
     RelaxationSolver *branchSolver = nullptr;
     // initialize variables
     rootNode->initializeBound(minimizing);
+    if (f_log_file)
+        f_log_file << "iter,nodeName,level,bestBound,dualBound,elapsedTime,evaluationTime,boundPruned,infeasbilePruned,optimalPruned,fatherName" << std::endl;
     if (boundingProtocol == Eager)
     {
+        auto evaluationTime = std::chrono::high_resolution_clock::now();
         bool toPrune = false;
         int res = computeRelaxations(&f_RelaxationSolvers, rootNode, minimizing,
                                      bestBound, bestSolution, toPrune, branchSolver, this); // nThreads, &globalMutex);
         if (toPrune || (res != ThinComputeInterface::kOK))
+        {
+            if (f_log_file)
+                f_log_file << "0," << rootNode->get_name() << "," << rootNode->get_level() << "," << bestBound << "," << rootNode->get_dual_bound() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                           << cannot_improve(rootNode->get_dual_bound(), bestBound, minimizing) << ","
+                           << (toPrune && !cannot_improve(rootNode->get_dual_bound(), bestBound, minimizing)) << ","
+                           << (std::abs(bestBound - rootNode->get_dual_bound()) <= 1e-6) << ","
+                           << "-1" << std::endl;
+
             return (res);
+        }
         res = computeHeuristic(&f_HeuristicSolvers, rootNode, minimizing,
                                bestBound, bestSolution, toPrune, this); // nThreads, &globalMutex);
         if (toPrune || (res != ThinComputeInterface::kOK))
+        {
+            if (f_log_file)
+                f_log_file << "0," << rootNode->get_name() << "," << rootNode->get_level() << "," << bestBound << "," << rootNode->get_dual_bound() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << ","
+                           << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - evaluationTime).count() << ","
+                           << cannot_improve(rootNode->get_dual_bound(), bestBound, minimizing) << ","
+                           << (toPrune && !cannot_improve(rootNode->get_dual_bound(), bestBound, minimizing)) << ","
+                           << (std::abs(bestBound - rootNode->get_dual_bound()) <= 1e-6) << ","
+                           << "-1" << std::endl;
+
             return (res);
+        }
         rootNode->obtainBranchList(branchSolver);
     }
     open->push(rootNode);
