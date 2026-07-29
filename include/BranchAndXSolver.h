@@ -175,15 +175,22 @@ namespace SMSpp_di_unipi_it
         BranchAndXSolver(RelaxationSolver *Rsolver, ChangeSolver *Hsolver,
                          Block *B) : BranchAndXSolver()
         {
-            if (Rsolver)
-                f_RelaxationSolvers.push_back(Rsolver);
-            if (Hsolver)
-                f_HeuristicSolvers.push_back(Hsolver);
+            if (Rsolver && dynamic_cast<Solver *>(Rsolver))
+                f_RelaxationSolvers.push_back(std::make_pair(Rsolver, dynamic_cast<Solver *>(Rsolver)));
+            else if (Hsolver && dynamic_cast<Solver *>(Hsolver))
+                f_HeuristicSolvers.push_back(std::make_pair(Hsolver, dynamic_cast<Solver *>(Hsolver)));
+            else
+                throw std::runtime_error("BranchAndXSolver::constructor: "
+                                         "the provided inner Solver is not a Solver");
             Solver::set_Block(B);
             for (auto s : f_RelaxationSolvers)
-                s->set_Block(B);
+            {
+                s.second->set_Block(B);
+            }
             for (auto s : f_HeuristicSolvers)
-                s->set_Block(B);
+            {
+                s.second->set_Block(B);
+            }
         }
 
         /*--------------------------------------------------------------------------*/
@@ -470,7 +477,9 @@ namespace SMSpp_di_unipi_it
         {
             if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
                 if (coll)
+                {
                     coll->write(key, value);
+                }
                 else
                 {
                     f_globalInfo.add_to_Universe<T>(collection);
@@ -497,7 +506,9 @@ namespace SMSpp_di_unipi_it
         {
             if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
                 if (coll)
+                {
                     coll->write_with(key, std::forward<Func>(func));
+                }
                 else
                 {
                     f_globalInfo.add_to_Universe<T>(collection);
@@ -536,11 +547,11 @@ namespace SMSpp_di_unipi_it
         /*--------------------------------------------------------------------------*/
 
         /// pointer(s) to the Solver used to solve the relaxations
-        std::vector<RelaxationSolver *>
+        std::vector<std::pair<RelaxationSolver *, Solver *>>
             f_RelaxationSolvers;
 
         /// pointer(s) to the Solver used to find feasible solutions
-        std::vector<ChangeSolver *> f_HeuristicSolvers;
+        std::vector<std::pair<ChangeSolver *, Solver *>> f_HeuristicSolvers;
 
         int f_state; ///< the (current) state of the compute() process
 
@@ -567,12 +578,13 @@ namespace SMSpp_di_unipi_it
             configurationRS->apply(f_Block);
             for (const auto s : this->f_Block->get_registered_solvers())
             {
+                // TODO check if the next check is correct
                 if (alreadySolvers.find(s) == alreadySolvers.end())
                 {
                     if (auto rs = dynamic_cast<RelaxationSolver *>(s))
-                        this->f_RelaxationSolvers.push_back(rs);
+                        this->f_RelaxationSolvers.push_back(std::make_pair(rs, s));
                     else if (auto hs = dynamic_cast<ChangeSolver *>(s))
-                        this->f_HeuristicSolvers.push_back(hs);
+                        this->f_HeuristicSolvers.push_back(std::make_pair(hs, s));
                     else
                         throw(std::runtime_error("BKPBranchTree::applyConfigurationToSolvers: unable to get Solver from BlockSolverConfig"));
                 }
@@ -598,7 +610,7 @@ namespace SMSpp_di_unipi_it
 
         int explore(OpenList &open,
                     std::mutex &globalMutex,
-                    std::list<ChangeSolver *> *solvers,
+                    std::list<std::pair<ChangeSolver *, Solver *>> *solvers,
                     bool minimizing,
                     int &counter,
                     ExploringNode *rootNode,
@@ -835,7 +847,7 @@ namespace SMSpp_di_unipi_it
 
         static void moveBetweenNodes(ExploringNode *sourceNode,
                                      ExploringNode *destNode,
-                                     std::list<ChangeSolver *> *solvers)
+                                     std::list<std::pair<ChangeSolver *, Solver *>> *solvers)
         {
             std::list<Change *> changesToApply;
             while (sourceNode->level != destNode->level)
@@ -843,7 +855,7 @@ namespace SMSpp_di_unipi_it
                 if (sourceNode->level > destNode->level)
                 {
                     for (const auto s : *solvers)
-                        s->apply(sourceNode->toFather, false);
+                        s.first->apply(sourceNode->toFather, false);
                     sourceNode = sourceNode->parent;
                 }
                 else
@@ -855,14 +867,14 @@ namespace SMSpp_di_unipi_it
             while (sourceNode != destNode)
             {
                 for (const auto s : *solvers)
-                    s->apply(sourceNode->toFather, false);
+                    s.first->apply(sourceNode->toFather, false);
                 sourceNode = sourceNode->parent;
                 changesToApply.push_front(destNode->f_change);
                 destNode = destNode->parent;
             }
             for (auto change : changesToApply)
                 for (const auto s : *solvers)
-                    s->apply(change, false);
+                    s.first->apply(change, false);
         }
 
         /*--------------------------------------------------------------------------*/
@@ -873,12 +885,12 @@ namespace SMSpp_di_unipi_it
          *          last pruned node */
 
         static ExploringNode *prune(ExploringNode *nodeToPrune,
-                                    std::list<ChangeSolver *> *solvers)
+                                    std::list<std::pair<ChangeSolver *, Solver *>> *solvers)
         {
             ExploringNode *parentNode = nodeToPrune->get_parent();
             if (nodeToPrune->get_toFather())
                 for (const auto s : *solvers)
-                    s->apply(nodeToPrune->get_toFather(), false);
+                    s.first->apply(nodeToPrune->get_toFather(), false);
             if (!parentNode->get_children().empty())
                 parentNode->get_children().remove(nodeToPrune);
             auto &branches = parentNode->getBranches();

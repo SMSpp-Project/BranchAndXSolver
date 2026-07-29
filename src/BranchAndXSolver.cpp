@@ -68,7 +68,7 @@ SMSpp_insert_in_factory_cpp_0(BranchAndXSolver);
  * others just apply the node Change. */
 
 static void moveSolverToSon(Node *currentNode,
-                            std::list<ChangeSolver *> *solvers)
+                            std::list<std::pair<ChangeSolver *, Solver *>> *solvers)
 {
     if (!currentNode->get_f_change())
         return;
@@ -76,10 +76,10 @@ static void moveSolverToSon(Node *currentNode,
     for (const auto s : *solvers)
     {
         if (!modified)
-            currentNode->set_toFather(s->apply(currentNode->get_f_change(),
-                                               true));
+            currentNode->set_toFather(s.first->apply(currentNode->get_f_change(),
+                                                     true));
         else
-            s->apply(currentNode->get_f_change(), false);
+            s.first->apply(currentNode->get_f_change(), false);
         modified = true;
     }
 }
@@ -88,11 +88,11 @@ static void moveSolverToSon(Node *currentNode,
 /// move the given :ChangeSolver back to the father of currentNode
 
 static void moveSolverToFather(Node *currentNode,
-                               std::list<ChangeSolver *> *solvers)
+                               std::list<std::pair<ChangeSolver *, Solver *>> *solvers)
 {
     if (currentNode->get_toFather())
         for (const auto s : *solvers)
-            s->apply(currentNode->get_toFather(), false);
+            s.first->apply(currentNode->get_toFather(), false);
 }
 
 /*--------------------------------------------------------------------------*/
@@ -113,7 +113,7 @@ static bool computeAllParallel(const std::vector<SolverPtr> &slvrs,
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeRelaxations(
-    std::vector<RelaxationSolver *> *f_RelaxationSolvers,
+    std::vector<std::pair<RelaxationSolver *, Solver *>> *f_RelaxationSolvers,
     Node *currentNode,
     const bool minimizing,
     double &bestBound,
@@ -124,8 +124,13 @@ static int computeRelaxations(
     // int nThreads = 1, std::mutex *incumbentMutex = nullptr
 )
 {
-    for (auto s : *f_RelaxationSolvers)
+    for (auto p : *f_RelaxationSolvers)
     {
+        auto solver = p.first;
+        auto s = p.second;
+        if (!s)
+            throw std::runtime_error("BranchAndXSolver::computeRelaxations(): "
+                                     "a RelaxationSolver is not a Solver");
         auto z = s->compute();
         if (z == Solver::kInfeasible)
         {
@@ -138,9 +143,9 @@ static int computeRelaxations(
             return (z);
 
         // see if the primal bound improves thanks to a true solution
-        if (s->has_true_var_solution())
+        if (solver->has_true_var_solution())
         {
-            double primal_bound = minimizing ? s->get_true_ub() : s->get_true_lb();
+            double primal_bound = minimizing ? solver->get_true_ub() : solver->get_true_lb();
             /*             if (minimizing ? primal_bound < bestBound : primal_bound > bestBound)
                         {
                             // in the parallel exploration the incumbent is shared between the
@@ -153,7 +158,7 @@ static int computeRelaxations(
             {
                 bestBound = primal_bound;
                 delete bestSol;
-                bestSol = s->get_true_solution();
+                bestSol = solver->get_true_solution();
                 tree->globalInfoWrite("incumbent", "bestBound", bestBound);
             }
         }
@@ -176,7 +181,7 @@ static int computeRelaxations(
                        : dualBound < currentNode->get_dual_bound())
         {
             currentNode->set_dual_bound(dualBound);
-            branchSolver = s;
+            branchSolver = solver;
             //}
         }
     }
@@ -191,15 +196,17 @@ static int computeRelaxations(
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeHeuristic(
-    std::vector<ChangeSolver *> *f_HeuristicSolvers,
+    std::vector<std::pair<ChangeSolver *, Solver *>> *f_HeuristicSolvers,
     Node *currentNode, const bool minimizing,
     double &bestBound, Solution *&bestSol, bool &toPrune,
     BranchAndXSolver *tree
     // int nThreads = 1, std::mutex *incumbentMutex = nullptr
 )
 {
-    for (auto s : *f_HeuristicSolvers)
+    for (auto p : *f_HeuristicSolvers)
     {
+        auto solver = p.first;
+        auto s = p.second;
         auto z = s->compute();
         if (z == Solver::kInfeasible)
         {
@@ -225,7 +232,7 @@ static int computeHeuristic(
              */
             bestBound = primal_bound;
             delete bestSol;
-            bestSol = s->get_Solution();
+            bestSol = solver->get_Solution();
             tree->globalInfoWrite("incumbent", "bestBound", bestBound);
             //}
         }
@@ -425,7 +432,7 @@ int BranchAndXSolver::compute(bool changedvars)
 /*--------------------------------------------------------------------------*/
 
 int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
-                              std::list<ChangeSolver *> *solvers,
+                              std::list<std::pair<ChangeSolver *, Solver *>> *solvers,
                               bool minimizing, int &counter,
                               ExploringNode *rootNode,
                               ExploringNode *currentNode, // bool retain,
@@ -660,7 +667,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
     while (currentNode->get_toFather())
     {
         for (const auto s : *solvers)
-            s->apply(currentNode->get_toFather(), false);
+            s.first->apply(currentNode->get_toFather(), false);
         currentNode = currentNode->get_parent();
     }
 
@@ -711,13 +718,13 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
 int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
 {
     auto start = std::chrono::high_resolution_clock::now();
-    auto *solvers = new std::list<ChangeSolver *>();
+    auto *solvers = new std::list<std::pair<ChangeSolver *, Solver *>>();
     bool minimizing;
 
     if (!f_HeuristicSolvers.empty())
-        minimizing = f_HeuristicSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+        minimizing = f_Block->get_objective_sense() == Objective::eMin;
     else if (!f_RelaxationSolvers.empty())
-        minimizing = f_RelaxationSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+        minimizing = f_Block->get_objective_sense() == Objective::eMin;
     else
         throw(std::logic_error("BranchAndXSolver::initializeVariables: "
                                "both the HeuristicSolvers and the RelaxationSolvers are empty"));
