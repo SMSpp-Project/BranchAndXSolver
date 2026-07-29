@@ -435,7 +435,7 @@ int BranchAndXSolver::compute(bool changedvars)
 /*--------------------------------------------------------------------------*/
 
 int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
-                              std::list<ChangeSolver *> *solvers,
+                              std::list<std::pair<ChangeSolver *, Solver *>> *solvers,
                               bool minimizing, int &counter,
                               ExploringNode *rootNode,
                               ExploringNode *currentNode, // bool retain,
@@ -670,7 +670,7 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
     while (currentNode->get_toFather())
     {
         for (const auto s : *solvers)
-            s->apply(currentNode->get_toFather(), false);
+            s.first->apply(currentNode->get_toFather(), false);
         currentNode = currentNode->get_parent();
     }
 
@@ -721,13 +721,13 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
 int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
 {
     auto start = std::chrono::high_resolution_clock::now();
-    auto *solvers = new std::list<ChangeSolver *>();
+    auto *solvers = new std::list<std::pair<ChangeSolver *, Solver *>>();
     bool minimizing;
 
     if (!f_HeuristicSolvers.empty())
-        minimizing = f_HeuristicSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+        minimizing = f_Block->get_objective_sense() == Objective::eMin;
     else if (!f_RelaxationSolvers.empty())
-        minimizing = f_RelaxationSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+        minimizing = f_Block->get_objective_sense() == Objective::eMin;
     else
         throw(std::logic_error("BranchAndXSolver::initializeVariables: "
                                "both the HeuristicSolvers and the RelaxationSolvers are empty"));
