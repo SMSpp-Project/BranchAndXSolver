@@ -143,6 +143,28 @@ class BranchAndXSolver : public Solver {
   BestFSDive = 3                    ///< best-first search with depth-first dives
   };
 
+/*--------------------------------------------------------------------------*/
+ /// GlobalInformation names / keys defined by the BranchAndXSolver
+ /** The names and keys, beyond the reserved ones [see GlobalInformation.h],
+  * that the BranchAndXSolver defines in the GlobalInformation it hands to
+  * its relaxations:
+  *
+  * - str_GlobalCuts ("GlobalCuts") names a
+  *   Collection< std::vector< std::shared_ptr< Change > > > holding, under
+  *   the single key str_Cuts ("Cuts"), the pool of the globally valid cuts
+  *   (valid in every node of the tree) contributed and consulted by the
+  *   relaxations: append-only (entries are only ever push_back()-ed, under
+  *   write_with()), with shared ownership of the Change so that the same
+  *   cut can be consumed by several solvers at once; a consumer remembers
+  *   how many entries it has already seen and only reads the new tail
+  *   (under read_with()). In perspective a symmetric pool serves the
+  *   globally valid columns. */
+
+ static constexpr const char * str_GlobalCuts = "GlobalCuts";
+
+ /// key (in str_GlobalCuts) of the pool of the globally valid cuts
+ static constexpr const char * str_Cuts = "Cuts";
+
 /** @} ---------------------------------------------------------------------*/
 /*--------------------- CONSTRUCTOR AND DESTRUCTOR -------------------------*/
 /*--------------------------------------------------------------------------*/
@@ -162,9 +184,30 @@ class BranchAndXSolver : public Solver {
                       configurationRS( nullptr ) , changes( 4 ) ,
                       subOptimalNodes() , infeasibleNodes() ,
                       integerNodes() {
-  // the relaxations read the incumbent (for reduced-cost fixing and the like)
-  // through the global information, kept bound to the live best-bound cell
-  f_globalInfo.bind_incumbent( &bestBound );
+  // populate the global information with the collections this search uses:
+  // the reserved hot scalars / flags of the whole cooperation [see
+  // GlobalInformation.h] and the (in perspective) pool of globally valid
+  // cuts [see str_GlobalCuts]. The references to the individual atomics
+  // are cached once here and used lock-free ever after
+  f_globalInfo.add_to_Universe< std::atomic< double > >(
+			       GlobalInformation::str_AtomicScalars );
+  f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
+			 std::atomic< double > >(
+			  GlobalInformation::str_AtomicScalars ) )[
+			   GlobalInformation::str_Incumbent ] );
+  f_incumbentCell->store( std::numeric_limits< double >::quiet_NaN() );
+
+  f_globalInfo.add_to_Universe< std::atomic< bool > >(
+			       GlobalInformation::str_AtomicFlags );
+  f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
+		    GlobalInformation::str_AtomicFlags ) )[
+		     GlobalInformation::str_LocalFixingAllowed ] );
+  f_lfaCell->store( true );
+
+  f_globalInfo.add_to_Universe< std::vector< std::shared_ptr< Change > > >(
+			       str_GlobalCuts );
+  f_globalInfo.get_from_Universe< std::vector< std::shared_ptr< Change > > >(
+	       str_GlobalCuts )->write( str_Cuts , {} );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -172,15 +215,29 @@ class BranchAndXSolver : public Solver {
 
  BranchAndXSolver( RelaxationSolver * Rsolver , ChangeSolver * Hsolver ,
                    Block * B ) : BranchAndXSolver() {
-  if( Rsolver )
-   f_RelaxationSolvers.push_back( Rsolver );
-  if( Hsolver )
-   f_HeuristicSolvers.push_back( Hsolver );
+  // the traits are side-loaded on a :Solver [see ChangeSolver.h]: the
+  // Solver personality of each inner solver is reached by cross-cast and
+  // kept alongside the trait pointer
+  if( Rsolver ) {
+   auto s = dynamic_cast< Solver * >( Rsolver );
+   if( ! s )
+    throw( std::invalid_argument( "BranchAndXSolver::BranchAndXSolver: "
+	   "the RelaxationSolver does not derive from Solver" ) );
+   f_RelaxationSolvers.push_back( { Rsolver , s } );
+   Rsolver->set_global_information( &f_globalInfo );
+   }
+  if( Hsolver ) {
+   auto s = dynamic_cast< Solver * >( Hsolver );
+   if( ! s )
+    throw( std::invalid_argument( "BranchAndXSolver::BranchAndXSolver: "
+	   "the heuristic ChangeSolver does not derive from Solver" ) );
+   f_HeuristicSolvers.push_back( { Hsolver , s } );
+   }
   Solver::set_Block( B );
-  for( auto s : f_RelaxationSolvers )
-   s->set_Block( B );
-  for( auto s : f_HeuristicSolvers )
-   s->set_Block( B );
+  for( auto & p : f_RelaxationSolvers )
+   p.second->set_Block( B );
+  for( auto & p : f_HeuristicSolvers )
+   p.second->set_Block( B );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -434,11 +491,17 @@ class BranchAndXSolver : public Solver {
 /*---------------------------- PROTECTED FIELDS ----------------------------*/
 /*--------------------------------------------------------------------------*/
 
- /// pointer(s) to the Solver used to solve the relaxations
- std::vector< RelaxationSolver * > f_RelaxationSolvers;
+ /// the inner solvers of the relaxations: ( trait , Solver personality )
+ /** Each inner solver is one object with two personalities [see
+  * ChangeSolver.h]: the RelaxationSolver trait (branch(), apply(),
+  * get_true_*()) and the Solver proper (compute(), get_lb() / get_ub()).
+  * Since neither derives from the other, both pointers to the same object
+  * are kept, obtained by cross-cast at creation. */
+ std::vector< std::pair< RelaxationSolver * , Solver * > >
+  f_RelaxationSolvers;
 
- /// pointer(s) to the Solver used to find feasible solutions
- std::vector< ChangeSolver * > f_HeuristicSolvers;
+ /// the inner heuristic solvers: ( trait , Solver personality )
+ std::vector< std::pair< ChangeSolver * , Solver * > > f_HeuristicSolvers;
 
  int f_state;             ///< the (current) state of the compute() process
 
@@ -487,12 +550,14 @@ class BranchAndXSolver : public Solver {
      slvr->set_ComputeConfig( cfg );
     slvr->set_Block( f_Block );
     v_created.push_back( slvr );    // owned like the serial ones
+    // the traits are discovered on the Solver by cross-cast [see
+    // ChangeSolver.h] and kept alongside the Solver personality
     if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
      rs->set_global_information( &f_globalInfo );
-     ws.relaxation.push_back( rs );
+     ws.relaxation.push_back( { rs , slvr } );
      }
     else if( auto hs = dynamic_cast< ChangeSolver * >( slvr ) )
-     ws.heuristic.push_back( hs );
+     ws.heuristic.push_back( { hs , slvr } );
     else
      throw( std::invalid_argument( "BranchAndXSolver::"
             "createWorkerSolvers: the BlockSolverConfig must only "
@@ -514,12 +579,14 @@ class BranchAndXSolver : public Solver {
     slvr->set_ComputeConfig( cfg );
    slvr->set_Block( f_Block );
    v_created.push_back( slvr );
+   // the traits are discovered on the Solver by cross-cast [see
+   // ChangeSolver.h] and kept alongside the Solver personality
    if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
     rs->set_global_information( &f_globalInfo );
-    f_RelaxationSolvers.push_back( rs );
+    f_RelaxationSolvers.push_back( { rs , slvr } );
     }
    else if( auto hs = dynamic_cast< ChangeSolver * >( slvr ) )
-    f_HeuristicSolvers.push_back( hs );
+    f_HeuristicSolvers.push_back( { hs , slvr } );
    else
     throw( std::invalid_argument( "BranchAndXSolver::"
            "applyConfigurationToSolvers: the BlockSolverConfig must only "
@@ -562,8 +629,10 @@ class BranchAndXSolver : public Solver {
   * and a wall-clock deadline. */
 
  int workerDFS( Node * currentNode , std::list< ChangeSolver * > & solvers ,
-                std::vector< RelaxationSolver * > & relaxation ,
-                std::vector< ChangeSolver * > & heuristic ,
+                std::vector< std::pair< RelaxationSolver * ,
+                             Solver * > > & relaxation ,
+                std::vector< std::pair< ChangeSolver * ,
+                             Solver * > > & heuristic ,
                 bool minimizing , std::mutex & incumbentMutex ,
                 std::atomic< int > & nodeBdg ,
                 std::chrono::steady_clock::time_point deadline ,
@@ -641,9 +710,22 @@ class BranchAndXSolver : public Solver {
 
  int maxNodes;                ///< node budget of a solve (see intMaxNodes)
 
- /// the search-global information shared with the relaxations (incumbent,
- /// global cuts/columns); its incumbent is bound to the live bestBound
+ /// the global information shared with the relaxations
+ /** The GlobalInformation handed to every relaxation: the reserved hot
+  * scalars / flags (incumbent, local-fixing-allowed) and the pool of the
+  * globally valid cuts [see str_GlobalCuts]. The individual atomics are
+  * reached through the references cached below. */
  GlobalInformation f_globalInfo;
+
+ /// the cached reference to the atomic incumbent cell
+ /** Mirrors bestBound: every improvement of the incumbent is store()-d
+  * here too, which is how the relaxations see it lock-free [see
+  * GlobalInformation::str_Incumbent]; NaN (not finite) when no feasible
+  * solution has been found yet. */
+ std::atomic< double > * f_incumbentCell;
+
+ /// the cached reference to the atomic local-fixing-allowed flag
+ std::atomic< bool > * f_lfaCell;
 
  /// the root of the tree retained for reoptimization, nullptr if none
  ExploringNode * f_treeRoot;
@@ -669,8 +751,8 @@ class BranchAndXSolver : public Solver {
 
  /// the private Solver set of one worker of the parallel exploration
  struct WorkerSolvers {
-  std::vector< RelaxationSolver * > relaxation;
-  std::vector< ChangeSolver * > heuristic;
+  std::vector< std::pair< RelaxationSolver * , Solver * > > relaxation;
+  std::vector< std::pair< ChangeSolver * , Solver * > > heuristic;
   };
 
  /// the per-worker Solver sets [see createWorkerSolvers()]
