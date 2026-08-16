@@ -83,6 +83,27 @@ static bool cannot_improve( double dual , double best , bool minimizing ,
  return( minimizing ? dual >= best - eps : dual <= best + eps );
  }
 
+/// the Solution corresponding to the current solution of \p slvr
+/** Writes the current solution of \p slvr into its Block (under lock) and
+ * returns the corresponding newly minted Solution object, whose ownership
+ * is transferred to the caller. This is how a Solution is obtained from a
+ * heuristic :ChangeSolver, which unlike a :RelaxationSolver [see
+ * RelaxationSolver::get_true_solution()] has no way of its own to produce
+ * one. */
+
+static Solution * solution_of( Solver * slvr ,
+                               Configuration * solc = nullptr )
+{
+ auto blck = slvr->get_Block();
+ // TODO: check that lock()-ing / unlock()-ing here is appropriate
+ blck->lock( slvr );
+ slvr->get_var_solution( solc );
+ auto sol = blck->get_Solution( solc );
+ blck->unlock( slvr );
+ return( sol );
+ }
+
+/*--------------------------------------------------------------------------*/
 /// initialize the common per-solve variables
 /** @param solvers list to be filled with all the :ChangeSolver to drive
  *  @param f_RelaxationSolvers the relaxation solvers to insert in solvers
@@ -301,7 +322,7 @@ static int computeHeuristic(
     bestBound = primal_bound;
     incumbentCell->store( bestBound );
     delete bestSol;
-    bestSol = hs->get_Solution();
+    bestSol = solution_of( s );
     }
    }
   return( Solver::kOK );
@@ -331,7 +352,7 @@ static int computeHeuristic(
     bestBound = primal_bound;
     incumbentCell->store( bestBound );
     delete bestSol;
-    bestSol = hs->get_Solution();
+    bestSol = solution_of( s );
     }
    }
   }
@@ -599,6 +620,38 @@ class DiveOpenList final : public OpenList {
 /*--------------------------------------------------------------------------*/
 /*----------------- METHODS OF BranchAndXSolver ------------------------*/
 /*--------------------------------------------------------------------------*/
+/*-------------------------- PROTECTED METHODS -----------------------------*/
+/*--------------------------------------------------------------------------*/
+
+double BranchAndXSolver::no_incumbent( void ) const
+{
+ return( f_Block->get_objective_sense() == Objective::eMax
+	 ? - Inf< double >() : Inf< double >() );
+ }
+
+/*--------------------------------------------------------------------------*/
+/*---------------------- METHODS FOR READING RESULTS -----------------------*/
+/*--------------------------------------------------------------------------*/
+
+Solver::OFValue BranchAndXSolver::get_lb( void )
+{
+ if( f_Block->get_objective_sense() == Objective::eMax )
+  return( bestBound );                 // the incumbent is a lower bound
+ // the dual bound is only proven once the whole tree has been explored
+ return( f_state == kOK ? bestBound : - Inf< OFValue >() );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+Solver::OFValue BranchAndXSolver::get_ub( void )
+{
+ if( f_Block->get_objective_sense() == Objective::eMin )
+  return( bestBound );                 // the incumbent is an upper bound
+ // the dual bound is only proven once the whole tree has been explored
+ return( f_state == kOK ? bestBound : Inf< OFValue >() );
+ }
+
+/*--------------------------------------------------------------------------*/
 /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
 /*--------------------------------------------------------------------------*/
 
@@ -638,11 +691,9 @@ int BranchAndXSolver::compute( bool changedvars )
   if( ( changes == 4 ) || ( solveType != BestFS ) || ( ! reoptimize ) )
    discardRetainedTree();
 
-  bestBound = ( f_Block->get_objective_sense() == Objective::eMax )
-              ? - Inf< double >() : Inf< double >();
-  // no incumbent yet: the shared cell reads as not-finite [see
-  // GlobalInformation::str_Incumbent]
-  f_incumbentCell->store( std::numeric_limits< double >::quiet_NaN() );
+  bestBound = no_incumbent();
+  // no incumbent yet [see no_incumbent() and GlobalInformation::str_Incumbent]
+  f_incumbentCell->store( bestBound );
   switch( solveType ) {
    case( DFS ): {
     if( const int K = get_int_par( intMaxThread ) ; K > 1 )
@@ -662,6 +713,11 @@ int BranchAndXSolver::compute( bool changedvars )
     throw( std::invalid_argument( "BranchAndXSolver::compute: invalid "
                                   "intSolveMethod" ) );
    }
+
+  // an exploration that has been completed without ever finding a feasible
+  // solution proves that there is none
+  if( ( f_state == kOK ) && ( bestBound == no_incumbent() ) )
+   f_state = kInfeasible;
   }
 
  changes = 0;

@@ -158,7 +158,13 @@ class BranchAndXSolver : public Solver {
   *   cut can be consumed by several solvers at once; a consumer remembers
   *   how many entries it has already seen and only reads the new tail
   *   (under read_with()). In perspective a symmetric pool serves the
-  *   globally valid columns. */
+  *   globally valid columns.
+  *
+  * The BranchAndXSolver does not create this Collection: it is a channel
+  * between relaxations, which it neither fills nor reads, so it is created
+  * (add_to_Universe()) by the first relaxation that contributes a cut. Only
+  * the name and the key are fixed here, so that producers and consumers can
+  * agree on them. */
 
  static constexpr const char * str_GlobalCuts = "GlobalCuts";
 
@@ -183,62 +189,8 @@ class BranchAndXSolver : public Solver {
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) , changes( 4 ) ,
                       subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() {
-  // populate the global information with the collections this search uses:
-  // the reserved hot scalars / flags of the whole cooperation [see
-  // GlobalInformation.h] and the (in perspective) pool of globally valid
-  // cuts [see str_GlobalCuts]. The references to the individual atomics
-  // are cached once here and used lock-free ever after
-  f_globalInfo.add_to_Universe< std::atomic< double > >(
-			       GlobalInformation::str_AtomicScalars );
-  f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
-			 std::atomic< double > >(
-			  GlobalInformation::str_AtomicScalars ) )[
-			   GlobalInformation::str_Incumbent ] );
-  f_incumbentCell->store( std::numeric_limits< double >::quiet_NaN() );
-
-  f_globalInfo.add_to_Universe< std::atomic< bool > >(
-			       GlobalInformation::str_AtomicFlags );
-  f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
-		    GlobalInformation::str_AtomicFlags ) )[
-		     GlobalInformation::str_LocalFixingAllowed ] );
-  f_lfaCell->store( true );
-
-  f_globalInfo.add_to_Universe< std::vector< std::shared_ptr< Change > > >(
-			       str_GlobalCuts );
-  f_globalInfo.get_from_Universe< std::vector< std::shared_ptr< Change > > >(
-	       str_GlobalCuts )->write( str_Cuts , {} );
-  }
-
-/*--------------------------------------------------------------------------*/
- /// constructor taking the inner Solver and the Block directly
-
- BranchAndXSolver( RelaxationSolver * Rsolver , ChangeSolver * Hsolver ,
-                   Block * B ) : BranchAndXSolver() {
-  // the traits are side-loaded on a :Solver [see ChangeSolver.h]: the
-  // Solver personality of each inner solver is reached by cross-cast and
-  // kept alongside the trait pointer
-  if( Rsolver ) {
-   auto s = dynamic_cast< Solver * >( Rsolver );
-   if( ! s )
-    throw( std::invalid_argument( "BranchAndXSolver::BranchAndXSolver: "
-	   "the RelaxationSolver does not derive from Solver" ) );
-   f_RelaxationSolvers.push_back( { Rsolver , s } );
-   Rsolver->set_global_information( &f_globalInfo );
-   }
-  if( Hsolver ) {
-   auto s = dynamic_cast< Solver * >( Hsolver );
-   if( ! s )
-    throw( std::invalid_argument( "BranchAndXSolver::BranchAndXSolver: "
-	   "the heuristic ChangeSolver does not derive from Solver" ) );
-   f_HeuristicSolvers.push_back( { Hsolver , s } );
-   }
-  Solver::set_Block( B );
-  for( auto & p : f_RelaxationSolvers )
-   p.second->set_Block( B );
-  for( auto & p : f_HeuristicSolvers )
-   p.second->set_Block( B );
-  }
+                      integerNodes() ,
+                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) { }
 
 /*--------------------------------------------------------------------------*/
  /// destructor
@@ -263,6 +215,8 @@ class BranchAndXSolver : public Solver {
 
  void set_Block( Block * block ) override {
   Solver::set_Block( block );
+  if( block )
+   initializeGlobalInformation();
   if( f_RelaxationSolvers.empty() && f_HeuristicSolvers.empty() &&
       configurationRS )
    applyConfigurationToSolvers();
@@ -374,6 +328,25 @@ class BranchAndXSolver : public Solver {
  /// return the value of the best solution found
 
  OFValue get_var_value( void ) override { return( bestBound ); }
+
+/*--------------------------------------------------------------------------*/
+ /// return a lower bound on the optimal objective function value
+ /** For a maximization problem the incumbent is a valid lower bound; for a
+  * minimization one a lower bound is the global dual bound of the
+  * exploration, which is only available once the enumeration has been
+  * completed [see get_ub()], in which case it is the incumbent as well. */
+
+ OFValue get_lb( void ) override;
+
+/*--------------------------------------------------------------------------*/
+ /// return an upper bound on the optimal objective function value
+ /** The symmetric of get_lb(): the incumbent for a minimization problem, the
+  * global dual bound - available only when the enumeration has been completed
+  * - for a maximization one. Note that an enumeration stopped by any of the
+  * budgets has explored only a part of the tree, so it claims no bound on the
+  * side of the not yet explored nodes. */
+
+ OFValue get_ub( void ) override;
 
 /*--------------------------------------------------------------------------*/
 /*------------------- METHODS FOR HANDLING THE PARAMETERS ------------------*/
@@ -527,6 +500,45 @@ class BranchAndXSolver : public Solver {
   * [see add_Modification()]; this way they never appear in the Block's
   * registered-Solver list (whose order and content belong to the user). */
 
+ /// declare in the GlobalInformation what this search shares
+ /** Declares in the GlobalInformation the Collection that the search shares
+  * with its inner Solver: the reserved "hot" scalars and flags of the whole
+  * cooperation [see GlobalInformation.h], i.e., the incumbent and the
+  * local-fixing-allowed flag. The references to the two individual atomics
+  * are cached once here, and used lock-free ever after; the incumbent starts
+  * at "no incumbent", which is why this needs the Block: which infinity that
+  * is depends on the sense of the Objective. Called by set_Block(), i.e.,
+  * before any inner Solver is handed the GlobalInformation. */
+
+ void initializeGlobalInformation( void ) {
+  f_globalInfo.add_to_Universe< std::atomic< double > >(
+			       GlobalInformation::str_AtomicScalars );
+  f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
+			 std::atomic< double > >(
+			  GlobalInformation::str_AtomicScalars ) )[
+			   GlobalInformation::str_Incumbent ] );
+  f_incumbentCell->store( no_incumbent() );
+
+  f_globalInfo.add_to_Universe< std::atomic< bool > >(
+			       GlobalInformation::str_AtomicFlags );
+  f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
+		    GlobalInformation::str_AtomicFlags ) )[
+		     GlobalInformation::str_LocalFixingAllowed ] );
+  f_lfaCell->store( true );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// the value of the incumbent meaning that there is none
+ /** The value that the incumbent has while no feasible solution has been
+  * found yet: the infinity that no solution can improve upon, i.e., +INF
+  * for a minimization problem and -INF for a maximization one. Any bound is
+  * therefore "better" than it without any special case, and a consumer that
+  * rather wants to check whether there is an incumbent at all just tests it
+  * for finiteness. */
+
+ [[nodiscard]] double no_incumbent( void ) const;
+
+/*--------------------------------------------------------------------------*/
  /// create the per-worker private Solver sets for the parallel exploration
  /** Creates \p K additional sets of inner Solver out of configurationRS,
   * one per worker of the parallel exploration (see v_workerSolvers): each
@@ -712,19 +724,24 @@ class BranchAndXSolver : public Solver {
 
  /// the global information shared with the relaxations
  /** The GlobalInformation handed to every relaxation: the reserved hot
-  * scalars / flags (incumbent, local-fixing-allowed) and the pool of the
-  * globally valid cuts [see str_GlobalCuts]. The individual atomics are
-  * reached through the references cached below. */
+  * scalars / flags (incumbent, local-fixing-allowed), declared by
+  * initializeGlobalInformation(), plus whatever the relaxations put there
+  * themselves (say, the pool of the globally valid cuts, see
+  * str_GlobalCuts). The individual atomics are reached through the
+  * references cached below. */
  GlobalInformation f_globalInfo;
 
  /// the cached reference to the atomic incumbent cell
  /** Mirrors bestBound: every improvement of the incumbent is store()-d
   * here too, which is how the relaxations see it lock-free [see
-  * GlobalInformation::str_Incumbent]; NaN (not finite) when no feasible
-  * solution has been found yet. */
+  * GlobalInformation::str_Incumbent]; not finite when no feasible solution
+  * has been found yet [see no_incumbent()]. nullptr until set_Block(). */
  std::atomic< double > * f_incumbentCell;
 
  /// the cached reference to the atomic local-fixing-allowed flag
+ /** Set by each compute(), which is where it is known whether the tree is
+  * being retained across re-solves [see intReoptimize]. nullptr until
+  * set_Block(). */
  std::atomic< bool > * f_lfaCell;
 
  /// the root of the tree retained for reoptimization, nullptr if none
