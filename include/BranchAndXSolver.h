@@ -112,10 +112,14 @@ class BranchAndXSolver : public Solver {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
   intReoptimize ,                   /**< retain the tree to reoptimize:
-   * with it the (BestFS, serial) exploration keeps the tree and its fenced
-   * frontier alive across compute() calls, and a re-solve under class 1-3
-   * changes [see RelaxationSolver::classify()] re-seeds the search from
-   * the re-evaluated frontier instead of re-deriving the whole tree. Note
+   * with it any serial exploration keeps the tree and its fenced frontier
+   * alive across compute() calls, and a re-solve under class 1-3 changes
+   * [see RelaxationSolver::classify()] re-seeds the search from the
+   * re-evaluated frontier instead of re-deriving the whole tree [see
+   * reseedFrontier()]; the strategy only decides the order in which the
+   * frontier is re-explored, which is that of its own open set. The
+   * parallel depth-first exploration [see ParallelDFSSolve()] does not
+   * retain anything, and always solves from scratch. Note
    * that in a binary enumeration the fenced frontier is about as large as
    * the interior, so this pays off when evaluating a node is expensive
    * (say, LP-like relaxations) and/or few nodes re-open, while for very
@@ -691,6 +695,32 @@ class BranchAndXSolver : public Solver {
               int & counter , ExploringNode * rootNode ,
               ExploringNode * currentNode , bool retain ,
               std::chrono::high_resolution_clock::time_point start );
+
+/*--------------------------------------------------------------------------*/
+ /// re-seed the exploration from the frontier of the retained tree
+ /** Reoptimization [see intReoptimize]: instead of building a new tree, the
+  * one retained by the previous solve is taken back (\p rootNode is set to
+  * it) and its fenced frontier is re-evaluated under the new data, each node
+  * being either re-fenced or re-opened into \p open; the interior of the
+  * tree is NOT re-derived. Class-specific saving: an objective-only change
+  * cannot un-fence an infeasible node [see RelaxationSolver::classify()], so
+  * that part of the frontier is left untouched.
+  *
+  * The re-opened nodes are handed to \p open respecting its discipline (a
+  * LIFO stack receives them in reverse), exactly as explore() does with the
+  * children of a node: the frontier is sorted by the dual bound of the
+  * previous solve, so that whatever the strategy the most promising nodes
+  * are looked at first and the incumbent warms up immediately. This is why
+  * the mechanism is independent of the exploration strategy: the order in
+  * which the frontier is re-explored is entirely a matter of \p open.
+  *
+  * \p currentNode is left where the :ChangeSolver actually sit, which on
+  * success is the last re-evaluated node and on failure is \p rootNode.
+  *  @return the sol_type [see Solver.h] of the re-evaluation */
+
+ int reseedFrontier( OpenList & open , std::list< ChangeSolver * > * solvers ,
+                     bool minimizing , ExploringNode * & rootNode ,
+                     ExploringNode * & currentNode );
 
 /*--------------------------------------------------------------------------*/
  /// tear down a retained / in-progress tree and its open set and frontier

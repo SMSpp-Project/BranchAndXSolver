@@ -14,10 +14,6 @@
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
  *
- * \author Federica Di Pasquale \n
- *         Dipartimento di Informatica \n
- *         Universita' di Pisa \n
- *
  * \author Filippo Magi \n
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
@@ -26,8 +22,7 @@
  *         Dipartimento di Informatica \n
  *         Universita' di Pisa \n
  *
- * Copyright &copy by Antonio Frangioni, Federica Di Pasquale, Filippo
- * Magi, Donato Meoli
+ * Copyright &copy by Antonio Frangioni, Filippo Magi, Donato Meoli
  */
 /*--------------------------------------------------------------------------*/
 /*---------------------------- IMPLEMENTATION ------------------------------*/
@@ -671,11 +666,16 @@ int BranchAndXSolver::compute( bool changedvars )
  relTol = get_dbl_par( dblRelAcc );
  absTol = get_dbl_par( dblAbsAcc );
 
+ // the tree is retained by any serial exploration, but not by the parallel
+ // depth-first one, whose worker forest is not kept [see ParallelDFSSolve()]
+ const bool parallelDFS = ( solveType == DFS ) &&
+                          ( get_int_par( intMaxThread ) > 1 );
+
  // incumbent-dependent local fixing folded into the branching Changes is
  // unsafe when the tree is retained across re-solves with different
  // incumbents: forbid it in that case, allow it otherwise [see
  // GlobalInformation::local_fixing_allowed()]
- f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( solveType == BestFS ) ) );
+ f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( ! parallelDFS ) ) );
 
  if( changes == 0 )         // nothing changed since the last solve
   f_state = old_state;
@@ -686,9 +686,9 @@ int BranchAndXSolver::compute( bool changedvars )
   // of the fenced frontier of the previous tree (e.g., an objective-only
   // change leaves every infeasibility certificate valid) rather than solving
   // from scratch, but the tree retained for reoptimization (if any) can only
-  // be reused by a BestFS re-solve under class 1-3 changes when retention is
-  // enabled [see intReoptimize / BestFirstSolve()]; otherwise it is discarded
-  if( ( changes == 4 ) || ( solveType != BestFS ) || ( ! reoptimize ) )
+  // be reused by a serial re-solve under class 1-3 changes when retention is
+  // enabled [see intReoptimize / reseedFrontier()]; otherwise it is discarded
+  if( ( changes == 4 ) || ( ! reoptimize ) || parallelDFS )
    discardRetainedTree();
 
   bestBound = no_incumbent();
@@ -753,6 +753,92 @@ void BranchAndXSolver::discardTree( ExploringNode * root , OpenList & open ,
  infeasibleNodes.clear();
  integerNodes.clear();
  }
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::reseedFrontier( OpenList & open ,
+                                     std::list< ChangeSolver * > * solvers ,
+                                     bool minimizing ,
+                                     ExploringNode * & rootNode ,
+                                     ExploringNode * & currentNode )
+{
+ // the retained tree is taken back: compute() guarantees it is only reused
+ // for class 1-3 changes [see RelaxationSolver::classify()], so its interior
+ // is NOT re-derived, only its fenced frontier is re-evaluated
+ rootNode = f_treeRoot;
+ f_treeRoot = nullptr;              // ownership back to this solve
+ currentNode = rootNode;
+
+ std::list< ExploringNode * > frontier;
+ frontier.swap( subOptimalNodes );
+ if( changes != RelaxationSolver::eModObjective ) {
+  // an objective-only change cannot un-fence an infeasible node: in that
+  // case that part of the frontier stays fenced, with no re-evaluation at
+  // all; under any other change it goes back into the frontier
+  frontier.splice( frontier.end() , infeasibleNodes );
+  infeasibleNodes.clear();
+  }
+
+ // best (previous) bound first: the optimum almost surely lives in the first
+ // few nodes, so the incumbent warms up immediately and the rest of the
+ // frontier mostly just re-fences
+ frontier.sort( [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
+  return( minimizing ? a->get_dual_bound() < b->get_dual_bound()
+                     : a->get_dual_bound() > b->get_dual_bound() );
+  } );
+
+ int res = Solver::kOK;
+ std::vector< ExploringNode * > reopened;  // pushed after the loop
+ for( auto F : frontier ) {
+  ExploringNode::moveBetweenNodes( currentNode , F , solvers );
+  currentNode = F;
+  F->initializeBound( minimizing );
+  bool toPrune = false;
+  RelaxationSolver * nodeBranchSolver = nullptr;
+  res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
+                            bestSolution , f_incumbentCell , toPrune ,
+                            nodeBranchSolver ,
+                            relTol , absTol , maxThreadForSolvers );
+  if( ( res == Solver::kOK ) && ( ! toPrune ) )
+   res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
+                           bestSolution , f_incumbentCell , toPrune ,
+                           maxThreadForSolvers );
+  if( res != Solver::kOK )
+   break;
+  if( ( ! toPrune ) &&
+      ( ! cannot_improve( F->get_dual_bound() , bestBound , minimizing ,
+                          relTol , absTol ) ) ) {
+   // re-opened: the branching Changes of the previous solve, if any, are
+   // still valid (any branching is), so they are reused rather than leaked
+   if( F->getBranches().empty() )
+    F->obtainBranchList( nodeBranchSolver );
+   reopened.push_back( F );
+   }
+  else if( F->is_infeasible() )      // fenced again, by reason
+   infeasibleNodes.push_back( F );
+  else
+   subOptimalNodes.push_back( F );
+  }
+
+ if( res != Solver::kOK ) {          // leave the solvers at the root
+  ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
+  currentNode = rootNode;
+  return( res );
+  }
+
+ // hand the re-opened nodes to the open set so that the most promising is
+ // explored first whatever the discipline: a LIFO stack receives them in
+ // reverse, the others in bound order [see explore()]
+ if( open.isLIFO() )
+  for( auto it = reopened.rbegin() ; it != reopened.rend() ; ++it )
+   open.push( *it );
+ else
+  for( auto n : reopened )
+   open.push( n );
+
+ return( Solver::kOK );
+
+ }  // end( BranchAndXSolver::reseedFrontier )
 
 /*--------------------------------------------------------------------------*/
 
@@ -928,87 +1014,27 @@ int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
 
- // the tree is retained for reoptimization only by plain best-first; the dive
- // variant always solves from scratch
- const bool retain = ( reoptimize > 0 ) && ( solveType == BestFS );
+ // the tree is retained for reoptimization by any serial exploration: the
+ // discipline of the open set is the only difference between them
+ const bool retain = ( reoptimize > 0 );
  int res;
  ExploringNode * currentNode;
  if( f_treeRoot ) {
-  // reoptimization: re-seed from the fenced frontier of the previous tree
-  // (compute() guarantees the retained tree is only reused for class 1-3
-  // changes under BestFS): the interior of the tree is NOT re-derived;
-  // every frontier node is re-evaluated under the new data and either
-  // re-fenced or re-opened into the open set. Class-specific saving: an
-  // objective-only change cannot un-fence an infeasible node, so the
-  // infeasible part of the frontier is left untouched (see below)
   delete rootNode;                  // the fresh root is not needed
-  rootNode = f_treeRoot;
-  f_treeRoot = nullptr;             // ownership back to this solve
-  currentNode = rootNode;
-  std::list< ExploringNode * > frontier;
-  frontier.swap( subOptimalNodes );
-  if( changes == RelaxationSolver::eModObjective ) {
-   // an objective-only change cannot un-fence an infeasible node: that
-   // part of the frontier stays fenced, with no re-evaluation at all
-   }
-  else {
-   frontier.splice( frontier.end() , infeasibleNodes );
-   infeasibleNodes.clear();
-   }
-  // best (previous) bound first: the optimum almost surely lives in the
-  // first few nodes, so the incumbent warms up immediately and the rest of
-  // the frontier mostly just re-fences
-  frontier.sort( [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
-   return( minimizing ? a->get_dual_bound() < b->get_dual_bound()
-                      : a->get_dual_bound() > b->get_dual_bound() );
-   } );
-  res = Solver::kOK;
-  for( auto F : frontier ) {
-   ExploringNode::moveBetweenNodes( currentNode , F , solvers );
-   currentNode = F;
-   F->initializeBound( minimizing );
-   bool toPrune = false;
-   RelaxationSolver * nodeBranchSolver = nullptr;
-   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
-                             bestSolution , f_incumbentCell , toPrune ,
-                             nodeBranchSolver ,
-                             relTol , absTol , maxThreadForSolvers );
-   if( ( res == Solver::kOK ) && ( ! toPrune ) )
-    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
-                            bestSolution , f_incumbentCell , toPrune ,
-                            maxThreadForSolvers );
-   if( res != Solver::kOK )
-    break;
-   if( ( ! toPrune ) &&
-       ( ! cannot_improve( F->get_dual_bound() , bestBound , minimizing ,
-                           relTol , absTol ) ) ) {
-    // re-opened: the branching Changes of the previous solve, if any, are
-    // still valid (any branching is), so they are reused rather than leaked
-    if( F->getBranches().empty() )
-     F->obtainBranchList( nodeBranchSolver );
-    open.push( F );
-    }
-   else if( F->is_infeasible() )     // fenced again, by reason
-    infeasibleNodes.push_back( F );
-   else
-    subOptimalNodes.push_back( F );
-   }
-  if( res != Solver::kOK ) {
-   ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
-   discardTree( rootNode , open , solvers );
-   return( res );
-   }
+  res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
   }
  else {
   res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                         rootNode , minimizing , bestBound , bestSolution ,
                         f_incumbentCell , branchSolver , globalMutex );
-  if( res != Solver::kOK ) {
-   discardTree( rootNode , open , solvers );
-   return( res );
-   }
-  open.push( rootNode );
+  if( res == Solver::kOK )
+   open.push( rootNode );
   currentNode = rootNode;
+  }
+
+ if( res != Solver::kOK ) {
+  discardTree( rootNode , open , solvers );
+  return( res );
   }
 
  return( explore( open , globalMutex , solvers , minimizing , counter ,
@@ -1030,17 +1056,32 @@ int BranchAndXSolver::BFSSolve( std::mutex & globalMutex )
  QueueOpenList open;
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
- int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                           rootNode , minimizing , bestBound , bestSolution ,
-                           f_incumbentCell , branchSolver , globalMutex );
+ // the tree is retained for reoptimization by any serial exploration [see
+ // intReoptimize]: a re-solve re-seeds from the frontier of the retained
+ // tree, in the order that the open set of this very strategy dictates
+ const bool retain = ( reoptimize > 0 );
+ int res;
+ ExploringNode * currentNode;
+ if( f_treeRoot ) {
+  delete rootNode;                  // the fresh root is not needed
+  res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
+  }
+ else {
+  res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
+                        rootNode , minimizing , bestBound , bestSolution ,
+                        f_incumbentCell , branchSolver , globalMutex );
+  if( res == Solver::kOK )
+   open.push( rootNode );
+  currentNode = rootNode;
+  }
+
  if( res != Solver::kOK ) {
   discardTree( rootNode , open , solvers );
   return( res );
   }
- open.push( rootNode );
 
  return( explore( open , globalMutex , solvers , minimizing , counter ,
-                  rootNode , rootNode , false , start ) );
+                  rootNode , currentNode , retain , start ) );
 
  }  // end( BranchAndXSolver::BFSSolve )
 
@@ -1058,17 +1099,32 @@ int BranchAndXSolver::DFSSolve( std::mutex & globalMutex )
  StackOpenList open;
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
- int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                           rootNode , minimizing , bestBound , bestSolution ,
-                           f_incumbentCell , branchSolver , globalMutex );
+ // the tree is retained for reoptimization by any serial exploration [see
+ // intReoptimize]: a re-solve re-seeds from the frontier of the retained
+ // tree, in the order that the open set of this very strategy dictates
+ const bool retain = ( reoptimize > 0 );
+ int res;
+ ExploringNode * currentNode;
+ if( f_treeRoot ) {
+  delete rootNode;                  // the fresh root is not needed
+  res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
+  }
+ else {
+  res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
+                        rootNode , minimizing , bestBound , bestSolution ,
+                        f_incumbentCell , branchSolver , globalMutex );
+  if( res == Solver::kOK )
+   open.push( rootNode );
+  currentNode = rootNode;
+  }
+
  if( res != Solver::kOK ) {
   discardTree( rootNode , open , solvers );
   return( res );
   }
- open.push( rootNode );
 
  return( explore( open , globalMutex , solvers , minimizing , counter ,
-                  rootNode , rootNode , false , start ) );
+                  rootNode , currentNode , retain , start ) );
 
  }  // end( BranchAndXSolver::DFSSolve )
 
