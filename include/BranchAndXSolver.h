@@ -111,6 +111,17 @@ class BranchAndXSolver : public Solver {
  enum int_par_type_BXS {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
+  intBoundingProtocol ,             /**< when a node is evaluated:
+   * with the eager protocol (the default) a node is evaluated as soon as it
+   * is created, i.e., inside the branching of its parent, so that it is only
+   * put in the open set if its dual bound can improve the incumbent; with
+   * the lazy one it is put there unevaluated, carrying the dual bound of its
+   * parent, and it is evaluated when it is extracted. Evaluating late can
+   * save the whole evaluation of the nodes that a better incumbent, found in
+   * the meantime, prunes without ever looking at them; evaluating early
+   * gives the open set the true bound of each node, which is what a
+   * best-first discipline orders by [see intSolveMethod]. Either way a node
+   * is evaluated at most once [see Node::is_evaluated()]. */
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it any serial exploration keeps the tree and its fenced frontier
    * alive across compute() calls, and a re-solve under class 1-3 changes
@@ -138,6 +149,14 @@ class BranchAndXSolver : public Solver {
   strLastBXSPar                    ///< first allowed new string parameter
   };
 
+ /// public enum for when the inner Solver are run on a node
+
+ enum BoundingProtocol {
+  Eager = 0 ,                       ///< when the node is created
+  Lazy = 1                          ///< when the node is extracted
+  };
+
+/*--------------------------------------------------------------------------*/
  /// public enum for the possible tree exploration strategies
 
  enum SolveMethod {
@@ -187,6 +206,7 @@ class BranchAndXSolver : public Solver {
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
                       bestBound( 0 ) , bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
+                      boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
                       maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
@@ -232,6 +252,10 @@ class BranchAndXSolver : public Solver {
   *
   * - intSolveMethod [BestFS]: how to explore the tree (see SolveMethod);
   *
+  * - intBoundingProtocol [Eager]: when a node is evaluated (see
+  *   BoundingProtocol); it changes nothing of what is explored, only when
+  *   the inner Solver are run on a node.
+  *
   * - intThreadForDifferentSolvers [1]: maximum number of threads used to
   *   evaluate the (multiple) inner Solver at each node in parallel [see
   *   computeRelaxationsParallel() / computeHeuristicParallel()]; 1 = serial.
@@ -264,6 +288,9 @@ class BranchAndXSolver : public Solver {
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "intThreadForDifferentSolvers must be positive" ) );
     maxThreadForSolvers = value;
+    break;
+   case( intBoundingProtocol ):
+    boundingProtocol = static_cast< BoundingProtocol >( value );
     break;
    case( intReoptimize ):
     reoptimize = value;
@@ -372,6 +399,7 @@ class BranchAndXSolver : public Solver {
   switch( par ) {
    case( intSolveMethod ):               return( int( BestFS ) );
    case( intThreadForDifferentSolvers ): return( 1 );
+   case( intBoundingProtocol ):          return( int( Eager ) );
    case( intReoptimize ):                return( 0 );
    case( intMaxNodes ):                  return( INT_MAX );
    }
@@ -394,6 +422,7 @@ class BranchAndXSolver : public Solver {
    case( intSolveMethod ):               return( int( solveType ) );
    case( intMaxThread ):                 return( maxThread );
    case( intThreadForDifferentSolvers ): return( maxThreadForSolvers );
+   case( intBoundingProtocol ):          return( int( boundingProtocol ) );
    case( intReoptimize ):                return( reoptimize );
    case( intMaxNodes ):                  return( maxNodes );
    }
@@ -415,6 +444,8 @@ class BranchAndXSolver : public Solver {
    return( intSolveMethod );
   if( name == "intThreadForDifferentSolvers" )
    return( intThreadForDifferentSolvers );
+  if( name == "intBoundingProtocol" )
+   return( intBoundingProtocol );
   if( name == "intReoptimize" )
    return( intReoptimize );
   if( name == "intMaxNodes" )
@@ -435,6 +466,7 @@ class BranchAndXSolver : public Solver {
   const override {
   static const std::string pars[] = { "intSolveMethod" ,
                                       "intThreadForDifferentSolvers" ,
+                                      "intBoundingProtocol" ,
                                       "intReoptimize" , "intMaxNodes" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
@@ -655,28 +687,18 @@ class BranchAndXSolver : public Solver {
                 int & nameCounter );
 
 /*--------------------------------------------------------------------------*/
- /// solve the tree breadth-first
- /** @param globalMutex mutex protecting the shared state of this class
-  *  @return the sol_type [see Solver.h] of the computation */
-
- int BFSSolve( std::mutex & globalMutex );
-
-/*--------------------------------------------------------------------------*/
- /// solve the tree depth-first
- /** Depth-first exploration: the same explore() loop as the breadth- and
-  * best-first ones, only with a LIFO stack as the open set, over the common
-  * ExploringNode tree.
+ /// solve the tree with the exploration strategy that is set
+ /** The one serial exploration: it builds the OpenList that the chosen
+  * strategy asks for [see intSolveMethod and OpenList] - a LIFO stack for
+  * depth-first, a FIFO queue for breadth-first, a dual-bound priority queue
+  * for best-first, its diving variant for BestFSDive - seeds it with the
+  * root (or with the frontier of the retained tree, see reseedFrontier())
+  * and hands it to the shared loop [see explore()]. The strategies differ in
+  * nothing else.
   *  @param globalMutex mutex protecting the shared state of this class
   *  @return the sol_type [see Solver.h] of the computation */
 
- int DFSSolve( std::mutex & globalMutex );
-
-/*--------------------------------------------------------------------------*/
- /// solve the tree best-first
- /** @param globalMutex mutex protecting the shared state of this class
-  *  @return the sol_type [see Solver.h] of the computation */
-
- int BestFirstSolve( std::mutex & globalMutex );
+ int treeSolve( std::mutex & globalMutex );
 
 /*--------------------------------------------------------------------------*/
  /// the single serial tree exploration, driven by the open-list discipline
@@ -745,10 +767,13 @@ class BranchAndXSolver : public Solver {
 
  int maxThreadForSolvers;     ///< max threads for solvers at each node
 
+ BoundingProtocol boundingProtocol;  ///< when a node is evaluated (see
+                                     ///< intBoundingProtocol)
+
  int maxThread;               ///< workers of the parallel tree exploration
 
  int reoptimize;              ///< retain the tree to reoptimize (see
-                              ///< intReoptimize / BestFirstSolve())
+                              ///< intReoptimize / treeSolve())
 
  int maxNodes;                ///< node budget of a solve (see intMaxNodes)
 
@@ -850,7 +875,7 @@ class Node {
  Node( Change * change , int nodeName = 0 )
   : dual_bound( - Inf< double >() ) , f_change( change ) ,
     toFather( nullptr ) , branches() , f_infeasible( false ) ,
-    name( nodeName ) {}
+    f_evaluated( false ) , name( nodeName ) {}
 
 /*--------------------------------------------------------------------------*/
  /// destructor: deletes the owned Changes
@@ -886,6 +911,7 @@ class Node {
  void initializeBound( bool minimizing ) {
   dual_bound = minimizing ? - Inf< double >() : Inf< double >();
   f_infeasible = false;
+  f_evaluated = false;
   }
 
  /// whether the node was found infeasible (its relaxation has no solution)
@@ -893,6 +919,18 @@ class Node {
 
  /// record that the node is infeasible
  void set_infeasible( bool i ) { f_infeasible = i; }
+
+ /// whether the inner Solver have already been run on this node
+ /** Tells whether the node has already been evaluated, i.e., whether its
+  * dual bound and branching Changes are those of the inner Solver rather
+  * than the ones it inherited when it was created; this is what makes the
+  * lazy bounding protocol [see BranchAndXSolver::intBoundingProtocol] never
+  * evaluate a node twice. */
+
+ bool is_evaluated( void ) const { return( f_evaluated ); }
+
+ /// record that the inner Solver have been run on this node
+ void set_evaluated( bool e ) { f_evaluated = e; }
 
  /// have the given RelaxationSolver produce the branching Changes
  void obtainBranchList( RelaxationSolver * solver ) {
@@ -918,6 +956,8 @@ class Node {
  std::vector< Change * > branches;
 
  bool f_infeasible;     ///< whether the node's relaxation has no solution
+
+ bool f_evaluated;      ///< whether the inner Solver have been run here
 
 /*--------------------------------------------------------------------------*/
 /*----------------------- PRIVATE PART OF THE CLASS ------------------------*/
@@ -1007,7 +1047,7 @@ class ExploringNode : public Node {
  static void moveBetweenNodes( ExploringNode * sourceNode ,
                                ExploringNode * destNode ,
                                std::list< ChangeSolver * > * solvers ) {
-  std::list< Change * > changesToApply;
+  std::list< ExploringNode * > toDescend;
   while( sourceNode->level != destNode->level ) {
    if( sourceNode->level > destNode->level ) {
     for( const auto s : *solvers )
@@ -1015,7 +1055,7 @@ class ExploringNode : public Node {
     sourceNode = sourceNode->parent;
     }
    else {
-    changesToApply.push_front( destNode->f_change );
+    toDescend.push_front( destNode );
     destNode = destNode->parent;
     }
    }
@@ -1023,12 +1063,23 @@ class ExploringNode : public Node {
    for( const auto s : *solvers )
     s->apply( sourceNode->toFather , false );
    sourceNode = sourceNode->parent;
-   changesToApply.push_front( destNode->f_change );
+   toDescend.push_front( destNode );
    destNode = destNode->parent;
    }
-  for( auto change : changesToApply )
-   for( const auto s : *solvers )
-    s->apply( change , false );
+  // descending, the first solver produces the undo Change of any node that
+  // does not have one yet, which is how a node entered for the first time
+  // gets it [see BranchAndXSolver::intBoundingProtocol: a node evaluated
+  // lazily is created without the solvers ever descending into it]
+  for( auto node : toDescend ) {
+   bool modified = false;
+   for( const auto s : *solvers ) {
+    if( ( ! modified ) && ( ! node->toFather ) )
+     node->set_toFather( s->apply( node->f_change , true ) );
+    else
+     s->apply( node->f_change , false );
+    modified = true;
+    }
+   }
   }
 
 /*--------------------------------------------------------------------------*/

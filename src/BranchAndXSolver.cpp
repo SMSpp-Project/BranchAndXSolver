@@ -31,6 +31,7 @@
 /*--------------------------------------------------------------------------*/
 
 #include <chrono>
+#include <iostream>
 #include <cmath>
 #include <deque>
 #include <memory>
@@ -96,6 +97,41 @@ static Solution * solution_of( Solver * slvr ,
  auto sol = blck->get_Solution( solc );
  blck->unlock( slvr );
  return( sol );
+ }
+
+/*--------------------------------------------------------------------------*/
+/// write on the log one line per explored node, in CSV form
+/** When a log stream is set [see Solver::set_log()], each node is described
+ * by one line as soon as its fate is decided (right after its evaluation,
+ * whenever that happens [see BranchAndXSolver::intBoundingProtocol]), so that
+ * the whole exploration can be reconstructed offline: which nodes were
+ * generated, in which order they were evaluated, what their dual bound was,
+ * how the incumbent moved, and why each node was fenced. \p evalTime is the
+ * time spent evaluating this very node, \p elapsed the time since the
+ * beginning of the solve. */
+
+static void logNode( std::ostream * log , int iter , ExploringNode * node ,
+                     double bestBound , double elapsed , double evalTime ,
+                     bool boundPruned )
+{
+ if( ! log )
+  return;
+ auto father = node->get_parent();
+ ( *log ) << iter << ',' << node->get_name() << ','
+	  << ( father ? father->get_name() : -1 ) << ','
+	  << node->get_level() << ',' << bestBound << ','
+	  << node->get_dual_bound() << ',' << elapsed << ',' << evalTime
+	  << ',' << boundPruned << ',' << node->is_infeasible() << std::endl;
+ }
+
+/*--------------------------------------------------------------------------*/
+/// the header of the per-node CSV log [see logNode()]
+
+static void logHeader( std::ostream * log )
+{
+ if( log )
+  ( *log ) << "iter,node,father,level,incumbent,dualBound,"
+	      "elapsedTime,evaluationTime,boundPruned,infeasible" << std::endl;
  }
 
 /*--------------------------------------------------------------------------*/
@@ -413,6 +449,7 @@ static int initializeRoot(
                   std::mutex & globalMutex )
 {
  rootNode->initializeBound( minimizing );
+ rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
                                bestBound , bestSol , incumbentCell ,
@@ -452,10 +489,13 @@ static int evaluateNode(
                   bool & toPrune , RelaxationSolver * & branchSolver ,
                   int nThreads ,
                   double relAcc , double absAcc , std::mutex & globalMutex ,
-                  std::mutex * incumbentMutex = nullptr )
+                  std::mutex * incumbentMutex = nullptr ,
+                  bool moveToNode = true )
 {
- moveSolverToSon( node , &solvers );
+ if( moveToNode )                  // with the lazy protocol the solvers have
+  moveSolverToSon( node , &solvers );  // already been moved to the node
  node->initializeBound( minimizing );
+ node->set_evaluated( true );
 
  // computeRelaxations() / computeHeuristic() dispatch internally on nThreads:
  // a worker of the parallel tree exploration (incumbentMutex set) evaluates its
@@ -694,25 +734,12 @@ int BranchAndXSolver::compute( bool changedvars )
   bestBound = no_incumbent();
   // no incumbent yet [see no_incumbent() and GlobalInformation::str_Incumbent]
   f_incumbentCell->store( bestBound );
-  switch( solveType ) {
-   case( DFS ): {
-    if( const int K = get_int_par( intMaxThread ) ; K > 1 )
-     f_state = ParallelDFSSolve( globalMutex , K );
-    else
-     f_state = DFSSolve( globalMutex );
-    break;
-    }
-   case( BFS ):
-    f_state = BFSSolve( globalMutex );
-    break;
-   case( BestFS ):
-   case( BestFSDive ):
-    f_state = BestFirstSolve( globalMutex );
-    break;
-   default:
-    throw( std::invalid_argument( "BranchAndXSolver::compute: invalid "
-                                  "intSolveMethod" ) );
-   }
+  // one exploration, parameterized by the open set that the strategy asks
+  // for [see treeSolve()]; the only separate one is the parallel depth-first,
+  // which runs its own workers [see ParallelDFSSolve()]
+  f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
+                                            get_int_par( intMaxThread ) )
+                        : treeSolve( globalMutex );
 
   // an exploration that has been completed without ever finding a feasible
   // solution proves that there is none
@@ -853,26 +880,71 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  RelaxationSolver * branchSolver = nullptr;
  int res = Solver::kOK;
  ExploringNode * oldNode = nullptr;
+ int iterations = 0;      // extractions from the open set, for the log
 
  while( ( ! open.empty() ) && ( nodeBudget > 1 ) &&
         ( timeBudget > std::chrono::duration< double >(
            std::chrono::high_resolution_clock::now() - start ).count() ) ) {
   nodeBudget--;
+  ++iterations;
   oldNode = currentNode;
   currentNode = open.pop();
   if( currentNode->get_parent() )   // the root: the solvers are already there
    ExploringNode::moveBetweenNodes( oldNode , currentNode , solvers );
 
+  // with the lazy protocol the node is evaluated now, upon extraction,
+  // rather than when it was created [see intBoundingProtocol]; a node is
+  // evaluated at most once, whichever the protocol
+  bool prunedHere = false;
+  if( ! currentNode->is_evaluated() ) {
+   auto evalStart = std::chrono::high_resolution_clock::now();
+   res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
+                       &f_HeuristicSolvers , minimizing , bestBound ,
+                       bestSolution , f_incumbentCell , prunedHere ,
+                       branchSolver ,
+                       maxThreadForSolvers , relTol , absTol , globalMutex ,
+                       nullptr , false );
+   if( res != Solver::kOK ) {       // an infeasible root ends up here
+    discardTree( rootNode , open , solvers );
+    return( res );
+    }
+   if( ! prunedHere )
+    currentNode->obtainBranchList( branchSolver );
+   logNode( f_log , iterations , currentNode , bestBound ,
+	    std::chrono::duration< double >(
+	     std::chrono::high_resolution_clock::now() - start ).count() ,
+	    std::chrono::duration< double >(
+	     std::chrono::high_resolution_clock::now() - evalStart ).count() ,
+	    prunedHere || cannot_improve( currentNode->get_dual_bound() ,
+					  bestBound , minimizing , relTol ,
+					  absTol ) );
+   }
+
   // branching and evaluation of the new children
-  if( ! cannot_improve( currentNode->get_dual_bound() , bestBound ,
-                        minimizing , relTol , absTol ) ) {
+  if( ( ! prunedHere ) &&
+      ( ! cannot_improve( currentNode->get_dual_bound() , bestBound ,
+                          minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
    std::vector< ExploringNode * > kept;  // survivors, pushed after the loop
    for( auto br : branches ) {
     ExploringNode * new_node = new ExploringNode( br , currentNode ,
                                                   currentNode->get_level()
                                                   + 1 , ++counter );
+    if( boundingProtocol == Lazy ) {
+     // the child is not evaluated now: it goes into the open set carrying
+     // the (valid, if weaker) dual bound of its parent, and will be
+     // evaluated if and when it is extracted [see intBoundingProtocol]
+     new_node->set_dual_bound( currentNode->get_dual_bound() );
+     currentNode->get_children().push_back( new_node );
+     // the child now owns the branching Change as its f_change: null the
+     // entry so that ~Node does not double-delete it on teardown
+     *( std::find( branches.begin() , branches.end() ,
+                   new_node->get_f_change() ) ) = nullptr;
+     kept.push_back( new_node );
+     continue;
+     }
     bool toPrune = false;
+    auto evalStart = std::chrono::high_resolution_clock::now();
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , toPrune ,
@@ -882,6 +954,14 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      discardTree( rootNode , open , solvers );
      return( res );
      }
+    logNode( f_log , iterations , new_node , bestBound ,
+	     std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - start ).count() ,
+	     std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - evalStart ).count() ,
+	     toPrune || cannot_improve( new_node->get_dual_bound() ,
+					bestBound , minimizing , relTol ,
+					absTol ) );
     // keep the node only if its dual bound can improve the incumbent
     if( ( ! toPrune ) &&
         ( ! cannot_improve( new_node->get_dual_bound() , bestBound ,
@@ -989,7 +1069,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 
 /*--------------------------------------------------------------------------*/
 
-int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
+int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
 {
  auto * solvers = new std::list< ChangeSolver * >();
  bool minimizing;
@@ -998,65 +1078,41 @@ int BranchAndXSolver::BestFirstSolve( std::mutex & globalMutex )
 
  auto start = std::chrono::high_resolution_clock::now();
  int counter = 0;
- // the open set is a priority queue, best dual bound first
+
+ // the open set *is* the exploration strategy: a LIFO stack explores
+ // depth-first, a FIFO queue breadth-first, a dual-bound priority queue
+ // best-first, and the dive variant wraps the latter so that each best node
+ // is followed depth-first down to a leaf [see DiveOpenList]
  auto cmp = [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
   return( minimizing ? a->get_dual_bound() > b->get_dual_bound()
                      : a->get_dual_bound() < b->get_dual_bound() );
   };
- // plain best-first uses the dual-bound priority queue; the dive variant wraps
- // it so that each best node is followed depth-first to a leaf [see
- // DiveOpenList]
- std::unique_ptr< OpenList > openPtr =
-  ( solveType == BestFSDive )
-  ? std::unique_ptr< OpenList >( new DiveOpenList( cmp ) )
-  : std::unique_ptr< OpenList >( new PriorityOpenList( cmp ) );
+ std::unique_ptr< OpenList > openPtr;
+ switch( solveType ) {
+  case( DFS ):
+   openPtr.reset( new StackOpenList() );
+   break;
+  case( BFS ):
+   openPtr.reset( new QueueOpenList() );
+   break;
+  case( BestFS ):
+   openPtr.reset( new PriorityOpenList( cmp ) );
+   break;
+  case( BestFSDive ):
+   openPtr.reset( new DiveOpenList( cmp ) );
+   break;
+  default:
+   delete solvers;
+   throw( std::invalid_argument( "BranchAndXSolver::treeSolve: invalid "
+                                 "intSolveMethod" ) );
+  }
  OpenList & open = *openPtr;
+
+ logHeader( f_log );
+
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
-
- // the tree is retained for reoptimization by any serial exploration: the
- // discipline of the open set is the only difference between them
- const bool retain = ( reoptimize > 0 );
- int res;
- ExploringNode * currentNode;
- if( f_treeRoot ) {
-  delete rootNode;                  // the fresh root is not needed
-  res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
-  }
- else {
-  res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                        rootNode , minimizing , bestBound , bestSolution ,
-                        f_incumbentCell , branchSolver , globalMutex );
-  if( res == Solver::kOK )
-   open.push( rootNode );
-  currentNode = rootNode;
-  }
-
- if( res != Solver::kOK ) {
-  discardTree( rootNode , open , solvers );
-  return( res );
-  }
-
- return( explore( open , globalMutex , solvers , minimizing , counter ,
-                  rootNode , currentNode , retain , start ) );
-
- }  // end( BranchAndXSolver::BestFirstSolve )
-
-/*--------------------------------------------------------------------------*/
-
-int BranchAndXSolver::BFSSolve( std::mutex & globalMutex )
-{
- auto * solvers = new std::list< ChangeSolver * >();
- bool minimizing;
- initializeVariables( solvers , &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                      minimizing );
- auto start = std::chrono::high_resolution_clock::now();
- int counter = 0;
- // the open set is a plain FIFO queue
- QueueOpenList open;
- ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
- RelaxationSolver * branchSolver = nullptr;
- // the tree is retained for reoptimization by any serial exploration [see
+ // the tree is retained for reoptimization whatever the strategy [see
  // intReoptimize]: a re-solve re-seeds from the frontier of the retained
  // tree, in the order that the open set of this very strategy dictates
  const bool retain = ( reoptimize > 0 );
@@ -1067,9 +1123,15 @@ int BranchAndXSolver::BFSSolve( std::mutex & globalMutex )
   res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
   }
  else {
-  res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                        rootNode , minimizing , bestBound , bestSolution ,
-                        f_incumbentCell , branchSolver , globalMutex );
+  if( boundingProtocol == Lazy ) {
+   // like any other node, the root is evaluated when it is extracted
+   rootNode->initializeBound( minimizing );
+   res = Solver::kOK;
+   }
+  else
+   res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
+                         rootNode , minimizing , bestBound , bestSolution ,
+                         f_incumbentCell , branchSolver , globalMutex );
   if( res == Solver::kOK )
    open.push( rootNode );
   currentNode = rootNode;
@@ -1083,50 +1145,7 @@ int BranchAndXSolver::BFSSolve( std::mutex & globalMutex )
  return( explore( open , globalMutex , solvers , minimizing , counter ,
                   rootNode , currentNode , retain , start ) );
 
- }  // end( BranchAndXSolver::BFSSolve )
-
-/*--------------------------------------------------------------------------*/
-
-int BranchAndXSolver::DFSSolve( std::mutex & globalMutex )
-{
- auto * solvers = new std::list< ChangeSolver * >();
- bool minimizing;
- initializeVariables( solvers , &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                      minimizing );
- auto start = std::chrono::high_resolution_clock::now();
- int counter = 0;
- // the open set is a LIFO stack: same explore() loop, depth-first order
- StackOpenList open;
- ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
- RelaxationSolver * branchSolver = nullptr;
- // the tree is retained for reoptimization by any serial exploration [see
- // intReoptimize]: a re-solve re-seeds from the frontier of the retained
- // tree, in the order that the open set of this very strategy dictates
- const bool retain = ( reoptimize > 0 );
- int res;
- ExploringNode * currentNode;
- if( f_treeRoot ) {
-  delete rootNode;                  // the fresh root is not needed
-  res = reseedFrontier( open , solvers , minimizing , rootNode , currentNode );
-  }
- else {
-  res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                        rootNode , minimizing , bestBound , bestSolution ,
-                        f_incumbentCell , branchSolver , globalMutex );
-  if( res == Solver::kOK )
-   open.push( rootNode );
-  currentNode = rootNode;
-  }
-
- if( res != Solver::kOK ) {
-  discardTree( rootNode , open , solvers );
-  return( res );
-  }
-
- return( explore( open , globalMutex , solvers , minimizing , counter ,
-                  rootNode , currentNode , retain , start ) );
-
- }  // end( BranchAndXSolver::DFSSolve )
+ }  // end( BranchAndXSolver::treeSolve )
 
 /*--------------------------------------------------------------------------*/
 /*------------- METHODS FOR ADDING / REMOVING / CHANGING DATA --------------*/
