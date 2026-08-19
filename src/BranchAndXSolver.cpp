@@ -40,7 +40,7 @@
 
 #include "BranchAndXSolver.h"
 
-#include "GroupChange.h"
+#include "Change.h"
 
 #include "Objective.h"
 
