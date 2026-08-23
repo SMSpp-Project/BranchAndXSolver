@@ -455,11 +455,19 @@ namespace SMSpp_di_unipi_it
         /*--------------------------------------------------------------------------*/
         /*--------------------------- UTILITIES METHODS  ---------------------------*/
         /*--------------------------------------------------------------------------*/
+        /*--------------------------------------------------------------------------*/
+        /*--------------------------- UTILITIES METHODS  ---------------------------*/
+        /*--------------------------------------------------------------------------*/
         bool cannot_improve(double dual, double best, bool minimizing)
         {
             if (std::isinf(best)) // no incumbent yet: everything can improve
                 return (false);
             // an absAcc at its default +Inf means "not active" [see Solver::dblAbsAcc]
+
+            double absAcc = get_dbl_par(dblAbsAcc);
+            double relAcc = get_dbl_par(dblRelAcc);
+            const double eps = std::max(absAcc == Inf<double>() ? 0.0 : absAcc,
+                                        relAcc * std::max(std::abs(best), 1.0));
 
             double absAcc = get_dbl_par(dblAbsAcc);
             double relAcc = get_dbl_par(dblRelAcc);
@@ -642,6 +650,10 @@ namespace SMSpp_di_unipi_it
                         ///< intReoptimize / BestFirstSolve())
 
         int maxNodes; ///< node budget of a solve (see intMaxNodes)
+
+        /// the search-global information shared with the relaxations (incumbent,
+        /// global cuts/columns); its incumbent is bound to the live bestBound
+        GlobalInformation f_globalInfo;
 
         /// the search-global information shared with the relaxations (incumbent,
         /// global cuts/columns); its incumbent is bound to the live bestBound
