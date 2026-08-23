@@ -503,6 +503,9 @@ namespace SMSpp_di_unipi_it
             if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
                 if (coll)
                     return (coll->read(key, out));
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    return (coll->read(key, out));
             return false;
         }
 
@@ -528,8 +531,13 @@ namespace SMSpp_di_unipi_it
         /// nothing was ever written under that collection/key
         template <typename T, typename Func>
         bool globalInfoReadWith(const std::string &collection, const std::string &key,
+        bool globalInfoReadWith(const std::string &collection, const std::string &key,
                                 Func &&func)
         {
+            if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
+                if (coll)
+                    return coll->read_with(key, std::forward<Func>(func));
+            return false;
             if (auto coll = f_globalInfo.get_from_Universe<T>(collection))
                 if (coll)
                     return coll->read_with(key, std::forward<Func>(func));
@@ -547,9 +555,11 @@ namespace SMSpp_di_unipi_it
 
         /// setter for the tree exploration strategy
 
-        void setSolveType(SolveMethod st) { solveType = st; }
+        void setSolveType(SolveMethod st) {
+            solveType = st; }
 
-        void setBoundingProtocol(BoundingProtocol bp) { boundingProtocol = bp; }
+        void setBoundingProtocol(BoundingProtocol bp) {
+            boundingProtocol = bp; }
         /*--------------------------------------------------------------------------*/
         /*---------------------------- PROTECTED FIELDS ----------------------------*/
         /*--------------------------------------------------------------------------*/
