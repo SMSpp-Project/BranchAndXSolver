@@ -241,6 +241,348 @@ static int computeHeuristic(
 }
 
 /*--------------------------------------------------------------------------*/
+/*----------------- METHODS OF BranchAndXSolver ------------------------*/
+/*--------------------------------------------------------------------------*/
+/*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::compute(bool changedvars)
+{
+    lock();
+    process_outstanding_Modification();
+    int old_state = f_state;
+    if (f_state == kStillRunning)
+        return (kError);
+    f_state = kStillRunning;
+    std::mutex globalMutex;
+
+    // per-solve budgets and tolerances from the inherited standard parameters
+    // TODO capire come fare quando voglio "infiniti" nodi (o finché non esplode la macchina)
+    nodeBudget = get_int_par(intMaxNodes);
+    timeBudget = get_dbl_par(dblMaxTime);
+    /* 	relTol = get_dbl_par(dblRelAcc);
+        absTol = get_dbl_par(dblAbsAcc); */
+
+    // incumbent-dependent local fixing folded into the branching Changes is
+    // unsafe when the tree is retained across re-solves with different
+    // incumbents: forbid it in that case, allow it otherwise [see
+    // GlobalInformation::local_fixing_allowed()]
+    /* 	f_globalInfo.set_local_fixing_allowed(
+            !((reoptimize > 0) && (solveType == BestFS)));
+     */
+    if (changes == 0) // nothing changed since the last solve
+        f_state = old_state;
+    else
+    {
+
+        bestBound = (f_Block->get_objective_sense() == Objective::eMax)
+                        ? -Inf<double>()
+                        : Inf<double>();
+        f_state = treeSolve(globalMutex);
+    }
+    changes = 0;
+    unlock();
+    return (f_state);
+
+} // end( BranchAndXSolver::compute )
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
+                              std::list<ChangeSolver *> *solvers,
+                              bool minimizing, int &counter,
+                              ExploringNode *rootNode,
+                              ExploringNode *currentNode, // bool retain,
+                              std::chrono::high_resolution_clock::time_point
+                                  start)
+{
+    RelaxationSolver *branchSolver = nullptr;
+    int res = Solver::kOK;
+    ExploringNode *oldNode = nullptr;
+
+    while ((!open.empty()) && (nodeBudget > 1) &&
+           (timeBudget > std::chrono::duration<double>(
+                             std::chrono::high_resolution_clock::now() - start)
+                             .count()))
+    {
+        if (nodeBudget != INT_MAX)
+            nodeBudget--;
+        oldNode = currentNode;
+        currentNode = open.pop();
+        if (currentNode->get_parent()) // the root: the solvers are already there
+            ExploringNode::moveBetweenNodes(oldNode, currentNode, solvers);
+        // Lazy evaluation
+        if (this->boundingProtocol == Lazy)
+        {
+            bool toPrune = false;
+
+            res = computeRelaxations(&f_RelaxationSolvers, currentNode, minimizing,
+                                     bestBound, bestSolution, toPrune, branchSolver,
+                                     this //, maxThreadForSolvers, &globalMutex
+            );
+            if (res != Solver::kOK)
+            {
+                return (res);
+            }
+            if (toPrune)
+            {
+                currentNode = ExploringNode::prune(currentNode, solvers);
+                continue;
+            }
+            res = computeHeuristic(&f_HeuristicSolvers, currentNode, minimizing,
+                                   bestBound, bestSolution, toPrune,
+                                   maxThreadForSolvers, &globalMutex);
+            if (res != Solver::kOK)
+                return res;
+            // keep the node only if its dual bound can improve the incumbent
+            if (!cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing))
+                currentNode->obtainBranchList(branchSolver);
+            else
+            { // fenced or pruned child
+                currentNode = ExploringNode::prune(currentNode, solvers);
+                continue;
+            }
+        }
+
+        // branching and evaluation of the new children
+        if (!cannot_improve(currentNode->get_dual_bound(), bestBound, minimizing))
+        {
+            auto &branches = currentNode->getBranches();
+            // std::vector<ExploringNode *> kept; // survivors, pushed after the loop
+            for (auto br : branches)
+            {
+                ExploringNode *new_node = new ExploringNode(br, currentNode,
+                                                            currentNode->get_level() + 1, ++counter);
+                if (this->boundingProtocol == Eager)
+                {
+                    bool toPrune = false;
+                    computeRelaxations(&f_RelaxationSolvers, new_node, minimizing,
+                                       bestBound, bestSolution, toPrune, branchSolver,
+                                       this //,
+                                            // maxThreadForSolvers, &globalMutex
+                    );
+                    if (res != Solver::kOK)
+                    {
+                        return (res);
+                    }
+                    if (!toPrune)
+                        computeHeuristic(&f_HeuristicSolvers, new_node, minimizing,
+                                         bestBound, bestSolution, toPrune,
+                                         maxThreadForSolvers, &globalMutex);
+                    // keep the node only if its dual bound can improve the incumbent
+                    if ((!toPrune) &&
+                        (!cannot_improve(new_node->get_dual_bound(), bestBound,
+                                         minimizing)))
+                    {
+                        new_node->obtainBranchList(branchSolver);
+                        currentNode->get_children().push_back(new_node);
+                        // the kept child now owns the branching Change as its f_change: null
+                        // the entry so that ~Node does not double-delete it on teardown
+                        // TODO controllare che l'idea sia giusta, che non mi pare che lo sia così tanto
+                        *(std::find(branches.begin(), branches.end(), new_node->get_f_change())) = nullptr;
+                        moveSolverToFather(new_node, solvers);
+                        // kept.push_back(new_node); // pushed to the open set after the loop
+                        open.push(new_node); // pushed to the open set after the loop
+                    }
+                    else
+                    { // fenced or pruned child
+                        moveSolverToFather(new_node, solvers);
+                        // TODO capire quanto possa essere costoso e come evitarlo
+                        *(std::find(branches.begin(), branches.end(), new_node->get_f_change())) = nullptr;
+                        delete new_node;
+                    }
+                }
+                else
+                {
+                    new_node->set_dual_bound(currentNode->get_dual_bound());
+                    open.push(new_node);
+                }
+            }
+
+            branches.erase(std::remove(branches.begin(), branches.end(), nullptr), branches.end());
+            if (currentNode->get_children().empty() && currentNode->get_toFather())
+            {
+
+                currentNode = ExploringNode::prune(currentNode, solvers);
+            }
+        }
+        else if (currentNode->get_toFather())
+        {
+
+            currentNode = ExploringNode::prune(currentNode, solvers);
+        }
+    }
+
+    // move the :ChangeSolver back to the root
+    while (currentNode->get_toFather())
+    {
+        for (const auto s : *solvers)
+            s->apply(currentNode->get_toFather(), false);
+        currentNode = currentNode->get_parent();
+    }
+
+    /* 	if (retain)
+        {
+            // retain the tree for future reoptimizations: the nodes still in the open
+            // set (early stops) are open work, hence part of the frontier to re-seed
+            while (!open.empty())
+                subOptimalNodes.push_back(open.pop());
+            f_treeRoot = rootNode;
+        }
+        else
+        { */
+    // the nodes still in the open set are also children in the tree: the
+    // recursive deletion of the tree covers them (deleting them from the open
+    // set too would be a double delete)
+
+    // TODO understand if it's right or we can do something better
+    while (!open.empty())
+        open.pop();
+    std::function<void(ExploringNode *)> deleteTree =
+        [&](ExploringNode *node)
+    {
+        if (!node)
+            return;
+        for (auto child : node->get_children())
+            deleteTree(child);
+        node->get_children().clear();
+        delete node;
+    };
+    deleteTree(rootNode);
+    //}
+    delete solvers;
+
+    // consider also root node that don't decrease nodeBudget
+    if (nodeBudget <= 1)
+        return (Solver::kStopIter);
+    if (timeBudget <= std::chrono::duration<double>(
+                          std::chrono::high_resolution_clock::now() - start)
+                          .count())
+        return (Solver::kStopTime);
+    return (kOK);
+
+} // end( BranchAndXSolver::explore )
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
+{
+    auto *solvers = new std::list<ChangeSolver *>();
+    bool minimizing;
+
+    if (!f_HeuristicSolvers.empty())
+        minimizing = f_HeuristicSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+    else if (!f_RelaxationSolvers.empty())
+        minimizing = f_RelaxationSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
+    else
+        throw(std::logic_error("BranchAndXSolver::initializeVariables: "
+                               "both the HeuristicSolvers and the RelaxationSolvers are empty"));
+
+    solvers->insert(solvers->end(), f_RelaxationSolvers.begin(),
+                    f_RelaxationSolvers.end());
+    solvers->insert(solvers->end(), f_HeuristicSolvers.begin(),
+                    f_HeuristicSolvers.end());
+
+    auto start = std::chrono::high_resolution_clock::now();
+    int counter = 0;
+    // the open set is a plain FIFO queue
+    OpenList *open = nullptr;
+    switch (solveType)
+    {
+    case (DFS):
+    {
+        open = new StackOpenList();
+        break;
+    }
+    case (BFS):
+    {
+        open = new QueueOpenList();
+        break;
+    }
+    case (BestFS):
+    {
+        auto cmp = [minimizing](ExploringNode *a, ExploringNode *b)
+        {
+            return (minimizing ? a->get_dual_bound() > b->get_dual_bound()
+                               : a->get_dual_bound() < b->get_dual_bound());
+        };
+        open = new PriorityOpenList(cmp);
+        break;
+    }
+    case (BestFSDive):
+    {
+        auto cmp = [minimizing](ExploringNode *a, ExploringNode *b)
+        {
+            return (minimizing ? a->get_dual_bound() > b->get_dual_bound()
+                               : a->get_dual_bound() < b->get_dual_bound());
+        };
+        open = new DiveOpenList(cmp);
+        break;
+    }
+    default:
+        throw(std::invalid_argument("BranchAndXSolver::compute: invalid "
+                                    "intSolveMethod"));
+    }
+    ExploringNode *rootNode = new ExploringNode(nullptr, nullptr, 0);
+    RelaxationSolver *branchSolver = nullptr;
+    // initialize variables
+    rootNode->initializeBound(minimizing);
+    if (boundingProtocol == Eager)
+    {
+        bool toPrune = false;
+        int res = computeRelaxations(&f_RelaxationSolvers, rootNode, minimizing,
+                                     bestBound, bestSolution, toPrune, branchSolver, this); // nThreads, &globalMutex);
+        if (toPrune || (res != ThinComputeInterface::kOK))
+            return (res);
+        res = computeHeuristic(&f_HeuristicSolvers, rootNode, minimizing,
+                               bestBound, bestSolution, toPrune);
+        if (toPrune || (res != ThinComputeInterface::kOK))
+            return (res);
+        rootNode->obtainBranchList(branchSolver);
+    }
+    open->push(rootNode);
+    int returnValue = explore(*open, globalMutex, solvers, minimizing, counter,
+                              rootNode, rootNode, start);
+    delete open;
+    return (returnValue);
+
+} // end( BranchAndXSolver::treeSolve )
+
+void BranchAndXSolver::process_outstanding_Modification(void)
+{
+    Lst_sp_Mod v_mod_tmp; // temporary list of modifications
+
+    // try to acquire lock, spin on failure
+    while (f_mod_lock.test_and_set(std::memory_order_acquire))
+        ;
+
+    for (auto mod : v_mod)
+        v_mod_tmp.push_back(mod); // copy v_mod in v_mod_tmp
+
+    v_mod.clear();
+
+    f_mod_lock.clear(std::memory_order_release); // release lock
+
+    /*
+    if (v_mod_tmp.empty())
+        return;
+    */
+
+    // classify the changes by asking a RelaxationSolver: what a Modification
+    // does to the fencing certificates of the tree is problem-specific
+    // knowledge [see RelaxationSolver::classify()], so this Solver never
+    // looks into the Modification itself; the classes compose bitwise, and
+    // anything the RelaxationSolver cannot vouch for invalidates everything
+    if (f_RelaxationSolvers.empty())
+    {
+        changes = 4;
+        return;
+    }
+    v_mod_tmp.clear(); // clear the temporary list of Modification
+
+} // end( BranchAndXSolver::process_outstanding_Modification )
+
+/*--------------------------------------------------------------------------*/
 /*-------------------------- OPEN-LIST DISCIPLINES -------------------------*/
 /*--------------------------------------------------------------------------*/
 // the three open-list disciplines, as thin adapters that give the standard
