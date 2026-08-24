@@ -1001,9 +1001,28 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      open.push( n );
    branches.erase( std::remove( branches.begin() , branches.end() ,
                                 nullptr ) , branches.end() );
-   if( currentNode->get_children().empty() && currentNode->get_toFather() ) {
-    if( retain ) {               // fathomed leaf: fenced frontier
+   if( currentNode->get_children().empty() ) {
+    if( retain )                 // fathomed leaf: fenced frontier
      subOptimalNodes.push_back( currentNode );
+    if( currentNode->get_toFather() ) {   // the root has nowhere to climb
+     if( retain ) {
+      for( const auto s : *solvers )
+       s->apply( currentNode->get_toFather() , false );
+      currentNode = currentNode->get_parent();
+      }
+     else
+      currentNode = ExploringNode::prune( currentNode , solvers );
+     }
+    }
+   }
+  else {
+   // fenced at pop: it belongs to the fenced frontier, the root included -
+   // a retained tree whose root is fathomed would otherwise have an empty
+   // frontier, and the next re-solve would have nothing to re-explore
+   if( retain )
+    subOptimalNodes.push_back( currentNode );
+   if( currentNode->get_toFather() ) {   // the root has nowhere to climb
+    if( retain ) {
      for( const auto s : *solvers )
       s->apply( currentNode->get_toFather() , false );
      currentNode = currentNode->get_parent();
@@ -1011,16 +1030,6 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     else
      currentNode = ExploringNode::prune( currentNode , solvers );
     }
-   }
-  else if( currentNode->get_toFather() ) {
-   if( retain ) {                // fenced at pop: fenced frontier
-    subOptimalNodes.push_back( currentNode );
-    for( const auto s : *solvers )
-     s->apply( currentNode->get_toFather() , false );
-    currentNode = currentNode->get_parent();
-    }
-   else
-    currentNode = ExploringNode::prune( currentNode , solvers );
    }
   }
 
