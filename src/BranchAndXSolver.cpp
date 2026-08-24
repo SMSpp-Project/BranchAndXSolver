@@ -23,7 +23,6 @@
  *         Universita' di Pisa \n
  *
  * Copyright &copy by Antonio Frangioni, Filippo Magi, Donato Meoli
- * Copyright &copy by Antonio Frangioni, Filippo Magi, Donato Meoli
  */
 /*--------------------------------------------------------------------------*/
 /*---------------------------- IMPLEMENTATION ------------------------------*/
@@ -32,6 +31,7 @@
 /*--------------------------------------------------------------------------*/
 
 #include <chrono>
+#include <iostream>
 #include <cmath>
 #include <deque>
 #include <memory>
@@ -41,7 +41,7 @@
 
 #include "BranchAndXSolver.h"
 
-#include "GroupChange.h"
+#include "Change.h"
 
 #include "Objective.h"
 
@@ -202,10 +202,10 @@ static void moveSolverToFather(Node *currentNode,
 /*--------------------------------------------------------------------------*/
 // runs every Solver's compute() concurrently [defined below]; used by the
 // parallel evaluation path of computeRelaxations() / computeHeuristic()
-/* template <typename SolverPtr>
+template <typename SolverPtr>
 static bool computeAllParallel(const std::vector<SolverPtr> &slvrs,
                                std::vector<int> &zs, int maxThreads);
- */
+
 /*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
@@ -729,11 +729,10 @@ int BranchAndXSolver::compute(bool changedvars)
     std::mutex globalMutex;
 
     // per-solve budgets and tolerances from the inherited standard parameters
-    // TODO capire come fare quando voglio "infiniti" nodi (o finché non esplode la macchina)
     nodeBudget = get_int_par(intMaxNodes);
     timeBudget = get_dbl_par(dblMaxTime);
-    /* 	relTol = get_dbl_par(dblRelAcc);
-        absTol = get_dbl_par(dblAbsAcc); */
+    relTol = get_dbl_par(dblRelAcc);
+    absTol = get_dbl_par(dblAbsAcc);
 
     // the tree is retained by any serial exploration, but not by the parallel
     // depth-first one, whose worker forest is not kept [see ParallelDFSSolve()]
@@ -1084,35 +1083,33 @@ int BranchAndXSolver::explore(OpenList &open, std::mutex &globalMutex,
         currentNode = currentNode->get_parent();
     }
 
-    /* 	if (retain)
-        {
-            // retain the tree for future reoptimizations: the nodes still in the open
-            // set (early stops) are open work, hence part of the frontier to re-seed
-            while (!open.empty())
-                subOptimalNodes.push_back(open.pop());
-            f_treeRoot = rootNode;
-        }
-        else
-        { */
-    // the nodes still in the open set are also children in the tree: the
-    // recursive deletion of the tree covers them (deleting them from the open
-    // set too would be a double delete)
-
-    // TODO understand if it's right or we can do something better
-    while (!open.empty())
-        open.pop();
-    std::function<void(ExploringNode *)> deleteTree =
-        [&](ExploringNode *node)
+    if (retain)
     {
-        if (!node)
-            return;
-        for (auto child : node->get_children())
-            deleteTree(child);
-        node->get_children().clear();
-        delete node;
-    };
-    deleteTree(rootNode);
-    //}
+        // retain the tree for future reoptimizations: the nodes still in the open
+        // set (early stops) are open work, hence part of the frontier to re-seed
+        while (!open.empty())
+            subOptimalNodes.push_back(open.pop());
+        f_treeRoot = rootNode;
+    }
+    else
+    {
+        // the nodes still in the open set are also children in the tree: the
+        // recursive deletion of the tree covers them (deleting them from the open
+        // set too would be a double delete)
+        while (!open.empty())
+            open.pop();
+        std::function<void(ExploringNode *)> deleteTree =
+            [&](ExploringNode *node)
+        {
+            if (!node)
+                return;
+            for (auto child : node->get_children())
+                deleteTree(child);
+            node->get_children().clear();
+            delete node;
+        };
+        deleteTree(rootNode);
+    }
     delete solvers;
 
     if (nodeBudget <= 0)
@@ -1131,19 +1128,8 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
 {
     auto *solvers = new std::list<ChangeSolver *>();
     bool minimizing;
-
-    if (!f_HeuristicSolvers.empty())
-        minimizing = f_HeuristicSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
-    else if (!f_RelaxationSolvers.empty())
-        minimizing = f_RelaxationSolvers.front()->get_Block()->get_objective_sense() == Objective::eMin;
-    else
-        throw(std::logic_error("BranchAndXSolver::initializeVariables: "
-                               "both the HeuristicSolvers and the RelaxationSolvers are empty"));
-
-    solvers->insert(solvers->end(), f_RelaxationSolvers.begin(),
-                    f_RelaxationSolvers.end());
-    solvers->insert(solvers->end(), f_HeuristicSolvers.begin(),
-                    f_HeuristicSolvers.end());
+    initializeVariables(solvers, &f_RelaxationSolvers, &f_HeuristicSolvers,
+                        minimizing);
 
     auto start = std::chrono::high_resolution_clock::now();
     int counter = 0;
@@ -1223,7 +1209,7 @@ int BranchAndXSolver::treeSolve(std::mutex &globalMutex)
 } // end( BranchAndXSolver::treeSolve )
 
 /*--------------------------------------------------------------------------*/
-/*-------------------------- OPEN-LIST DISCIPLINES -------------------------*/
+/*------------- METHODS FOR ADDING / REMOVING / CHANGING DATA --------------*/
 /*--------------------------------------------------------------------------*/
 
 int BranchAndXSolver::workerDFS(Node *currentNode,

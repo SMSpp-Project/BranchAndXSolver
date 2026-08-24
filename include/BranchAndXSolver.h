@@ -74,6 +74,8 @@
 namespace SMSpp_di_unipi_it
 {
 
+    class Node;          // forward declaration of Node
+    class DFSNode;       // forward declaration of DFSNode
     class ExploringNode; // forward declaration of ExploringNode
     class OpenList;      // forward declaration of OpenList
 
@@ -168,14 +170,6 @@ namespace SMSpp_di_unipi_it
             BestFSDive = 3 ///< best-first search with depth-first dives
         };
 
-        /// public enum for the possible inner solver evaluation strategies
-
-        enum BoundingProtocol
-        {
-            Eager = 0, ///< the inner solvers are used when the node is created
-            Lazy = 1,  ///< the inner solvers are used when the node is evaluated
-        };
-
         /*--------------------------------------------------------------------------*/
         /// GlobalInformation names / keys defined by the BranchAndXSolver
         /** The names and keys, beyond the reserved ones [see GlobalInformation.h],
@@ -231,16 +225,14 @@ namespace SMSpp_di_unipi_it
 
         ~BranchAndXSolver() override
         {
+            discardRetainedTree();
             delete bestSolution;
-            // TODO capire se devo cancellare configurationRS e come gestirla coi solver
-            /*
-                        delete configurationRS;
-                        for (auto slvr : v_created)
-                        {
-                            slvr->set_Block(nullptr);
-                            delete slvr;
-                        }
-            */
+            delete configurationRS;
+            for (auto slvr : v_created)
+            {
+                slvr->set_Block(nullptr);
+                delete slvr;
+            }
         }
 
         /** @} ---------------------------------------------------------------------*/
@@ -336,7 +328,7 @@ namespace SMSpp_di_unipi_it
                 Solver::set_par(par, value);
                 return;
             }
-            nameRS = std::move(value);
+            nameRS = value;
             configurationRS = dynamic_cast<BlockSolverConfig *>(
                 Configuration::deserialize(nameRS));
             if (!configurationRS)
@@ -348,6 +340,14 @@ namespace SMSpp_di_unipi_it
         }
 
         /*--------------------------------------------------------------------------*/
+        /// receive a Modification and forward it to the (private) inner Solver
+
+        void add_Modification(sp_Mod &mod) override
+        {
+            Solver::add_Modification(mod);
+            for (auto slvr : v_created)
+                slvr->add_Modification(mod);
+        }
 
         /** @} ---------------------------------------------------------------------*/
         /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
@@ -521,16 +521,6 @@ namespace SMSpp_di_unipi_it
             return (Solver::str_par_idx2str(idx));
         }
 
-        bool cannot_improve(double dual, double best, bool minimizing)
-        {
-            if (std::isinf(best)) // no incumbent yet: everything can improve
-                return (false);
-            // an absAcc at its default +Inf means "not active" [see Solver::dblAbsAcc]
-            const double eps = std::max(this->dblAbsAcc == Inf<double>() ? 0.0 : this->dblAbsAcc,
-                                        this->dblRelAcc * std::max(std::abs(best), 1.0));
-            return (minimizing ? dual >= best - eps : dual <= best + eps);
-        }
-
         /** @} ---------------------------------------------------------------------*/
         /*--------------------- PROTECTED PART OF THE CLASS ------------------------*/
         /*--------------------------------------------------------------------------*/
@@ -544,7 +534,6 @@ namespace SMSpp_di_unipi_it
 
         void setSolveType(SolveMethod st) { solveType = st; }
 
-        void setBoundingProtocol(BoundingProtocol bp) { boundingProtocol = bp; }
         /*--------------------------------------------------------------------------*/
         /*---------------------------- PROTECTED FIELDS ----------------------------*/
         /*--------------------------------------------------------------------------*/
@@ -818,7 +807,7 @@ namespace SMSpp_di_unipi_it
 
         SolveMethod solveType; ///< chosen method to explore the tree
 
-        BoundingProtocol boundingProtocol; ///< when to evaluate the needed information (see intSolveType)
+        int maxThreadForSolvers; ///< max threads for solvers at each node
 
         BoundingProtocol boundingProtocol; ///< when a node is evaluated (see
                                            ///< intBoundingProtocol)
@@ -863,9 +852,16 @@ namespace SMSpp_di_unipi_it
         /// dblMaxTime), consumed by the exploration
         double timeBudget;
 
+        double relTol; ///< the inherited dblRelAcc, cached at compute() start
+
+        double absTol; ///< the inherited dblAbsAcc, cached at compute() start
+
         std::string nameRS; ///< name of the BlockSolverConfig file
 
         BlockSolverConfig *configurationRS; ///< the inner BlockSolverConfig
+
+        /// the (private) inner Solver created out of configurationRS, owned
+        std::vector<Solver *> v_created;
 
         /// the private Solver set of one worker of the parallel exploration
         struct WorkerSolvers
@@ -883,13 +879,13 @@ namespace SMSpp_di_unipi_it
         char changes;
 
         /// nodes pruned as sub-optimal, to be revisited on an objective change
-        // std::list<ExploringNode *> subOptimalNodes;
+        std::list<ExploringNode *> subOptimalNodes;
 
         /// nodes pruned as infeasible, to be revisited on a r.h.s. change
-        // std::list<ExploringNode *> infeasibleNodes;
+        std::list<ExploringNode *> infeasibleNodes;
 
         /// nodes pruned as integer-feasible, to be revisited on reoptimization
-        // std::list<ExploringNode *> integerNodes;
+        std::list<ExploringNode *> integerNodes;
 
         SMSpp_insert_in_factory_h; // insert BranchAndXSolver in the factory
 
@@ -1004,6 +1000,8 @@ namespace SMSpp_di_unipi_it
         /// the Changes to reach each child from this node
         std::vector<Change *> branches;
 
+        bool f_infeasible; ///< whether the node's relaxation has no solution
+
         bool f_evaluated; ///< whether the inner Solver have been run here
 
         /*--------------------------------------------------------------------------*/
@@ -1016,6 +1014,26 @@ namespace SMSpp_di_unipi_it
         /*--------------------------------------------------------------------------*/
 
     }; // end( class( Node ) )
+
+    /*--------------------------------------------------------------------------*/
+    /*----------------------------- CLASS DFSNode ------------------------------*/
+    /*--------------------------------------------------------------------------*/
+    /// the Node used in the depth-first exploration of the tree
+    /** In the recursive depth-first exploration no explicit tree structure is
+     * needed (the recursion stack is the path to the root), so a DFSNode is
+     * just a plain Node. */
+
+    class DFSNode : public Node
+    {
+
+    public:
+        /// constructor, see Node::Node()
+
+        DFSNode(Change *change, int nodeName = 0) : Node(change, nodeName) {}
+
+        ~DFSNode() override = default; ///< destructor
+
+    }; // end( class( DFSNode ) )
 
     /*--------------------------------------------------------------------------*/
     /*-------------------------- CLASS ExploringNode ---------------------------*/
@@ -1182,6 +1200,14 @@ namespace SMSpp_di_unipi_it
 
         /// remove and return the next node to explore
         virtual ExploringNode *pop(void) = 0;
+
+        /// whether the discipline is last-in first-out (a stack)
+        /** Tells the exploration how to order a node's freshly generated children
+         * in the open set so that the most promising one [the first returned by
+         * RelaxationSolver::branch()] is explored first: a LIFO stack must receive
+         * them in reverse, the other disciplines in branching order. */
+
+        [[nodiscard]] virtual bool isLIFO(void) const { return (false); }
 
     }; // end( class( OpenList ) )
 
