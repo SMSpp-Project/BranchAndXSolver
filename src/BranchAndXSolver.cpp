@@ -239,6 +239,11 @@ static int computeRelaxations(
     return( Solver::kInfeasible );
    toPrune = true;
    currentNode->set_infeasible( true );
+   // an infeasible node has the worst conceivable bound: this is what tells
+   // it apart, in the log and in the fenced frontier, from one fenced by
+   // bound, which carries the finite bound that fenced it
+   currentNode->set_dual_bound( minimizing ? Inf< double >()
+                                           : - Inf< double >() );
    return( Solver::kOK );
    }
   for( std::size_t i = 0 ; i < n ; ++i ) {
@@ -254,15 +259,18 @@ static int computeRelaxations(
      bestSol = rs->get_true_solution();
      }
     }
+   // the bound is recorded before the fate of the node is decided, so that
+   // a node fenced by bound carries the bound that fenced it rather than the
+   // one it was initialized with
    auto dualBound = minimizing ? s->get_lb() : s->get_ub();
-   if( cannot_improve( dualBound , bestBound , minimizing , relAcc , absAcc ) ) {
-    toPrune = true;
-    return( Solver::kOK );
-    }
    if( minimizing ? dualBound > currentNode->get_dual_bound()
                   : dualBound < currentNode->get_dual_bound() ) {
     currentNode->set_dual_bound( dualBound );
     branchSolver = rs;
+    }
+   if( cannot_improve( dualBound , bestBound , minimizing , relAcc , absAcc ) ) {
+    toPrune = true;
+    return( Solver::kOK );
     }
    }
   return( Solver::kOK );
@@ -276,6 +284,8 @@ static int computeRelaxations(
     return( Solver::kInfeasible );
    toPrune = true;
    currentNode->set_infeasible( true );
+   currentNode->set_dual_bound( minimizing ? Inf< double >()
+                                           : - Inf< double >() );
    break;
    }
   if( z != ThinComputeInterface::kOK )
@@ -299,17 +309,18 @@ static int computeRelaxations(
     }
    }
 
-  // update the dual bound of the node and select the branching solver
+  // update the dual bound of the node and select the branching solver; the
+  // bound is recorded before the fate of the node is decided [see above]
   auto dualBound = minimizing ? s->get_lb() : s->get_ub();
-  if( cannot_improve( dualBound , bestBound , minimizing , relAcc ,
-                      absAcc ) ) {
-   toPrune = true;
-   return( Solver::kOK );
-   }
   if( minimizing ? dualBound > currentNode->get_dual_bound()
                  : dualBound < currentNode->get_dual_bound() ) {
    currentNode->set_dual_bound( dualBound );
    branchSolver = rs;
+   }
+  if( cannot_improve( dualBound , bestBound , minimizing , relAcc ,
+                      absAcc ) ) {
+   toPrune = true;
+   return( Solver::kOK );
    }
   }
  return( Solver::kOK );
