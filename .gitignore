@@ -1,0 +1,46 @@
+# ============================================================
+#  BranchAndXSolver — .gitignore
+# ============================================================
+
+# --- Project-specific ---------------------------------------
+# Tool / test binaries
+test/BranchAndXSolver_test
+
+# --- C/C++ build artifacts ----------------------------------
+*.o
+*.obj
+*.d
+*.gch
+*.pch
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.pdb
+
+# --- CMake --------------------------------------------------
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# --- IDEs ---------------------------------------------------
+.idea/
+.vscode/
+.vs/
+out/
+
+# --- OS junk ------------------------------------------------
+.DS_Store
+Thumbs.db
+*~

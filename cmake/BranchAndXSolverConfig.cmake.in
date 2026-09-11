@@ -1,0 +1,29 @@
+# --------------------------------------------------------------------------- #
+#    Package configuration file                                               #
+#                                                                             #
+#    This file contains instructions on how to generate ***Config.cmake,      #
+#    that is, the file that tells CMake how the package should be             #
+#    configured when found by other projects using find_package().            #
+#                                                                             #
+#    ***Targets.cmake (to be found alongside this file) is the target import  #
+#    file that tells where the headers and library are. It will be different  #
+#    depending on a local build or an installed package.                      #
+#                                                                             #
+#                                Donato Meoli                                 #
+#                         Dipartimento di Informatica                         #
+#                             Universita' di Pisa                             #
+# --------------------------------------------------------------------------- #
+get_filename_component(@modName@_CMAKE_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH)
+include(CMakeFindDependencyMacro)
+
+# ----- Requirements -------------------------------------------------------- #
+find_dependency(SMS++)
+
+# ----- Import target ------------------------------------------------------- #
+if (NOT TARGET @modNamespace@::@modName@)
+    include("${@modName@_CMAKE_DIR}/@modName@Targets.cmake")
+endif ()
+
+set(@modName@_LIBRARIES @modNamespace@::@modName@)
+
+# --------------------------------------------------------------------------- #
