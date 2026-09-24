@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drops what looks unused takes the registration away with it, so the target
   now tells whoever links it to keep the symbol that forces the module in,
   and on ELF, where naming the symbol is not enough, the library as a whole
+
 ### Fixed
 
 ## [0.1.0] - 2026-09-12
@@ -26,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prototype repository: DFS / BFS / BestFS exploration driven by the ChangeSolver /
   RelaxationSolver concepts, inner Solver provided via BlockSolverConfig,
   private to the BranchAndXSolver (Modification forwarded to them)
+
 - tolerance-based pruning on the inherited dblRelAcc / dblAbsAcc; node and
   time budgets on the inherited intMaxIter / dblMaxTime
+
 - SMS++-style CMake build system and module makefiles
 
 ### Changed
