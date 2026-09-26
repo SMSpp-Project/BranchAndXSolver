@@ -236,15 +236,31 @@ class BranchAndXSolver : public Solver {
  *  @{ */
 
  /// set the (pointer to the) Block that the Solver has to solve
+ /** Attaching to a Block different from the current one (nullptr, i.e.,
+  * detaching, included) drops everything that belongs to the old one: the
+  * inner Solver created out of the BlockSolverConfig, the tree retained for
+  * reoptimization and the best solution found; the inner Solver are then
+  * created anew on the new Block, if a BlockSolverConfig is there, and the
+  * next compute() solves from scratch. */
 
  void set_Block( Block * block ) override {
+  if( block == f_Block )
+   return;
+  if( f_Block )
+   dropInnerSolvers();
   Solver::set_Block( block );
-  if( block )
+  f_state = kUnEval;
+  changes = 4;
+  if( block ) {
    initializeGlobalInformation();
-  if( f_RelaxationSolvers.empty() && f_HeuristicSolvers.empty() &&
-      configurationRS )
-   applyConfigurationToSolvers();
+   if( configurationRS )
+    applyConfigurationToSolvers();
+   }
   }
+
+/*--------------------------------------------------------------------------*/
+
+ using Solver::set_par;  // restore the hidden overloaded methods
 
 /*--------------------------------------------------------------------------*/
  /// set the int parameters of BranchAndXSolver
@@ -278,6 +294,9 @@ class BranchAndXSolver : public Solver {
  void set_par( idx_type par , int value ) override {
   switch( par ) {
    case( intSolveMethod ):
+    if( ( value < DFS ) || ( value > BestFSDive ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intSolveMethod" ) );
     solveType = static_cast< SolveMethod >( value );
     break;
    case( intMaxThread ):
@@ -290,6 +309,9 @@ class BranchAndXSolver : public Solver {
     maxThreadForSolvers = value;
     break;
    case( intBoundingProtocol ):
+    if( ( value < Eager ) || ( value > Lazy ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intBoundingProtocol" ) );
     boundingProtocol = static_cast< BoundingProtocol >( value );
     break;
    case( intReoptimize ):
@@ -304,27 +326,71 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// set the double parameters of BranchAndXSolver
+ /** The base Solver classes do not store the double parameters, so the
+  * inherited ones that BranchAndXSolver uses are stored here:
+  *
+  * - dblMaxTime [+INF]: the time budget of a solve, in seconds;
+  *
+  * - dblRelAcc [1e-6] / dblAbsAcc [+INF, i.e., not active]: the relative and
+  *   absolute tolerances of the pruning, a node being pruned when its dual
+  *   bound cannot improve the incumbent by more than the largest of the two
+  *   (the relative one taken w.r.t. max( | incumbent | , 1 )). */
+
+ void set_par( idx_type par , double value ) override {
+  switch( par ) {
+   case( dblMaxTime ):
+    maxTime = value;
+    break;
+   case( dblRelAcc ):
+    relAcc = value;
+    break;
+   case( dblAbsAcc ):
+    absAcc = value;
+    break;
+   default:
+    Solver::set_par( par , value );
+   }
+  }
+
+/*--------------------------------------------------------------------------*/
  /// set the string parameters of BranchAndXSolver
  /** Set the string parameters specific of BranchAndXSolver:
   *
   * - strNameOfBlockSolverConfigurationFile [""]: name of the file out of
   *   which the BlockSolverConfig providing the inner Solver (the
   *   RelaxationSolver(s) and heuristic ChangeSolver(s)) is deserialized;
-  *   it is applied to the Block as soon as both are available. */
+  *   it is applied to the Block as soon as both are available, the inner
+  *   Solver it describes replacing those of any previous one. The empty
+  *   name (the default) means no BlockSolverConfig: the inner Solver
+  *   already there, if any, are kept.
+  *
+  * The string parameters are taken by the rvalue version, which the one
+  * taking a const reference forwards to [see ThinComputeInterface]. */
 
- void set_par( idx_type par , const std::string & value ) override {
+ void set_par( idx_type par , std::string && value ) override {
   if( par != strNameOfBlockSolverConfigurationFile ) {
-   Solver::set_par( par , value );
+   Solver::set_par( par , std::move( value ) );
    return;
    }
+  BlockSolverConfig * cfg = nullptr;
+  if( ! value.empty() ) {
+   auto c = Configuration::deserialize( value );
+   cfg = dynamic_cast< BlockSolverConfig * >( c );
+   if( ! cfg ) {
+    delete c;
+    throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
+           "create a BlockSolverConfig out of " + value ) );
+    }
+   }
   nameRS = value;
-  configurationRS = dynamic_cast< BlockSolverConfig * >(
-                                      Configuration::deserialize( nameRS ) );
-  if( ! configurationRS )
-   throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
-          "create a BlockSolverConfig out of " + nameRS ) );
-  if( f_Block )
+  delete configurationRS;
+  configurationRS = cfg;
+  if( f_Block && configurationRS ) {
+   dropInnerSolvers();
+   changes = 4;
    applyConfigurationToSolvers();
+   }
   }
 
 /*--------------------------------------------------------------------------*/
@@ -427,6 +493,15 @@ class BranchAndXSolver : public Solver {
    case( intMaxNodes ):                  return( maxNodes );
    }
   return( Solver::get_int_par( par ) );
+  }
+
+ [[nodiscard]] double get_dbl_par( idx_type par ) const override {
+  switch( par ) {
+   case( dblMaxTime ): return( maxTime );
+   case( dblRelAcc ):  return( relAcc );
+   case( dblAbsAcc ):  return( absAcc );
+   }
+  return( Solver::get_dbl_par( par ) );
   }
 
  [[nodiscard]] const std::string & get_str_par( idx_type par )
@@ -547,20 +622,45 @@ class BranchAndXSolver : public Solver {
   * before any inner Solver is handed the GlobalInformation. */
 
  void initializeGlobalInformation( void ) {
-  f_globalInfo.add_to_Universe< std::atomic< double > >(
-			       GlobalInformation::str_AtomicScalars );
-  f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
-			 std::atomic< double > >(
-			  GlobalInformation::str_AtomicScalars ) )[
-			   GlobalInformation::str_Incumbent ] );
-  f_incumbentCell->store( no_incumbent() );
+  if( ! f_incumbentCell ) {   // the first Block: declare the Collection
+   f_globalInfo.add_to_Universe< std::atomic< double > >(
+				GlobalInformation::str_AtomicScalars );
+   f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
+			  std::atomic< double > >(
+			   GlobalInformation::str_AtomicScalars ) )[
+			    GlobalInformation::str_Incumbent ] );
 
-  f_globalInfo.add_to_Universe< std::atomic< bool > >(
-			       GlobalInformation::str_AtomicFlags );
-  f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
-		    GlobalInformation::str_AtomicFlags ) )[
-		     GlobalInformation::str_LocalFixingAllowed ] );
+   f_globalInfo.add_to_Universe< std::atomic< bool > >(
+				GlobalInformation::str_AtomicFlags );
+   f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
+		     GlobalInformation::str_AtomicFlags ) )[
+		      GlobalInformation::str_LocalFixingAllowed ] );
+   }
+  f_incumbentCell->store( no_incumbent() );
   f_lfaCell->store( true );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// drop what belongs to the current Block, before attaching to another
+ /** Deletes the inner Solver, the tree retained for reoptimization and the
+  * best Solution, all of which refer to the current Block, and the pool of
+  * the globally valid cuts that the relaxations may have created in the
+  * GlobalInformation [see str_GlobalCuts]. */
+
+ void dropInnerSolvers( void ) {
+  discardRetainedTree();
+  delete bestSolution;
+  bestSolution = nullptr;
+  bestBound = 0;
+  for( auto slvr : v_created ) {
+   slvr->set_Block( nullptr );
+   delete slvr;
+   }
+  v_created.clear();
+  f_RelaxationSolvers.clear();
+  f_HeuristicSolvers.clear();
+  v_workerSolvers.clear();
+  f_globalInfo.remove_from_Universe( str_GlobalCuts );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -777,6 +877,15 @@ class BranchAndXSolver : public Solver {
 
  int maxNodes;                ///< node budget of a solve (see intMaxNodes)
 
+ /// the inherited dblMaxTime [see set_par( double )]
+ double maxTime = Inf< double >();
+
+ /// the inherited dblRelAcc [see set_par( double )]
+ double relAcc = 1e-6;
+
+ /// the inherited dblAbsAcc [see set_par( double )]
+ double absAcc = Inf< double >();
+
  /// the global information shared with the relaxations
  /** The GlobalInformation handed to every relaxation: the reserved hot
   * scalars / flags (incumbent, local-fixing-allowed), declared by
@@ -933,7 +1042,11 @@ class Node {
  void set_evaluated( bool e ) { f_evaluated = e; }
 
  /// have the given RelaxationSolver produce the branching Changes
+ /** The Changes produced by a previous evaluation, those not yet handed to
+  * a child (whose entries are nullptr), are deleted. */
  void obtainBranchList( RelaxationSolver * solver ) {
+  for( auto ch : branches )
+   delete ch;
   branches = solver->branch();
   }
 

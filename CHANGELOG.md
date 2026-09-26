@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- a unit test of the module that needs nothing but the core: an integer box
+  problem with a separable quadratic objective, whose optimum is known in
+  closed form, solved with a continuous relaxation and a rounding heuristic
+  built on BoxSolver, under every exploration strategy and bounding protocol,
+  minimizing and maximizing, with infeasible boxes, an integer root, node and
+  time budgets, the parameters, a detach and reattach and a change of the
+  objective; `ctest -L BranchAndXSolver` runs it, and the CI of the module
+  runs only it
+
 ### Changed
 
 - whoever links the module keeps it: the classes of a module register
@@ -18,6 +27,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and on ELF, where naming the symbol is not enough, the library as a whole
 
 ### Fixed
+
+- an exploration stopped by the node budget reported kOK, i.e., optimality,
+  and kInfeasible when no incumbent had been found yet: the status is now
+  kStopIter or kStopTime whenever open nodes that can improve the incumbent
+  are left, and kOK otherwise, whichever budget is left
+
+- dblMaxTime, dblRelAcc and dblAbsAcc were never stored, the base Solver
+  classes not doing it, so the time budget and the tolerances of the pruning
+  were always the default ones
+
+- a compute() after a stop, nothing having changed, returned the old status
+  instead of going on
+
+- a Solver detached from a Block could not be attached again (the
+  GlobalInformation was declared twice), and one attached to another Block
+  kept the inner Solver of the old one: the inner Solver, the retained tree
+  and the best solution are now dropped when the Block changes
+
+- the name of the BlockSolverConfig file given as a temporary was ignored,
+  the string parameter being taken by the wrong overload; the factory reset
+  (its empty default) threw, and a second BlockSolverConfig added its inner
+  Solver to those of the first instead of replacing them
+
+- the incumbent found by a heuristic ChangeSolver was saved as an empty
+  Solution, which could not be written back
+
+- the bounds of a proven infeasible problem were not both the infinity of
+  the sense, and invalid intSolveMethod / intBoundingProtocol were accepted,
+  to throw inside compute() with the Solver locked
+
+- the branching Changes of a node evaluated again, as in a reoptimization,
+  were leaked
 
 - on macOS a program linking the module lost the classes the module
   registers in the factories when the linker dropped the library, as it

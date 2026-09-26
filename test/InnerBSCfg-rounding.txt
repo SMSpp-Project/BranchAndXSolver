@@ -1,0 +1,30 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - -  InnerBSCfg-rounding.txt  - - - - - - - - - - - - -
+#
+# BlockSolverConfig of the inner Solver of the BranchAndXSolver in test.cpp:
+# the BoxRelaxation, as in InnerBSCfg.txt, and the BoxRounding heuristic,
+# which rounds the solution of the relaxation to the nearest integer in
+# the box. No ComputeConfig: the Solver keep their defaults.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+BlockSolverConfig     # exact type of the Configuration object
+
+1  # the BlockSolverConfig is a "differential" one: values are being set
+
+2  # number of (the names of) Solver in this BlockSolverConfig
+# now all the names of the Solver - - - - - - - - - - - - - - - - - - - - - -
+BoxRelaxation  # name of 1st Solver
+BoxRounding    # name of 2nd Solver
+
+0  # number of ComputeConfig in this BlockSolverConfig
+
+# now all the ComputeConfig
+# [none]
+
+# end of BlockSolverConfig- - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - -  END InnerBSCfg-rounding.txt  - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

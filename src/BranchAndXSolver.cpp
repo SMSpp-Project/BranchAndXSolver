@@ -94,7 +94,7 @@ static Solution * solution_of( Solver * slvr ,
  // TODO: check that lock()-ing / unlock()-ing here is appropriate
  blck->lock( slvr );
  slvr->get_var_solution( solc );
- auto sol = blck->get_Solution( solc );
+ auto sol = blck->get_Solution( solc , false );  // loaded, not empty
  blck->unlock( slvr );
  return( sol );
  }
@@ -683,8 +683,10 @@ Solver::OFValue BranchAndXSolver::get_lb( void )
 {
  if( f_Block->get_objective_sense() == Objective::eMax )
   return( bestBound );                 // the incumbent is a lower bound
- // the dual bound is only proven once the whole tree has been explored
- return( f_state == kOK ? bestBound : - Inf< OFValue >() );
+ // the dual bound is only proven once the whole tree has been explored,
+ // which a proof of infeasibility also requires
+ return( ( f_state == kOK ) || ( f_state == kInfeasible ) ? bestBound
+                                                         : - Inf< OFValue >() );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -693,8 +695,10 @@ Solver::OFValue BranchAndXSolver::get_ub( void )
 {
  if( f_Block->get_objective_sense() == Objective::eMin )
   return( bestBound );                 // the incumbent is an upper bound
- // the dual bound is only proven once the whole tree has been explored
- return( f_state == kOK ? bestBound : Inf< OFValue >() );
+ // the dual bound is only proven once the whole tree has been explored,
+ // which a proof of infeasibility also requires
+ return( ( f_state == kOK ) || ( f_state == kInfeasible ) ? bestBound
+                                                         : Inf< OFValue >() );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -728,7 +732,11 @@ int BranchAndXSolver::compute( bool changedvars )
  // GlobalInformation::local_fixing_allowed()]
  f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( ! parallelDFS ) ) );
 
- if( changes == 0 )         // nothing changed since the last solve
+ // nothing changed since the last solve, which has ended: its answer
+ // stands; one stopped by a budget goes on instead [see Solver::kStopTime]
+ if( ( changes == 0 ) && ( ( old_state == kOK ) ||
+                           ( old_state == kInfeasible ) ||
+                           ( old_state == kUnbounded ) ) )
   f_state = old_state;
  else {
   // the outstanding changes are now properly classified (see
@@ -1044,6 +1052,19 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
    }
   }
 
+ // the nodes left open when a budget stops the loop are taken out of the
+ // open set: the exploration is complete only if none of them can improve
+ // the incumbent, whatever the budgets that remain
+ bool complete = true;
+ std::vector< ExploringNode * > leftOpen;
+ while( ! open.empty() ) {
+  auto node = open.pop();
+  if( ! cannot_improve( node->get_dual_bound() , bestBound , minimizing ,
+                        relTol , absTol ) )
+   complete = false;
+  leftOpen.push_back( node );
+  }
+
  // move the :ChangeSolver back to the root
  while( currentNode->get_toFather() ) {
   for( const auto s : *solvers )
@@ -1052,18 +1073,15 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   }
 
  if( retain ) {
-  // retain the tree for future reoptimizations: the nodes still in the open
+  // retain the tree for future reoptimizations: the nodes left in the open
   // set (early stops) are open work, hence part of the frontier to re-seed
-  while( ! open.empty() )
-   subOptimalNodes.push_back( open.pop() );
+  subOptimalNodes.insert( subOptimalNodes.end() , leftOpen.begin() ,
+                          leftOpen.end() );
   f_treeRoot = rootNode;
   }
  else {
-  // the nodes still in the open set are also children in the tree: the
-  // recursive deletion of the tree covers them (deleting them from the open
-  // set too would be a double delete)
-  while( ! open.empty() )
-   open.pop();
+  // the nodes left in the open set are also children in the tree: the
+  // recursive deletion of the tree covers them
   std::function< void( ExploringNode * ) > deleteTree =
    [ & ]( ExploringNode * node ) {
     if( ! node )
@@ -1077,12 +1095,10 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   }
  delete solvers;
 
- if( nodeBudget <= 0 )
-  return( Solver::kStopIter );
- if( timeBudget <= std::chrono::duration< double >(
-                 std::chrono::high_resolution_clock::now() - start ).count()
-     )
-  return( Solver::kStopTime );
+ // open nodes that can improve are left only when the loop has run out of
+ // one of the budgets: the node one is gone when a single node is left
+ if( ! complete )
+  return( nodeBudget <= 1 ? Solver::kStopIter : Solver::kStopTime );
  return( kOK );
 
  }  // end( BranchAndXSolver::explore )
