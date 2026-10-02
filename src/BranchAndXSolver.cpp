@@ -924,6 +924,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                        maxThreadForSolvers , relTol , absTol , globalMutex ,
                        nullptr , false );
    if( res != Solver::kOK ) {       // an infeasible root ends up here
+    // leave the solvers at the root, the Changes of the node undone
+    ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
     discardTree( rootNode , open , solvers );
     return( res );
     }
@@ -970,6 +972,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                         branchSolver ,
                         maxThreadForSolvers , relTol , absTol , globalMutex );
     if( res != Solver::kOK ) {
+     // leave the solvers at the root, the Changes of the child undone
+     ExploringNode::moveBetweenNodes( new_node , rootNode , solvers );
      discardTree( rootNode , open , solvers );
      return( res );
      }

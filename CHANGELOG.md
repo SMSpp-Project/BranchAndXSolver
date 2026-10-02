@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- a node whose evaluation does not end with `kOK` (e.g., a relaxation stopped
+  by its time limit) no longer leaves the Changes of its path applied: the
+  solvers go back to the root before the tree is discarded, so that the best
+  solution is then written into a `Block` without the fixings of that node
+
 - an exploration stopped by the node budget reported kOK, i.e., optimality,
   and kInfeasible when no incumbent had been found yet: the status is now
   kStopIter or kStopTime whenever open nodes that can improve the incumbent
