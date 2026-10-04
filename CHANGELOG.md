@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the bound a node gets from the RelaxationSolver is called the relaxation
+  bound, which says where it comes from and nothing about how it is
+  computed: `Node::get_dual_bound()` / `set_dual_bound()` are now
+  `get_bound()` / `set_bound()`; the column of the per-node log keeps its
+  name `dualBound`
+
 - whoever links the module keeps it: the classes of a module register
   themselves in the factory from a static initialiser, and a linker that
   drops what looks unused takes the registration away with it, so the target
@@ -28,19 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns
-  as the bound on the side of the open nodes (`get_lb()` when minimizing,
-  `get_ub()` when maximizing) the best among their dual bounds and the
+- an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns as
+  the bound on the side of the open nodes (`get_lb()` when minimizing,
+  `get_ub()` when maximizing) the best among their relaxation bounds and the
   incumbent, rather than an infinite one, also when it is a node whose
   relaxation is not solved (e.g., stopped by its own budget) that stops it,
-  the bound of that node counting among them; the parallel depth-first
-  search still claims none
+  the bound of that node counting among them; the parallel depth-first search
+  still claims none
 
-- a child starts from the dual bound of its parent, which is valid for it,
-  and its evaluation can only improve it: with the eager bounding protocol
-  and with the parallel depth-first search it started from an infinite one,
-  so that a child whose relaxation stopped early carried a bound weaker than
-  that of its parent
+- a child starts from the relaxation bound of its parent, which is valid for
+  it, and its evaluation can only improve it: with the eager bounding protocol
+  and with the parallel depth-first search it started from an infinite one, so
+  that a child whose relaxation stopped early carried a bound weaker than that
+  of its parent
 
 - a node whose evaluation does not end with `kOK` (e.g., a relaxation stopped
   by its time limit) no longer leaves the Changes of its path applied: the

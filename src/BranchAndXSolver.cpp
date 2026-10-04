@@ -3,12 +3,12 @@
 /*--------------------------------------------------------------------------*/
 /** @file
  * Implementation of the *concrete* class BranchAndXSolver, a generic
- * Branch-and-Bound Solver built on top of the ChangeSolver /
- * RelaxationSolver concepts [see ChangeSolver.h]: the attached
- * RelaxationSolver(s) provide dual bounds, true solutions and the branching
- * Changes, the attached heuristic ChangeSolver(s) further primal bounds,
- * and the enumeration tree is navigated by applying (undo) Changes to the
- * Solver. See the file-level comment of BranchAndXSolver.h for an overview.
+ * Branch-and-Bound Solver built on top of the ChangeSolver / RelaxationSolver
+ * concepts [see ChangeSolver.h]: the attached RelaxationSolver(s) provide
+ * relaxation bounds, true solutions and the branching Changes, the attached
+ * heuristic ChangeSolver(s) further primal bounds, and the enumeration tree is
+ * navigated by applying (undo) Changes to the Solver. See the file-level
+ * comment of BranchAndXSolver.h for an overview.
  *
  * \author Antonio Frangioni \n
  *         Dipartimento di Informatica \n
@@ -63,12 +63,12 @@ SMSpp_insert_in_factory_cpp_0( BranchAndXSolver );
 /*-------------------------- INTERNAL FUNCTIONS ----------------------------*/
 /*--------------------------------------------------------------------------*/
 
-/// tells if a dual bound cannot improve the incumbent beyond the tolerances
-/** True if \p dual cannot improve \p best by more than
+/// tells if a relaxation bound cannot improve the incumbent within tolerance
+/** True if \p bound cannot improve \p best by more than
  * max( absAcc , relAcc * max( | best | , 1 ) ), i.e., the node can be
  * pruned within the required optimality tolerances. */
 
-static bool cannot_improve( double dual , double best , bool minimizing ,
+static bool cannot_improve( double bound , double best , bool minimizing ,
                             double relAcc , double absAcc )
 {
  if( std::isinf( best ) )      // no incumbent yet: everything can improve
@@ -76,7 +76,7 @@ static bool cannot_improve( double dual , double best , bool minimizing ,
  // an absAcc at its default +Inf means "not active" [see Solver::dblAbsAcc]
  const double eps = std::max( absAcc == Inf< double >() ? 0.0 : absAcc ,
                               relAcc * std::max( std::abs( best ) , 1.0 ) );
- return( minimizing ? dual >= best - eps : dual <= best + eps );
+ return( minimizing ? bound >= best - eps : bound <= best + eps );
  }
 
 /// the Solution corresponding to the current solution of \p slvr
@@ -105,9 +105,9 @@ static Solution * solution_of( Solver * slvr ,
  * by one line as soon as its fate is decided (right after its evaluation,
  * whenever that happens [see BranchAndXSolver::intBoundingProtocol]), so that
  * the whole exploration can be reconstructed offline: which nodes were
- * generated, in which order they were evaluated, what their dual bound was,
- * how the incumbent moved, and why each node was fenced. \p evalTime is the
- * time spent evaluating this very node, \p elapsed the time since the
+ * generated, in which order they were evaluated, what their relaxation bound
+ * was, how the incumbent moved, and why each node was fenced. \p evalTime is
+ * the time spent evaluating this very node, \p elapsed the time since the
  * beginning of the solve. */
 
 static void logNode( std::ostream * log , int iter , ExploringNode * node ,
@@ -120,7 +120,7 @@ static void logNode( std::ostream * log , int iter , ExploringNode * node ,
  ( *log ) << iter << ',' << node->get_name() << ','
 	  << ( father ? father->get_name() : -1 ) << ','
 	  << node->get_level() << ',' << bestBound << ','
-	  << node->get_dual_bound() << ',' << elapsed << ',' << evalTime
+	  << node->get_bound() << ',' << elapsed << ',' << evalTime
 	  << ',' << boundPruned << ',' << node->is_infeasible() << std::endl;
  }
 
@@ -209,10 +209,10 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
 /*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
- * dual bound, the branching solver, and, when a true solution improves it,
- * the incumbent bestBound / bestSol; sets \p toPrune when the node can
- * be discarded. With \p nThreads > 1 (and no shared incumbent lock) the
- * several relaxations are computed concurrently, bit-identically to the serial
+ * relaxation bound, the branching solver, and, when a true solution improves
+ * it, the incumbent bestBound / bestSol; sets \p toPrune when the node can be
+ * discarded. With \p nThreads > 1 (and no shared incumbent lock) the several
+ * relaxations are computed concurrently, bit-identically to the serial
  * reduction [see computeAllParallel()].
  *  @return the sol_type [see Solver.h] of the computation */
 
@@ -242,7 +242,7 @@ static int computeRelaxations(
    // an infeasible node has the worst conceivable bound: this is what tells
    // it apart, in the log and in the fenced frontier, from one fenced by
    // bound, which carries the finite bound that fenced it
-   currentNode->set_dual_bound( minimizing ? Inf< double >()
+   currentNode->set_bound( minimizing ? Inf< double >()
                                            : - Inf< double >() );
    return( Solver::kOK );
    }
@@ -265,14 +265,15 @@ static int computeRelaxations(
    // the node may already have the (inherited) bound of its parent: the
    // bound is improved only if this one is better, while the branching is
    // done by the relaxation with the best bound, or by the first one
-   auto dualBound = minimizing ? s->get_lb() : s->get_ub();
-   const bool better = minimizing ? dualBound > currentNode->get_dual_bound()
-                                  : dualBound < currentNode->get_dual_bound();
+   auto relaxBound = minimizing ? s->get_lb() : s->get_ub();
+   const bool better = minimizing ? relaxBound > currentNode->get_bound()
+                                  : relaxBound < currentNode->get_bound();
    if( better )
-    currentNode->set_dual_bound( dualBound );
+    currentNode->set_bound( relaxBound );
    if( better || ( ! branchSolver ) )
     branchSolver = rs;
-   if( cannot_improve( dualBound , bestBound , minimizing , relAcc , absAcc ) ) {
+   if( cannot_improve( relaxBound , bestBound , minimizing , relAcc ,
+                       absAcc ) ) {
     toPrune = true;
     return( Solver::kOK );
     }
@@ -288,7 +289,7 @@ static int computeRelaxations(
     return( Solver::kInfeasible );
    toPrune = true;
    currentNode->set_infeasible( true );
-   currentNode->set_dual_bound( minimizing ? Inf< double >()
+   currentNode->set_bound( minimizing ? Inf< double >()
                                            : - Inf< double >() );
    break;
    }
@@ -313,16 +314,16 @@ static int computeRelaxations(
     }
    }
 
-  // update the dual bound of the node and select the branching solver; the
-  // bound is recorded before the fate of the node is decided [see above]
-  auto dualBound = minimizing ? s->get_lb() : s->get_ub();
-  const bool better = minimizing ? dualBound > currentNode->get_dual_bound()
-                                 : dualBound < currentNode->get_dual_bound();
+  // update the relaxation bound of the node and select the branching solver;
+  // the bound is recorded before the fate of the node is decided [see above]
+  auto relaxBound = minimizing ? s->get_lb() : s->get_ub();
+  const bool better = minimizing ? relaxBound > currentNode->get_bound()
+                                 : relaxBound < currentNode->get_bound();
   if( better )
-   currentNode->set_dual_bound( dualBound );
+   currentNode->set_bound( relaxBound );
   if( better || ( ! branchSolver ) )  // see above
    branchSolver = rs;
-  if( cannot_improve( dualBound , bestBound , minimizing , relAcc ,
+  if( cannot_improve( relaxBound , bestBound , minimizing , relAcc ,
                       absAcc ) ) {
    toPrune = true;
    return( Solver::kOK );
@@ -510,13 +511,13 @@ static int evaluateNode(
 {
  if( moveToNode )                  // with the lazy protocol the solvers have
   moveSolverToSon( node , &solvers );  // already been moved to the node
- // the dual bound the node has inherited from its parent is valid within
+ // the relaxation bound the node has inherited from its parent is valid within
  // this solve, the data being the same: the evaluation can only improve it
  // (a re-seeded frontier resets it, the data having changed, see
  // reseedFrontier())
- const double inherited = node->get_dual_bound();
+ const double inherited = node->get_bound();
  node->initializeBound( minimizing );
- node->set_dual_bound( inherited );
+ node->set_bound( inherited );
  node->set_evaluated( true );
 
  // computeRelaxations() / computeHeuristic() dispatch internally on nThreads:
@@ -539,9 +540,9 @@ static int evaluateNode(
 /*--------------------------------------------------------------------------*/
 // the three open-list disciplines, as thin adapters that give the standard
 // container adapters a common interface [see OpenList]: a LIFO stack (depth-
-// first), a FIFO queue (breadth-first), a dual-bound priority queue (best-
-// first). The storage is entirely std::stack / std::queue / std::priority_-
-// queue, there is no hand-rolled data structure here
+// first), a FIFO queue (breadth-first), a relaxation-bound priority queue
+// (best- first). The storage is entirely std::stack / std::queue /
+// std::priority_- queue, there is no hand-rolled data structure here
 
 namespace {
 
@@ -593,7 +594,7 @@ class QueueOpenList final : public OpenList {
  };  // end( class( QueueOpenList ) )
 
 /*--------------------------------------------------------------------------*/
-/// dual-bound priority open list: a std::priority_queue, giving best-first
+/// relaxation-bound priority open list: a std::priority_queue, best-first
 
 class PriorityOpenList final : public OpenList {
 
@@ -622,14 +623,15 @@ class PriorityOpenList final : public OpenList {
 
 /*--------------------------------------------------------------------------*/
 /// best-first open list with depth-first dives
-/** The global frontier is a dual-bound priority queue, but once a node is taken
- * the search dives straight into its most promising child down to a leaf,
- * leaving the siblings to the global frontier. The dive reaches a complete
- * (feasible) solution quickly, so the incumbent tightens early and the pruning
- * bites sooner. The children of the just-expanded node arrive through push()
- * before the next pop(): pop() routes the most promising of them onward
- * (continuing the dive) and spills the rest to the priority queue; when no child
- * arrives the dive has bottomed out and the next global best is taken. */
+/** The global frontier is a relaxation-bound priority queue, but once a node
+ * is taken the search dives straight into its most promising child down to a
+ * leaf, leaving the siblings to the global frontier. The dive reaches a
+ * complete (feasible) solution quickly, so the incumbent tightens early and
+ * the pruning bites sooner. The children of the just-expanded node arrive
+ * through push() before the next pop(): pop() routes the most promising of
+ * them onward (continuing the dive) and spills the rest to the priority queue;
+ * when no child arrives the dive has bottomed out and the next global best is
+ * taken. */
 
 class DiveOpenList final : public OpenList {
 
@@ -698,7 +700,7 @@ Solver::OFValue BranchAndXSolver::get_lb( void )
  // proves the incumbent; otherwise the nodes left open bound it
  if( ( f_state == kOK ) || ( f_state == kInfeasible ) )
   return( bestBound );
- return( std::min( f_dual_bound , bestBound ) );
+ return( std::min( f_open_bound , bestBound ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -711,7 +713,7 @@ Solver::OFValue BranchAndXSolver::get_ub( void )
  // proves the incumbent; otherwise the nodes left open bound it
  if( ( f_state == kOK ) || ( f_state == kInfeasible ) )
   return( bestBound );
- return( std::max( f_dual_bound , bestBound ) );
+ return( std::max( f_open_bound , bestBound ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -727,7 +729,7 @@ int BranchAndXSolver::compute( bool changedvars )
   return( kError );
  f_state = kStillRunning;
  // no bound until an exploration says otherwise [see explore()]
- f_dual_bound = ( f_Block->get_objective_sense() == Objective::eMax )
+ f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
                 ? Inf< double >() : - Inf< double >();
  std::mutex globalMutex;
 
@@ -795,25 +797,25 @@ void BranchAndXSolver::discardTree( ExploringNode * root , OpenList & open ,
                                     std::list< ChangeSolver * > * solvers ,
                                     const ExploringNode * current )
 {
- // the global dual bound: the best among those of the nodes left open and
- // of the one being evaluated, whose region covers that of its children;
+ // the global relaxation bound: the best among those of the nodes left open
+ // and of the one being evaluated, whose region covers that of its children;
  // with none of them there is no bound
  const bool minimizing =
   ( f_Block->get_objective_sense() != Objective::eMax );
  std::vector< double > bounds;
  if( current )
-  bounds.push_back( current->get_dual_bound() );
+  bounds.push_back( current->get_bound() );
 
  // the nodes still in the open set are also children in the tree, so the
  // recursive deletion of the tree covers them; emptying the open set first
  // (without deleting) avoids a double delete
  while( ! open.empty() )
-  bounds.push_back( open.pop()->get_dual_bound() );
+  bounds.push_back( open.pop()->get_bound() );
 
  if( bounds.empty() )
-  f_dual_bound = minimizing ? - Inf< double >() : Inf< double >();
+  f_open_bound = minimizing ? - Inf< double >() : Inf< double >();
  else
-  f_dual_bound = minimizing ? *std::min_element( bounds.begin() ,
+  f_open_bound = minimizing ? *std::min_element( bounds.begin() ,
                                                  bounds.end() )
                             : *std::max_element( bounds.begin() ,
                                                  bounds.end() );
@@ -863,8 +865,8 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
  // few nodes, so the incumbent warms up immediately and the rest of the
  // frontier mostly just re-fences
  frontier.sort( [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
-  return( minimizing ? a->get_dual_bound() < b->get_dual_bound()
-                     : a->get_dual_bound() > b->get_dual_bound() );
+  return( minimizing ? a->get_bound() < b->get_bound()
+                     : a->get_bound() > b->get_bound() );
   } );
 
  int res = Solver::kOK;
@@ -886,7 +888,7 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   if( res != Solver::kOK )
    break;
   if( ( ! toPrune ) &&
-      ( ! cannot_improve( F->get_dual_bound() , bestBound , minimizing ,
+      ( ! cannot_improve( F->get_bound() , bestBound , minimizing ,
                           relTol , absTol ) ) ) {
    // re-opened: the branching Changes of the previous solve, if any, are
    // still valid (any branching is), so they are reused rather than leaked
@@ -970,14 +972,14 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	     std::chrono::high_resolution_clock::now() - start ).count() ,
 	    std::chrono::duration< double >(
 	     std::chrono::high_resolution_clock::now() - evalStart ).count() ,
-	    prunedHere || cannot_improve( currentNode->get_dual_bound() ,
+	    prunedHere || cannot_improve( currentNode->get_bound() ,
 					  bestBound , minimizing , relTol ,
 					  absTol ) );
    }
 
   // branching and evaluation of the new children
   if( ( ! prunedHere ) &&
-      ( ! cannot_improve( currentNode->get_dual_bound() , bestBound ,
+      ( ! cannot_improve( currentNode->get_bound() , bestBound ,
                           minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
    std::vector< ExploringNode * > kept;  // survivors, pushed after the loop
@@ -985,13 +987,13 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     ExploringNode * new_node = new ExploringNode( br , currentNode ,
                                                   currentNode->get_level()
                                                   + 1 , ++counter );
-    // the dual bound of the parent is valid for the child, whose region is
-    // a part of that of the parent: the child starts from it, and its own
+    // the relaxation bound of the parent is valid for the child, whose region
+    // is a part of that of the parent: the child starts from it, and its own
     // evaluation can only improve it
-    new_node->set_dual_bound( currentNode->get_dual_bound() );
+    new_node->set_bound( currentNode->get_bound() );
     if( boundingProtocol == Lazy ) {
-     // the child is not evaluated now: it goes into the open set carrying
-     // the dual bound of its parent, and will be evaluated if and when it is
+     // the child is not evaluated now: it goes into the open set carrying the
+     // relaxation bound of its parent, and will be evaluated if and when it is
      // extracted [see intBoundingProtocol]
      currentNode->get_children().push_back( new_node );
      // the child now owns the branching Change as its f_change: null the
@@ -1019,12 +1021,12 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	      std::chrono::high_resolution_clock::now() - start ).count() ,
 	     std::chrono::duration< double >(
 	      std::chrono::high_resolution_clock::now() - evalStart ).count() ,
-	     toPrune || cannot_improve( new_node->get_dual_bound() ,
+	     toPrune || cannot_improve( new_node->get_bound() ,
 					bestBound , minimizing , relTol ,
 					absTol ) );
-    // keep the node only if its dual bound can improve the incumbent
+    // keep the node only if its relaxation bound can improve the incumbent
     if( ( ! toPrune ) &&
-        ( ! cannot_improve( new_node->get_dual_bound() , bestBound ,
+        ( ! cannot_improve( new_node->get_bound() , bestBound ,
                             minimizing , relTol , absTol ) ) ) {
      new_node->obtainBranchList( branchSolver );
      currentNode->get_children().push_back( new_node );
@@ -1098,17 +1100,17 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  // the incumbent, whatever the budgets that remain
  bool complete = true;
  std::vector< ExploringNode * > leftOpen;
- // the global dual bound: the best among those of the open nodes
- f_dual_bound = minimizing ? Inf< double >() : - Inf< double >();
+ // the global relaxation bound: the best among those of the open nodes
+ f_open_bound = minimizing ? Inf< double >() : - Inf< double >();
  while( ! open.empty() ) {
   auto node = open.pop();
-  if( ! cannot_improve( node->get_dual_bound() , bestBound , minimizing ,
+  if( ! cannot_improve( node->get_bound() , bestBound , minimizing ,
                         relTol , absTol ) )
    complete = false;
-  f_dual_bound = minimizing ? std::min( f_dual_bound ,
-                                        node->get_dual_bound() )
-                            : std::max( f_dual_bound ,
-                                        node->get_dual_bound() );
+  f_open_bound = minimizing ? std::min( f_open_bound ,
+                                        node->get_bound() )
+                            : std::max( f_open_bound ,
+                                        node->get_bound() );
   leftOpen.push_back( node );
   }
 
@@ -1163,12 +1165,12 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  int counter = 0;
 
  // the open set *is* the exploration strategy: a LIFO stack explores
- // depth-first, a FIFO queue breadth-first, a dual-bound priority queue
+ // depth-first, a FIFO queue breadth-first, a relaxation-bound priority queue
  // best-first, and the dive variant wraps the latter so that each best node
  // is followed depth-first down to a leaf [see DiveOpenList]
  auto cmp = [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
-  return( minimizing ? a->get_dual_bound() > b->get_dual_bound()
-                     : a->get_dual_bound() < b->get_dual_bound() );
+  return( minimizing ? a->get_bound() > b->get_bound()
+                     : a->get_bound() < b->get_bound() );
   };
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
@@ -1268,7 +1270,7 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
   return( res );
 
  if( ( ! toPrune ) &&
-     ( ! cannot_improve( currentNode->get_dual_bound() , bestBound ,
+     ( ! cannot_improve( currentNode->get_bound() , bestBound ,
                          minimizing , relTol , absTol ) ) ) {
   auto branches = branchSolver->branch();
   for( auto br : branches ) {
@@ -1310,7 +1312,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
  // ramp-up- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
  // ordered (FIFO = discovery order) BestFS-style expansion with the serial
- // Solver set: every node put in the pool has its dual bound, branching
+ // Solver set: every node put in the pool has its relaxation bound, branching
  // Changes (see obtainBranchList()) and undo (toFather) already computed,
  // so the workers can later claim it by just re-applying the Changes found
  // on its path, which are plain data usable by any Solver
@@ -1339,14 +1341,14 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
   if( currentNode->get_parent() )
    ExploringNode::moveBetweenNodes( oldNode , currentNode , &solvers );
 
-  if( ! cannot_improve( currentNode->get_dual_bound() , bestBound ,
+  if( ! cannot_improve( currentNode->get_bound() , bestBound ,
                         minimizing , relTol , absTol ) ) {
    auto & branches = currentNode->getBranches();
    for( Change * br : branches ) {
     auto new_node = new ExploringNode( br , currentNode ,
                                        currentNode->get_level() + 1 ,
                                        ++nameCounter );
-    new_node->set_dual_bound( currentNode->get_dual_bound() );  // inherited
+    new_node->set_bound( currentNode->get_bound() );  // inherited
     bool toPrune = false;
     RelaxationSolver * nodeBranchSolver = nullptr;
     res = evaluateNode( new_node , solvers , &f_RelaxationSolvers ,
@@ -1365,7 +1367,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     *( std::find( branches.begin() , branches.end() ,
                   new_node->get_f_change() ) ) = nullptr;
     if( ( ! toPrune ) &&
-        ( ! cannot_improve( new_node->get_dual_bound() , bestBound ,
+        ( ! cannot_improve( new_node->get_bound() , bestBound ,
                             minimizing , relTol , absTol ) ) ) {
      new_node->obtainBranchList( nodeBranchSolver );
      pool.push_back( new_node );
@@ -1438,7 +1440,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
       s->apply( chg , false );
 
     // explore the subtree depth-first, unless meanwhile fenced
-    if( ! cannot_improve( node->get_dual_bound() , bestBound , minimizing ,
+    if( ! cannot_improve( node->get_bound() , bestBound , minimizing ,
                           relTol , absTol ) ) {
      bool first = true;
      for( auto & br : node->getBranches() ) {
@@ -1459,7 +1461,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                                           ++wNameCounter );
        br = nullptr;
        moveSolverToSon( new_node , &wsolvers );
-       new_node->set_dual_bound( node->get_dual_bound() );  // inherited
+       new_node->set_bound( node->get_bound() );  // inherited
        bool toPrune = false;
        RelaxationSolver * nodeBranchSolver = nullptr;
        int RV = computeRelaxations( &ws.relaxation , new_node , minimizing ,
@@ -1480,7 +1482,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
         break;
         }
        if( ( ! toPrune ) &&
-           ( ! cannot_improve( new_node->get_dual_bound() , bestBound ,
+           ( ! cannot_improve( new_node->get_bound() , bestBound ,
                                minimizing , relTol , absTol ) ) ) {
         new_node->obtainBranchList( nodeBranchSolver );
         node->get_children().push_back( new_node );

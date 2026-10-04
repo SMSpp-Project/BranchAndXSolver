@@ -569,11 +569,11 @@ void solve_and_check_stop( Solver * bnx , Instance & inst , int expected ,
  check( ( lb <= opt + tol ) && ( ub >= opt - tol ) ,
         name + ": the bounds do not hold" );
  // the enumeration has not been completed: the bound on the side of the
- // nodes not yet explored is the best of their dual bounds, which is
+ // nodes not yet explored is the best of their relaxation bounds, which is
  // finite once the root has been evaluated, as a budget of nodes ensures
  if( expected == Solver::kStopIter )
   check( inst.max ? ub < INF : lb > - INF ,
-         name + ": no dual bound after the root has been evaluated" );
+         name + ": no relaxation bound after the root has been evaluated" );
  }
 
 /*--------------------------------------------------------------------------*/

@@ -12,7 +12,7 @@ abstract Solver concepts that live in the SMS++ core (`Change.h` /
   tree;
 
 - `RelaxationSolver`, a :ChangeSolver solving a *relaxation* of the problem:
-  besides the relaxation value (a valid dual bound) it can produce *true*
+  besides the relaxation value (a valid bound) it can produce *true*
   solutions of the original problem (valid primal bounds), branch() to
   generate the children of the current node, and separate() valid cuts.
 
