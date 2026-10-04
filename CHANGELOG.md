@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns
+  as the bound on the side of the open nodes (`get_lb()` when minimizing,
+  `get_ub()` when maximizing) the best among their dual bounds and the
+  incumbent, rather than an infinite one; the parallel depth-first search
+  still claims none
+
+- a child starts from the dual bound of its parent, which is valid for it,
+  and its evaluation can only improve it: with the eager bounding protocol
+  and with the parallel depth-first search it started from an infinite one,
+  so that a child whose relaxation stopped early carried a bound weaker than
+  that of its parent
+
 - a node whose evaluation does not end with `kOK` (e.g., a relaxation stopped
   by its time limit) no longer leaves the Changes of its path applied: the
   solvers go back to the root before the tree is discarded, so that the best

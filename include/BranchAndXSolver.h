@@ -204,7 +204,8 @@ class BranchAndXSolver : public Solver {
 
  BranchAndXSolver() : Solver() , f_RelaxationSolvers() ,
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
-                      bestBound( 0 ) , bestSolution( nullptr ) ,
+                      bestBound( 0 ) , f_dual_bound( - Inf< double >() ) ,
+                      bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
@@ -429,19 +430,21 @@ class BranchAndXSolver : public Solver {
 /*--------------------------------------------------------------------------*/
  /// return a lower bound on the optimal objective function value
  /** For a maximization problem the incumbent is a valid lower bound; for a
-  * minimization one a lower bound is the global dual bound of the
-  * exploration, which is only available once the enumeration has been
-  * completed [see get_ub()], in which case it is the incumbent as well. */
+  * minimization one it is the global dual bound of the exploration, i.e.,
+  * the smallest among the dual bounds of the nodes left open and the
+  * incumbent, which is the incumbent itself once the enumeration has been
+  * completed; a node not evaluated yet has the dual bound of its father,
+  * hence the bound is finite as soon as the root has been. An exploration
+  * stopped by a budget with the parallel depth-first search [see
+  * intSolveMethod] claims no bound on the side of the open nodes. */
 
  OFValue get_lb( void ) override;
 
 /*--------------------------------------------------------------------------*/
  /// return an upper bound on the optimal objective function value
  /** The symmetric of get_lb(): the incumbent for a minimization problem, the
-  * global dual bound - available only when the enumeration has been completed
-  * - for a maximization one. Note that an enumeration stopped by any of the
-  * budgets has explored only a part of the tree, so it claims no bound on the
-  * side of the not yet explored nodes. */
+  * global dual bound (the largest among the dual bounds of the nodes left
+  * open and the incumbent) for a maximization one. */
 
  OFValue get_ub( void ) override;
 
@@ -590,6 +593,7 @@ class BranchAndXSolver : public Solver {
  int f_state;             ///< the (current) state of the compute() process
 
  double bestBound;        ///< the best primal (hence feasible) bound found
+ double f_dual_bound;     ///< the global dual bound of the last compute()
 
  Solution * bestSolution; ///< the best solution found, valued bestBound
 
