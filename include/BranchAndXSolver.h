@@ -850,9 +850,14 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// tear down a retained / in-progress tree and its open set and frontier
+ /** Besides, the global dual bound is set to the best among those of the
+  * nodes left in the open set and of \p current, the node whose evaluation
+  * (or that of a child of which) has stopped the exploration, if any: this
+  * is what get_lb() / get_ub() return when the stop is due to a budget. */
 
  void discardTree( ExploringNode * root , OpenList & open ,
-                   std::list< ChangeSolver * > * solvers );
+                   std::list< ChangeSolver * > * solvers ,
+                   const ExploringNode * current = nullptr );
 
 /*--------------------------------------------------------------------------*/
  /// process the outstanding Modification

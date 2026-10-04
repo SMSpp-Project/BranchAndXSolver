@@ -31,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns
   as the bound on the side of the open nodes (`get_lb()` when minimizing,
   `get_ub()` when maximizing) the best among their dual bounds and the
-  incumbent, rather than an infinite one; the parallel depth-first search
-  still claims none
+  incumbent, rather than an infinite one, also when it is a node whose
+  relaxation is not solved (e.g., stopped by its own budget) that stops it,
+  the bound of that node counting among them; the parallel depth-first
+  search still claims none
 
 - a child starts from the dual bound of its parent, which is valid for it,
   and its evaluation can only improve it: with the eager bounding protocol

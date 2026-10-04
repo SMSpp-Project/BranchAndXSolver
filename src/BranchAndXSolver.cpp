@@ -792,13 +792,31 @@ int BranchAndXSolver::compute( bool changedvars )
 /*--------------------------------------------------------------------------*/
 
 void BranchAndXSolver::discardTree( ExploringNode * root , OpenList & open ,
-                                    std::list< ChangeSolver * > * solvers )
+                                    std::list< ChangeSolver * > * solvers ,
+                                    const ExploringNode * current )
 {
+ // the global dual bound: the best among those of the nodes left open and
+ // of the one being evaluated, whose region covers that of its children;
+ // with none of them there is no bound
+ const bool minimizing =
+  ( f_Block->get_objective_sense() != Objective::eMax );
+ std::vector< double > bounds;
+ if( current )
+  bounds.push_back( current->get_dual_bound() );
+
  // the nodes still in the open set are also children in the tree, so the
  // recursive deletion of the tree covers them; emptying the open set first
  // (without deleting) avoids a double delete
  while( ! open.empty() )
-  open.pop();
+  bounds.push_back( open.pop()->get_dual_bound() );
+
+ if( bounds.empty() )
+  f_dual_bound = minimizing ? - Inf< double >() : Inf< double >();
+ else
+  f_dual_bound = minimizing ? *std::min_element( bounds.begin() ,
+                                                 bounds.end() )
+                            : *std::max_element( bounds.begin() ,
+                                                 bounds.end() );
  std::function< void( ExploringNode * ) > deleteTree =
   [ & ]( ExploringNode * node ) {
    if( ! node )
@@ -942,7 +960,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
    if( res != Solver::kOK ) {       // an infeasible root ends up here
     // leave the solvers at the root, the Changes of the node undone
     ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
-    discardTree( rootNode , open , solvers );
+    discardTree( rootNode , open , solvers , currentNode );
     return( res );
     }
    if( ! prunedHere )
@@ -993,7 +1011,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     if( res != Solver::kOK ) {
      // leave the solvers at the root, the Changes of the child undone
      ExploringNode::moveBetweenNodes( new_node , rootNode , solvers );
-     discardTree( rootNode , open , solvers );
+     discardTree( rootNode , open , solvers , currentNode );
      return( res );
      }
     logNode( f_log , iterations , new_node , bestBound ,
