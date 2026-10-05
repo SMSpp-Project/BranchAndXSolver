@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- in the parallel depth-first exploration a worker that hands a child over
+  to the pool asks it for its branches before moving its Solver back to the
+  father, as everywhere else: the branches came out of the relaxation of the
+  father, and a Solver that keeps a state across the Changes (say, the
+  incremental greedy of BinaryKnapsackBlock) gave a child a wrong state, and
+  a value beyond the optimum
+
 - an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns as
   the bound on the side of the open nodes (`get_lb()` when minimizing,
   `get_ub()` when maximizing) the best among their relaxation bounds and the

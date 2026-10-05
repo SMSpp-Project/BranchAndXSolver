@@ -1475,6 +1475,15 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                                bestBound , bestSolution ,
                                f_incumbentCell , toPrune ,
                                1 , &incumbentMutex );
+       // the branches are asked while the Solver are still at the child,
+       // whose relaxation they come out of, as everywhere else [see
+       // obtainBranchList()]: only then the Solver goes back to the father
+       const bool donate = ( RV == Solver::kOK ) && ( ! toPrune ) &&
+                           ( ! cannot_improve( new_node->get_bound() ,
+                                               bestBound , minimizing ,
+                                               relTol , absTol ) );
+       if( donate )
+        new_node->obtainBranchList( nodeBranchSolver );
        moveSolverToFather( new_node , &wsolvers );
        if( RV != Solver::kOK ) {
         delete new_node;
@@ -1482,10 +1491,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
         result.compare_exchange_strong( expected , RV );
         break;
         }
-       if( ( ! toPrune ) &&
-           ( ! cannot_improve( new_node->get_bound() , bestBound ,
-                               minimizing , relTol , absTol ) ) ) {
-        new_node->obtainBranchList( nodeBranchSolver );
+       if( donate ) {
         node->get_children().push_back( new_node );
         std::lock_guard< std::mutex > guard( poolMutex );
         pool.push_back( new_node );
