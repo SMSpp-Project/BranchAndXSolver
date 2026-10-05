@@ -1275,6 +1275,7 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
   auto branches = branchSolver->branch();
   for( auto br : branches ) {
    DFSNode * new_node = new DFSNode( br , ++nameCounter );
+   new_node->set_bound( currentNode->get_bound() );  // inherited
    int RV = workerDFS( new_node , solvers , relaxation , heuristic ,
                        minimizing , incumbentMutex , nodeBdg , deadline ,
                        nameCounter );
@@ -1498,6 +1499,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
       // the DFSNode takes the ownership of the branching Change: null the
       // entry so that ~Node does not double-delete it on the final cleanup
       DFSNode * new_node = new DFSNode( br , ++wNameCounter );
+      new_node->set_bound( node->get_bound() );  // inherited
       br = nullptr;
       first = false;
       int RV = workerDFS( new_node , wsolvers , ws.relaxation ,
