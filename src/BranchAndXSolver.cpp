@@ -211,9 +211,12 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
 /** Computes every RelaxationSolver at the current node, updating the node
  * relaxation bound, the branching solver, and, when a true solution improves
  * it, the incumbent bestBound / bestSol; sets \p toPrune when the node can be
- * discarded. With \p nThreads > 1 (and no shared incumbent lock) the several
- * relaxations are computed concurrently, bit-identically to the serial
- * reduction [see computeAllParallel()].
+ * discarded. The incumbent is given to every relaxation as its cutoff
+ * (dblUpCutOff when minimizing, dblLwCutOff when maximizing), so that one
+ * proven beyond it stops there and the node is fenced as infeasible. With
+ * \p nThreads > 1 (and no shared incumbent lock) the several relaxations are
+ * computed concurrently, bit-identically to the serial reduction [see
+ * computeAllParallel()].
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeRelaxations(
@@ -226,6 +229,18 @@ static int computeRelaxations(
                   double relAcc = 0 , double absAcc = 0 ,
                   int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
+ // the incumbent is the cutoff of the relaxations [see dblUpCutOff in
+ // Solver.h]: a relaxation proven beyond it says that the node cannot
+ // improve on it, which for the search is as good as infeasible (and then,
+ // at the root, it proves the incumbent optimal rather than the problem
+ // infeasible)
+ const double incumbent = incumbentCell ? incumbentCell->load() : bestBound;
+ const bool has_incumbent = minimizing ? incumbent < Inf< double >()
+                                       : incumbent > - Inf< double >();
+ for( auto & pr : *f_RelaxationSolvers )
+  pr.second->set_par( minimizing ? Solver::dblUpCutOff : Solver::dblLwCutOff ,
+                      incumbent );
+
  // parallel evaluation of the (several) relaxations of this node: only when more
  // than one thread is asked, there are at least two solvers, and no shared
  // incumbent lock is in force (a parallel-tree worker evaluates its per-node
@@ -235,8 +250,8 @@ static int computeRelaxations(
   const std::size_t n = f_RelaxationSolvers->size();
   std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
   if( computeAllParallel( *f_RelaxationSolvers , zs , nThreads ) ) {
-   if( ! currentNode->get_toFather() )    // the root is infeasible
-    return( Solver::kInfeasible );
+   if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
+    return( Solver::kInfeasible );       // the root is infeasible
    toPrune = true;
    currentNode->set_infeasible( true );
    // an infeasible node has the worst conceivable bound: this is what tells
@@ -285,8 +300,8 @@ static int computeRelaxations(
  for( auto & [ rs , s ] : *f_RelaxationSolvers ) {
   auto z = s->compute();
   if( z == Solver::kInfeasible ) {
-   if( ! currentNode->get_toFather() )    // the root is infeasible
-    return( Solver::kInfeasible );
+   if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
+    return( Solver::kInfeasible );       // the root is infeasible
    toPrune = true;
    currentNode->set_infeasible( true );
    currentNode->set_bound( minimizing ? Inf< double >()

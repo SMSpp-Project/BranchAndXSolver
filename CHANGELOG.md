@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the incumbent is given to the relaxations of each node as their cutoff
+  (`dblUpCutOff` when minimizing, `dblLwCutOff` when maximizing), so that a
+  relaxation proven beyond it stops there and the node is fenced as
+  infeasible; a root fenced this way, with an incumbent already there, proves
+  that incumbent optimal instead of the problem infeasible
+
 - the bound a node gets from the RelaxationSolver is called the relaxation
   bound, which says where it comes from and nothing about how it is
   computed: `Node::get_dual_bound()` / `set_dual_bound()` are now
