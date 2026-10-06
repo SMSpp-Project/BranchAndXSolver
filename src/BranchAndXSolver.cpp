@@ -234,7 +234,7 @@ static int computeRelaxations(
  // improve on it, which for the search is as good as infeasible (and then,
  // at the root, it proves the incumbent optimal rather than the problem
  // infeasible)
- const double incumbent = incumbentCell ? incumbentCell->load() : bestBound;
+ const double incumbent = incumbentCell->load();
  const bool has_incumbent = minimizing ? incumbent < Inf< double >()
                                        : incumbent > - Inf< double >();
  for( auto & pr : *f_RelaxationSolvers )
@@ -267,7 +267,7 @@ static int computeRelaxations(
     return( zs[ i ] );
    if( rs->has_true_var_solution() ) {
     double primal_bound = minimizing ? rs->get_true_ub() : rs->get_true_lb();
-    if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
+    if( minimizing ? primal_bound < incumbentCell->load() : primal_bound > incumbentCell->load() ) {
      bestBound = primal_bound;
      incumbentCell->store( bestBound );
      delete bestSol;
@@ -314,19 +314,21 @@ static int computeRelaxations(
   // see if the primal bound improves thanks to a true solution
   if( rs->has_true_var_solution() ) {
    double primal_bound = minimizing ? rs->get_true_ub() : rs->get_true_lb();
-   if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
-    // in the parallel exploration the incumbent is shared between the
-    // workers: re-check the improvement under the mutex
-    std::unique_lock< std::mutex > guard;
-    if( incumbentMutex )
-     guard = std::unique_lock< std::mutex >( *incumbentMutex );
-    if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
-     bestBound = primal_bound;
-     incumbentCell->store( bestBound );
-     delete bestSol;
-     bestSol = rs->get_true_solution();
+   if (minimizing ? primal_bound < incumbentCell->load() : primal_bound > incumbentCell->load())
+   {
+     // in the parallel exploration the incumbent is shared between the
+     // workers: re-check the improvement under the mutex
+     std::unique_lock<std::mutex> guard;
+     if (incumbentMutex)
+       guard = std::unique_lock<std::mutex>(*incumbentMutex);
+     if (minimizing ? primal_bound < incumbentCell->load() : primal_bound > incumbentCell->load())
+     {
+       bestBound = primal_bound;
+       incumbentCell->store(bestBound);
+       delete bestSol;
+       bestSol = rs->get_true_solution();
      }
-    }
+   }
    }
 
   // update the relaxation bound of the node and select the branching solver;
@@ -380,8 +382,8 @@ static int computeHeuristic(
     return( zs[ i ] );
    double primal_bound = minimizing ? s->get_ub() : s->get_lb();
    if( s->has_var_solution() && s->is_var_feasible() &&
-       ( minimizing ? primal_bound < bestBound
-                    : primal_bound > bestBound ) ) {
+       ( minimizing ? primal_bound < incumbentCell->load()
+                    : primal_bound > incumbentCell->load() ) ) {
     bestBound = primal_bound;
     incumbentCell->store( bestBound );
     delete bestSol;
@@ -406,12 +408,12 @@ static int computeHeuristic(
   // see if the primal bound improves
   double primal_bound = minimizing ? s->get_ub() : s->get_lb();
   if( s->has_var_solution() && s->is_var_feasible() &&
-      ( minimizing ? primal_bound < bestBound
-                   : primal_bound > bestBound ) ) {
+      ( minimizing ? primal_bound < incumbentCell->load()
+                   : primal_bound > incumbentCell->load() ) ) {
    std::unique_lock< std::mutex > guard;
    if( incumbentMutex )
     guard = std::unique_lock< std::mutex >( *incumbentMutex );
-   if( minimizing ? primal_bound < bestBound : primal_bound > bestBound ) {
+   if( minimizing ? primal_bound < incumbentCell->load() : primal_bound > incumbentCell->load() ) {
     bestBound = primal_bound;
     incumbentCell->store( bestBound );
     delete bestSol;
@@ -485,11 +487,11 @@ static int initializeRoot(
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
                                bestBound , bestSol , incumbentCell ,
-                               toPrune , branchSolver );
+                               toPrune , branchSolver, 0 , 0 , 1 , &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  res = computeHeuristic( f_HeuristicSolvers , rootNode , minimizing ,
-                         bestBound , bestSol , incumbentCell , toPrune );
+                         bestBound , bestSol , incumbentCell , toPrune , 1 , &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  rootNode->obtainBranchList( branchSolver );
