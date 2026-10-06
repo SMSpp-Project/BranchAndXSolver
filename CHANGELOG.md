@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the pruning tests and the checks of an improved incumbent read the shared
+  incumbent (the atomic of the GlobalInformation) rather than the plain
+  double kept by the Solver, so that the workers of the parallel
+  exploration never read a value being written
+
 - the incumbent is given to the relaxations of each node as their cutoff
   (`dblUpCutOff` when minimizing, `dblLwCutOff` when maximizing), so that a
   relaxation proven beyond it stops there and the node is fenced as
