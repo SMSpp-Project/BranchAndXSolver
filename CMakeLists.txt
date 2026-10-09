@@ -41,6 +41,11 @@ get_directory_property(hasParent PARENT_DIRECTORY)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # ----- Settings ------------------------------------------------------------ #
+# This creates an ENABLE_TESTING option (default: ON) and enables the testing
+# using the ctest executable.
+# See: https://cmake.org/cmake/help/latest/manual/ctest.1.html
+include(CTest)
+
 # Sets the default build type (if none was specified).
 # See: https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html
 include(BuildType)
@@ -77,7 +82,7 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 # With the BUILD_SHARED_LIBS variable we can specify if the library will
 # be STATIC or SHARED, so no reason to do it now.
 add_library(${modName})
-target_compile_features(${modName} PUBLIC cxx_std_17)
+target_compile_features(${modName} PUBLIC cxx_std_20)
 
 # The name of the shared library carries the version of its binary interface,
 # which any minor release may change while the major version is 0, and then
@@ -91,8 +96,25 @@ set_target_properties(${modName} PROPERTIES
         VERSION ${PROJECT_VERSION}
         SOVERSION ${soVersion})
 
-if (MSVC AND BUILD_SHARED_LIBS)
-    target_link_options(${modName} INTERFACE "/INCLUDE:SMSpp_force_load_${modName}")
+# The classes of the module register themselves in the factory from a static
+# initialiser, and a linker that drops what looks unused takes the
+# registration away with it: the target tells whoever links it to keep the
+# symbol that forces the module in, or the library as a whole where naming
+# the symbol is not enough.
+if (BUILD_SHARED_LIBS)
+    if (MSVC)
+        target_link_options(${modName} INTERFACE
+                "/INCLUDE:SMSpp_force_load_${modName}")
+    elseif (UNIX AND (NOT APPLE))
+        # the ELF linker decides by the symbols a regular object asks for, so
+        # naming the symbol is not enough and the library has to be kept
+        target_link_options(${modName} INTERFACE "LINKER:--no-as-needed")
+    elseif (APPLE)
+        # ld64 keeps a dylib that provides a symbol to the link, one asked
+        # for by -u included, even under -dead_strip_dylibs
+        target_link_options(${modName} INTERFACE
+                "LINKER:-u,_SMSpp_force_load_${modName}")
+    endif ()
 endif ()
 
 # When adding source files with target_sources(), PRIVATE means that the files
@@ -121,7 +143,7 @@ add_library(${modNamespace}::${modName} ALIAS ${modName})
 
 # ----- Subdirectories ------------------------------------------------------ #
 if (BUILD_TESTING)
-    # Just consuming BUILD_TESTING to avoid warnings
+    add_subdirectory(test)
 endif ()
 
 # ----- Install instructions ------------------------------------------------ #

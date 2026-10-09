@@ -7,11 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
 ### Added
+
+- a unit test of the module that needs nothing but the core: an integer box
+  problem with a separable quadratic objective, whose optimum is known in
+  closed form, solved with a continuous relaxation and a rounding heuristic
+  built on BoxSolver, under every exploration strategy and bounding protocol,
+  minimizing and maximizing, with infeasible boxes, an integer root, node and
+  time budgets, the parameters, a detach and reattach and a change of the
+  objective; `ctest -L BranchAndXSolver` runs it, and the CI of the module
+  runs only it
 
 ### Changed
 
+- the pruning tests and the checks of an improved incumbent read the shared
+  incumbent (the atomic of the GlobalInformation) rather than the plain
+  double kept by the Solver, so that the workers of the parallel
+  exploration never read a value being written
+
+- the incumbent is given to the relaxations of each node as their cutoff
+  (`dblUpCutOff` when minimizing, `dblLwCutOff` when maximizing), so that a
+  relaxation proven beyond it stops there and the node is fenced as
+  infeasible; a root fenced this way, with an incumbent already there, proves
+  that incumbent optimal instead of the problem infeasible; a relaxation that
+  returns `kCutOff` fences the node by bound, with the bound it reports
+
+- the bound a node gets from the RelaxationSolver is called the relaxation
+  bound, which says where it comes from and nothing about how it is
+  computed: `Node::get_dual_bound()` / `set_dual_bound()` are now
+  `get_bound()` / `set_bound()`; the column of the per-node log keeps its
+  name `dualBound`
+
+- whoever links the module keeps it: the classes of a module register
+  themselves in the factory from a static initialiser, and a linker that
+  drops what looks unused takes the registration away with it, so the target
+  now tells whoever links it to keep the symbol that forces the module in,
+  and on ELF, where naming the symbol is not enough, the library as a whole
+
 ### Fixed
+
+- in the parallel depth-first exploration a worker that hands a child over
+  to the pool asks it for its branches before moving its Solver back to the
+  father, as everywhere else: the branches came out of the relaxation of the
+  father, and a Solver that keeps a state across the Changes (say, the
+  incremental greedy of BinaryKnapsackBlock) gave a child a wrong state, and
+  a value beyond the optimum
+
+- an exploration stopped by a budget (`intMaxNodes`, `dblMaxTime`) returns as
+  the bound on the side of the open nodes (`get_lb()` when minimizing,
+  `get_ub()` when maximizing) the best among their relaxation bounds and the
+  incumbent, rather than an infinite one, also when it is a node whose
+  relaxation is not solved (e.g., stopped by its own budget) that stops it,
+  the bound of that node counting among them; the parallel depth-first search
+  still claims none
+
+- a child starts from the relaxation bound of its parent, which is valid for
+  it, and its evaluation can only improve it: with the eager bounding protocol
+  and with the parallel depth-first search it started from an infinite one, so
+  that a child whose relaxation stopped early carried a bound weaker than that
+  of its parent
+
+- a node whose evaluation does not end with `kOK` (e.g., a relaxation stopped
+  by its time limit) no longer leaves the Changes of its path applied: the
+  solvers go back to the root before the tree is discarded, so that the best
+  solution is then written into a `Block` without the fixings of that node
+
+- an exploration stopped by the node budget reported kOK, i.e., optimality,
+  and kInfeasible when no incumbent had been found yet: the status is now
+  kStopIter or kStopTime whenever open nodes that can improve the incumbent
+  are left, and kOK otherwise, whichever budget is left
+
+- dblMaxTime, dblRelAcc and dblAbsAcc were never stored, the base Solver
+  classes not doing it, so the time budget and the tolerances of the pruning
+  were always the default ones
+
+- a compute() after a stop, nothing having changed, returned the old status
+  instead of going on
+
+- a Solver detached from a Block could not be attached again (the
+  GlobalInformation was declared twice), and one attached to another Block
+  kept the inner Solver of the old one: the inner Solver, the retained tree
+  and the best solution are now dropped when the Block changes
+
+- the name of the BlockSolverConfig file given as a temporary was ignored,
+  the string parameter being taken by the wrong overload; the factory reset
+  (its empty default) threw, and a second BlockSolverConfig added its inner
+  Solver to those of the first instead of replacing them
+
+- the incumbent found by a heuristic ChangeSolver was saved as an empty
+  Solution, which could not be written back
+
+- the bounds of a proven infeasible problem were not both the infinity of
+  the sense, and invalid intSolveMethod / intBoundingProtocol were accepted,
+  to throw inside compute() with the Solver locked
+
+- the branching Changes of a node evaluated again, as in a reoptimization,
+  were leaked
+
+- on macOS a program linking the module lost the classes the module
+  registers in the factories when the linker dropped the library, as it
+  does under `-dead_strip_dylibs`, which conda sets: the target now asks the
+  linker for the symbol that forces the module in (`-u`), which ld64,
+  unlike the ELF linker, counts as a use of the library
 
 ## [0.1.0] - 2026-09-12
 
@@ -21,8 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prototype repository: DFS / BFS / BestFS exploration driven by the ChangeSolver /
   RelaxationSolver concepts, inner Solver provided via BlockSolverConfig,
   private to the BranchAndXSolver (Modification forwarded to them)
+
 - tolerance-based pruning on the inherited dblRelAcc / dblAbsAcc; node and
   time budgets on the inherited intMaxIter / dblMaxTime
+
 - SMS++-style CMake build system and module makefiles
 
 ### Changed
@@ -39,6 +140,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RPATH relative to itself, so that an installed tree keeps working wherever
   it is moved
 
-[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.1.0...develop
+[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...develop
+[0.2.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/branchandxsolver/-/tags/0.1.0
-

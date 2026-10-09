@@ -2,23 +2,22 @@
 /*---------------------- File BranchAndXSolver.h -----------------------*/
 /*--------------------------------------------------------------------------*/
 /** @file
- * Header file for the *concrete* class BranchAndXSolver, which implements
- * the Solver concept [see Solver.h] for a Relaxation-Agnostic Branch-and-X
- * (RABaX) Solver: the problem encoded by the Block is solved with an
- * enumerative algorithm built on top of the ChangeSolver / RelaxationSolver
- * concepts [see ChangeSolver.h]. The nodes of the enumeration tree are
- * identified by the Change that generates them from their parent, the
- * attached RelaxationSolver(s) provide dual bounds, true (primal) solutions
- * and the branching Changes, and the attached heuristic ChangeSolver(s), if
- * any, provide further primal bounds. The tree can be explored depth-first,
+ * Header file for the *concrete* class BranchAndXSolver, which implements the
+ * Solver concept [see Solver.h] for a Relaxation-Agnostic Branch-and-X (RABaX)
+ * Solver: the problem encoded by the Block is solved with an enumerative
+ * algorithm built on top of the ChangeSolver / RelaxationSolver concepts [see
+ * ChangeSolver.h]. The nodes of the enumeration tree are identified by the
+ * Change that generates them from their parent, the attached
+ * RelaxationSolver(s) provide relaxation bounds, true (primal) solutions and
+ * the branching Changes, and the attached heuristic ChangeSolver(s), if any,
+ * provide further primal bounds. The tree can be explored depth-first,
  * breadth-first or best-first (see intSolveMethod); nodes are pruned by the
- * standard inherited tolerances (dblRelAcc / dblAbsAcc), and intMaxNodes /
- * the inherited dblMaxTime bound the number of explored nodes and the total
- * time.
+ * standard inherited tolerances (dblRelAcc / dblAbsAcc), and intMaxNodes / the
+ * inherited dblMaxTime bound the number of explored nodes and the total time.
  *
  * The solver is generic ("X" is for Bound / Cut / Price): nothing in here
  * depends on the specific :Block being solved, all the problem-specific
- * knowledge lives in the attached :ChangeSolver, which provides the dual
+ * knowledge lives in the attached :ChangeSolver, which provides the relaxation
  * bounds and the branching Changes (any tightening it does --- preprocessing,
  * reduced-cost fixing, cuts --- it does on its own terms, reading the search-
  * global data through a GlobalInformation [see ChangeSolver.h]). The tree is
@@ -87,7 +86,7 @@ namespace SMSpp_di_unipi_it
  * identified by the Change leading to them from their parent; moving the
  * attached :ChangeSolver between two nodes amounts to applying the Changes
  * (or the undo Changes) found along the joining path. RelaxationSolver(s)
- * provide the dual bound, possibly true solutions, and the branching
+ * provide the relaxation bound, possibly true solutions, and the branching
  * Changes; plain ChangeSolver(s) act as primal heuristics. */
 
 class BranchAndXSolver : public Solver {
@@ -112,16 +111,16 @@ class BranchAndXSolver : public Solver {
   intSolveMethod = intLastAlgPar ,  ///< how to explore the tree
   intThreadForDifferentSolvers ,    ///< max threads for solvers at each node
   intBoundingProtocol ,             /**< when a node is evaluated:
-   * with the eager protocol (the default) a node is evaluated as soon as it
-   * is created, i.e., inside the branching of its parent, so that it is only
-   * put in the open set if its dual bound can improve the incumbent; with
-   * the lazy one it is put there unevaluated, carrying the dual bound of its
-   * parent, and it is evaluated when it is extracted. Evaluating late can
+   * with the eager protocol (the default) a node is evaluated as soon as it is
+   * created, i.e., inside the branching of its parent, so that it is only put
+   * in the open set if its relaxation bound can improve the incumbent; with
+   * the lazy one it is put there unevaluated, carrying the relaxation bound of
+   * its parent, and it is evaluated when it is extracted. Evaluating late can
    * save the whole evaluation of the nodes that a better incumbent, found in
-   * the meantime, prunes without ever looking at them; evaluating early
-   * gives the open set the true bound of each node, which is what a
-   * best-first discipline orders by [see intSolveMethod]. Either way a node
-   * is evaluated at most once [see Node::is_evaluated()]. */
+   * the meantime, prunes without ever looking at them; evaluating early gives
+   * the open set the true bound of each node, which is what a best-first
+   * discipline orders by [see intSolveMethod]. Either way a node is evaluated
+   * at most once [see Node::is_evaluated()]. */
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it any serial exploration keeps the tree and its fenced frontier
    * alive across compute() calls, and a re-solve under class 1-3 changes
@@ -204,7 +203,8 @@ class BranchAndXSolver : public Solver {
 
  BranchAndXSolver() : Solver() , f_RelaxationSolvers() ,
                       f_HeuristicSolvers() , f_state( kUnEval ) ,
-                      bestBound( 0 ) , bestSolution( nullptr ) ,
+                      bestBound( 0 ) , f_open_bound( - Inf< double >() ) ,
+                      bestSolution( nullptr ) ,
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
@@ -236,15 +236,31 @@ class BranchAndXSolver : public Solver {
  *  @{ */
 
  /// set the (pointer to the) Block that the Solver has to solve
+ /** Attaching to a Block different from the current one (nullptr, i.e.,
+  * detaching, included) drops everything that belongs to the old one: the
+  * inner Solver created out of the BlockSolverConfig, the tree retained for
+  * reoptimization and the best solution found; the inner Solver are then
+  * created anew on the new Block, if a BlockSolverConfig is there, and the
+  * next compute() solves from scratch. */
 
  void set_Block( Block * block ) override {
+  if( block == f_Block )
+   return;
+  if( f_Block )
+   dropInnerSolvers();
   Solver::set_Block( block );
-  if( block )
+  f_state = kUnEval;
+  changes = 4;
+  if( block ) {
    initializeGlobalInformation();
-  if( f_RelaxationSolvers.empty() && f_HeuristicSolvers.empty() &&
-      configurationRS )
-   applyConfigurationToSolvers();
+   if( configurationRS )
+    applyConfigurationToSolvers();
+   }
   }
+
+/*--------------------------------------------------------------------------*/
+
+ using Solver::set_par;  // restore the hidden overloaded methods
 
 /*--------------------------------------------------------------------------*/
  /// set the int parameters of BranchAndXSolver
@@ -278,6 +294,9 @@ class BranchAndXSolver : public Solver {
  void set_par( idx_type par , int value ) override {
   switch( par ) {
    case( intSolveMethod ):
+    if( ( value < DFS ) || ( value > BestFSDive ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intSolveMethod" ) );
     solveType = static_cast< SolveMethod >( value );
     break;
    case( intMaxThread ):
@@ -290,6 +309,9 @@ class BranchAndXSolver : public Solver {
     maxThreadForSolvers = value;
     break;
    case( intBoundingProtocol ):
+    if( ( value < Eager ) || ( value > Lazy ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intBoundingProtocol" ) );
     boundingProtocol = static_cast< BoundingProtocol >( value );
     break;
    case( intReoptimize ):
@@ -304,27 +326,71 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// set the double parameters of BranchAndXSolver
+ /** The base Solver classes do not store the double parameters, so the
+  * inherited ones that BranchAndXSolver uses are stored here:
+  *
+  * - dblMaxTime [+INF]: the time budget of a solve, in seconds;
+  *
+  * - dblRelAcc [1e-6] / dblAbsAcc [+INF, i.e., not active]: the relative and
+  *   absolute tolerances of the pruning, a node being pruned when its
+  *   relaxation bound cannot improve the incumbent by more than the largest
+  *   of the two (the relative one taken w.r.t. max( | incumbent | , 1 )). */
+
+ void set_par( idx_type par , double value ) override {
+  switch( par ) {
+   case( dblMaxTime ):
+    maxTime = value;
+    break;
+   case( dblRelAcc ):
+    relAcc = value;
+    break;
+   case( dblAbsAcc ):
+    absAcc = value;
+    break;
+   default:
+    Solver::set_par( par , value );
+   }
+  }
+
+/*--------------------------------------------------------------------------*/
  /// set the string parameters of BranchAndXSolver
  /** Set the string parameters specific of BranchAndXSolver:
   *
   * - strNameOfBlockSolverConfigurationFile [""]: name of the file out of
   *   which the BlockSolverConfig providing the inner Solver (the
   *   RelaxationSolver(s) and heuristic ChangeSolver(s)) is deserialized;
-  *   it is applied to the Block as soon as both are available. */
+  *   it is applied to the Block as soon as both are available, the inner
+  *   Solver it describes replacing those of any previous one. The empty
+  *   name (the default) means no BlockSolverConfig: the inner Solver
+  *   already there, if any, are kept.
+  *
+  * The string parameters are taken by the rvalue version, which the one
+  * taking a const reference forwards to [see ThinComputeInterface]. */
 
- void set_par( idx_type par , const std::string & value ) override {
+ void set_par( idx_type par , std::string && value ) override {
   if( par != strNameOfBlockSolverConfigurationFile ) {
-   Solver::set_par( par , value );
+   Solver::set_par( par , std::move( value ) );
    return;
    }
+  BlockSolverConfig * cfg = nullptr;
+  if( ! value.empty() ) {
+   auto c = Configuration::deserialize( value );
+   cfg = dynamic_cast< BlockSolverConfig * >( c );
+   if( ! cfg ) {
+    delete c;
+    throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
+           "create a BlockSolverConfig out of " + value ) );
+    }
+   }
   nameRS = value;
-  configurationRS = dynamic_cast< BlockSolverConfig * >(
-                                      Configuration::deserialize( nameRS ) );
-  if( ! configurationRS )
-   throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
-          "create a BlockSolverConfig out of " + nameRS ) );
-  if( f_Block )
+  delete configurationRS;
+  configurationRS = cfg;
+  if( f_Block && configurationRS ) {
+   dropInnerSolvers();
+   changes = 4;
    applyConfigurationToSolvers();
+   }
   }
 
 /*--------------------------------------------------------------------------*/
@@ -363,19 +429,21 @@ class BranchAndXSolver : public Solver {
 /*--------------------------------------------------------------------------*/
  /// return a lower bound on the optimal objective function value
  /** For a maximization problem the incumbent is a valid lower bound; for a
-  * minimization one a lower bound is the global dual bound of the
-  * exploration, which is only available once the enumeration has been
-  * completed [see get_ub()], in which case it is the incumbent as well. */
+  * minimization one it is the global relaxation bound of the exploration,
+  * i.e., the smallest among the relaxation bounds of the nodes left open and
+  * the incumbent, which is the incumbent itself once the enumeration has been
+  * completed; a node not evaluated yet has the relaxation bound of its father,
+  * hence the bound is finite as soon as the root has been. An exploration
+  * stopped by a budget with the parallel depth-first search [see
+  * intSolveMethod] claims no bound on the side of the open nodes. */
 
  OFValue get_lb( void ) override;
 
 /*--------------------------------------------------------------------------*/
  /// return an upper bound on the optimal objective function value
  /** The symmetric of get_lb(): the incumbent for a minimization problem, the
-  * global dual bound - available only when the enumeration has been completed
-  * - for a maximization one. Note that an enumeration stopped by any of the
-  * budgets has explored only a part of the tree, so it claims no bound on the
-  * side of the not yet explored nodes. */
+  * global relaxation bound (the largest among the relaxation bounds of the
+  * nodes left open and the incumbent) for a maximization one. */
 
  OFValue get_ub( void ) override;
 
@@ -427,6 +495,15 @@ class BranchAndXSolver : public Solver {
    case( intMaxNodes ):                  return( maxNodes );
    }
   return( Solver::get_int_par( par ) );
+  }
+
+ [[nodiscard]] double get_dbl_par( idx_type par ) const override {
+  switch( par ) {
+   case( dblMaxTime ): return( maxTime );
+   case( dblRelAcc ):  return( relAcc );
+   case( dblAbsAcc ):  return( absAcc );
+   }
+  return( Solver::get_dbl_par( par ) );
   }
 
  [[nodiscard]] const std::string & get_str_par( idx_type par )
@@ -515,6 +592,7 @@ class BranchAndXSolver : public Solver {
  int f_state;             ///< the (current) state of the compute() process
 
  double bestBound;        ///< the best primal (hence feasible) bound found
+ double f_open_bound;     ///< global relaxation bound of the last compute()
 
  Solution * bestSolution; ///< the best solution found, valued bestBound
 
@@ -547,20 +625,45 @@ class BranchAndXSolver : public Solver {
   * before any inner Solver is handed the GlobalInformation. */
 
  void initializeGlobalInformation( void ) {
-  f_globalInfo.add_to_Universe< std::atomic< double > >(
-			       GlobalInformation::str_AtomicScalars );
-  f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
-			 std::atomic< double > >(
-			  GlobalInformation::str_AtomicScalars ) )[
-			   GlobalInformation::str_Incumbent ] );
-  f_incumbentCell->store( no_incumbent() );
+  if( ! f_incumbentCell ) {   // the first Block: declare the Collection
+   f_globalInfo.add_to_Universe< std::atomic< double > >(
+				GlobalInformation::str_AtomicScalars );
+   f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
+			  std::atomic< double > >(
+			   GlobalInformation::str_AtomicScalars ) )[
+			    GlobalInformation::str_Incumbent ] );
 
-  f_globalInfo.add_to_Universe< std::atomic< bool > >(
-			       GlobalInformation::str_AtomicFlags );
-  f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
-		    GlobalInformation::str_AtomicFlags ) )[
-		     GlobalInformation::str_LocalFixingAllowed ] );
+   f_globalInfo.add_to_Universe< std::atomic< bool > >(
+				GlobalInformation::str_AtomicFlags );
+   f_lfaCell = &( ( * f_globalInfo.get_from_Universe< std::atomic< bool > >(
+		     GlobalInformation::str_AtomicFlags ) )[
+		      GlobalInformation::str_LocalFixingAllowed ] );
+   }
+  f_incumbentCell->store( no_incumbent() );
   f_lfaCell->store( true );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// drop what belongs to the current Block, before attaching to another
+ /** Deletes the inner Solver, the tree retained for reoptimization and the
+  * best Solution, all of which refer to the current Block, and the pool of
+  * the globally valid cuts that the relaxations may have created in the
+  * GlobalInformation [see str_GlobalCuts]. */
+
+ void dropInnerSolvers( void ) {
+  discardRetainedTree();
+  delete bestSolution;
+  bestSolution = nullptr;
+  bestBound = 0;
+  for( auto slvr : v_created ) {
+   slvr->set_Block( nullptr );
+   delete slvr;
+   }
+  v_created.clear();
+  f_RelaxationSolvers.clear();
+  f_HeuristicSolvers.clear();
+  v_workerSolvers.clear();
+  f_globalInfo.remove_from_Universe( str_GlobalCuts );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -690,10 +793,10 @@ class BranchAndXSolver : public Solver {
  /// solve the tree with the exploration strategy that is set
  /** The one serial exploration: it builds the OpenList that the chosen
   * strategy asks for [see intSolveMethod and OpenList] - a LIFO stack for
-  * depth-first, a FIFO queue for breadth-first, a dual-bound priority queue
-  * for best-first, its diving variant for BestFSDive - seeds it with the
-  * root (or with the frontier of the retained tree, see reseedFrontier())
-  * and hands it to the shared loop [see explore()]. The strategies differ in
+  * depth-first, a FIFO queue for breadth-first, a relaxation-bound priority
+  * queue for best-first, its diving variant for BestFSDive - seeds it with the
+  * root (or with the frontier of the retained tree, see reseedFrontier()) and
+  * hands it to the shared loop [see explore()]. The strategies differ in
   * nothing else.
   *  @param globalMutex mutex protecting the shared state of this class
   *  @return the sol_type [see Solver.h] of the computation */
@@ -730,7 +833,7 @@ class BranchAndXSolver : public Solver {
   *
   * The re-opened nodes are handed to \p open respecting its discipline (a
   * LIFO stack receives them in reverse), exactly as explore() does with the
-  * children of a node: the frontier is sorted by the dual bound of the
+  * children of a node: the frontier is sorted by the relaxation bound of the
   * previous solve, so that whatever the strategy the most promising nodes
   * are looked at first and the incumbent warms up immediately. This is why
   * the mechanism is independent of the exploration strategy: the order in
@@ -746,9 +849,14 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// tear down a retained / in-progress tree and its open set and frontier
+ /** Besides, the global relaxation bound is set to the best among those of the
+  * nodes left in the open set and of \p current, the node whose evaluation
+  * (or that of a child of which) has stopped the exploration, if any: this
+  * is what get_lb() / get_ub() return when the stop is due to a budget. */
 
  void discardTree( ExploringNode * root , OpenList & open ,
-                   std::list< ChangeSolver * > * solvers );
+                   std::list< ChangeSolver * > * solvers ,
+                   const ExploringNode * current = nullptr );
 
 /*--------------------------------------------------------------------------*/
  /// process the outstanding Modification
@@ -776,6 +884,15 @@ class BranchAndXSolver : public Solver {
                               ///< intReoptimize / treeSolve())
 
  int maxNodes;                ///< node budget of a solve (see intMaxNodes)
+
+ /// the inherited dblMaxTime [see set_par( double )]
+ double maxTime = Inf< double >();
+
+ /// the inherited dblRelAcc [see set_par( double )]
+ double relAcc = 1e-6;
+
+ /// the inherited dblAbsAcc [see set_par( double )]
+ double absAcc = Inf< double >();
 
  /// the global information shared with the relaxations
  /** The GlobalInformation handed to every relaxation: the reserved hot
@@ -857,7 +974,7 @@ class BranchAndXSolver : public Solver {
 /** A Node of the enumeration tree is identified by the Change that leads to
  * it from its parent; it also holds the (undo) Change to return to the
  * parent, the Changes generating its children (see obtainBranchList()) and
- * its dual bound. The Node owns all these Change. */
+ * its relaxation bound. The Node owns all these Change. */
 
 class Node {
 
@@ -873,7 +990,7 @@ class Node {
   *  @param nodeName name of the node (debugging purposes only) */
 
  Node( Change * change , int nodeName = 0 )
-  : dual_bound( - Inf< double >() ) , f_change( change ) ,
+  : bound( - Inf< double >() ) , f_change( change ) ,
     toFather( nullptr ) , branches() , f_infeasible( false ) ,
     f_evaluated( false ) , name( nodeName ) {}
 
@@ -889,11 +1006,11 @@ class Node {
 
 /*--------------------------------------------------------------------------*/
 
- /// return the value of the dual bound
- double get_dual_bound( void ) const { return( dual_bound ); }
+ /// return the value of the relaxation bound
+ double get_bound( void ) const { return( bound ); }
 
- /// set the value of the dual bound
- void set_dual_bound( double db ) { dual_bound = db; }
+ /// set the value of the relaxation bound
+ void set_bound( double db ) { bound = db; }
 
  /// return the Change that leads to this node
  Change * get_f_change( void ) const { return( f_change ); }
@@ -907,9 +1024,9 @@ class Node {
  /// return the name of the node (debugging purposes only)
  int get_name( void ) const { return( name ); }
 
- /// initialize the dual bound to the appropriate infinity
+ /// initialize the relaxation bound to the appropriate infinity
  void initializeBound( bool minimizing ) {
-  dual_bound = minimizing ? - Inf< double >() : Inf< double >();
+  bound = minimizing ? - Inf< double >() : Inf< double >();
   f_infeasible = false;
   f_evaluated = false;
   }
@@ -922,7 +1039,7 @@ class Node {
 
  /// whether the inner Solver have already been run on this node
  /** Tells whether the node has already been evaluated, i.e., whether its
-  * dual bound and branching Changes are those of the inner Solver rather
+  * relaxation bound and branching Changes are those of the inner Solver rather
   * than the ones it inherited when it was created; this is what makes the
   * lazy bounding protocol [see BranchAndXSolver::intBoundingProtocol] never
   * evaluate a node twice. */
@@ -933,7 +1050,11 @@ class Node {
  void set_evaluated( bool e ) { f_evaluated = e; }
 
  /// have the given RelaxationSolver produce the branching Changes
+ /** The Changes produced by a previous evaluation, those not yet handed to
+  * a child (whose entries are nullptr), are deleted. */
  void obtainBranchList( RelaxationSolver * solver ) {
+  for( auto ch : branches )
+   delete ch;
   branches = solver->branch();
   }
 
@@ -946,7 +1067,7 @@ class Node {
 
  protected:
 
- double dual_bound;     ///< value of the dual bound at this node
+ double bound;     ///< value of the relaxation bound at this node
 
  Change * f_change;     ///< the Change to reach this node from the parent
 
@@ -1132,7 +1253,7 @@ class ExploringNode : public Node {
  * this interface lets a single exploration loop [see
  * BranchAndXSolver::explore()] serve every strategy: a LIFO stack gives
  * depth-first, a FIFO queue gives breadth-first, a priority queue ordered by
- * dual bound gives best-first. A new strategy is just a new OpenList. */
+ * relaxation bound gives best-first. A new strategy is just a new OpenList. */
 
 class OpenList {
 
