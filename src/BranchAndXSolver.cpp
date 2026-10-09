@@ -213,13 +213,32 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
                                 std::vector< int > & zs , int maxThreads );
 
 /*--------------------------------------------------------------------------*/
+/// fence the current node whose relaxation stopped at the cutoff
+/** The relaxation \p s has returned kCutOff, i.e., it has proven its bound
+ * beyond the cutoff it was given, the incumbent [see computeRelaxations()]:
+ * the node is fenced by bound, with the bound the relaxation reports, if
+ * better than the one it has. */
+
+static void fence_by_cutoff( Node * currentNode , Solver * s ,
+                             const bool minimizing , bool & toPrune )
+{
+ const double bound = minimizing ? s->get_lb() : s->get_ub();
+ if( minimizing ? bound > currentNode->get_bound()
+                : bound < currentNode->get_bound() )
+  currentNode->set_bound( bound );
+ toPrune = true;
+ }
+
+/*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
  * relaxation bound, the branching solver, and, when a true solution improves
  * it, the incumbent bestBound / bestSol; sets \p toPrune when the node can be
  * discarded. The incumbent is given to every relaxation as its cutoff
  * (dblUpCutOff when minimizing, dblLwCutOff when maximizing), so that one
- * proven beyond it stops there and the node is fenced as infeasible. With
+ * proven beyond it stops there: returning kCutOff, and the node is fenced by
+ * bound [see fence_by_cutoff()], or kInfeasible, and the node is fenced as
+ * infeasible. With
  * \p nThreads > 1 (and no shared incumbent lock) the several relaxations are
  * computed concurrently, bit-identically to the serial reduction [see
  * computeAllParallel()].
@@ -269,6 +288,10 @@ static int computeRelaxations(
    }
   for( std::size_t i = 0 ; i < n ; ++i ) {
    auto & [ rs , s ] = (*f_RelaxationSolvers)[ i ];
+   if( zs[ i ] == Solver::kCutOff ) {  // beyond the incumbent [see above]
+    fence_by_cutoff( currentNode , s , minimizing , toPrune );
+    return( Solver::kOK );
+    }
    if( zs[ i ] != ThinComputeInterface::kOK )
     return( zs[ i ] );
    if( rs->has_true_var_solution() ) {
@@ -313,6 +336,10 @@ static int computeRelaxations(
    currentNode->set_bound( minimizing ? Inf< double >()
                                            : - Inf< double >() );
    break;
+   }
+  if( z == Solver::kCutOff ) {  // beyond the incumbent [see above]
+   fence_by_cutoff( currentNode , s , minimizing , toPrune );
+   return( Solver::kOK );
    }
   if( z != ThinComputeInterface::kOK )
    return( z );

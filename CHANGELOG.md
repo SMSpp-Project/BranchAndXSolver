@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`dblUpCutOff` when minimizing, `dblLwCutOff` when maximizing), so that a
   relaxation proven beyond it stops there and the node is fenced as
   infeasible; a root fenced this way, with an incumbent already there, proves
-  that incumbent optimal instead of the problem infeasible
+  that incumbent optimal instead of the problem infeasible; a relaxation that
+  returns `kCutOff` fences the node by bound, with the bound it reports
 
 - the bound a node gets from the RelaxationSolver is called the relaxation
   bound, which says where it comes from and nothing about how it is
