@@ -27,11 +27,13 @@
 
 # macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o
+BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o \
+	$(BAXSLVSDR)/obj/BranchingRule.o
 
 BAXSLVINC = -I$(BAXSLVSDR)/include
 
-BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h
+BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
+	$(BAXSLVSDR)/include/BranchingRule.h
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -44,6 +46,11 @@ $(BAXSLVSDR)/obj/BranchAndXSolver.o: \
 	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(SMS++OBJ)
 	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
 	$(BAXSLVINC) $(SMS++INC) $(SW)
+
+$(BAXSLVSDR)/obj/BranchingRule.o: \
+	$(BAXSLVSDR)/src/BranchingRule.cpp $(BAXSLVSDR)/include/BranchingRule.h
+	$(CC) -c $(BAXSLVSDR)/src/BranchingRule.cpp -o $@ \
+	$(BAXSLVINC) $(SW)
 
 
 ############################ End of makefile #################################

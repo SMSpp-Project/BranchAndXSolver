@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- the components with which a RelaxationSolver can choose the variable to
+  branch upon (`BranchingRule.h`), beside the BranchAndXSolver but unknown to
+  it: `BranchCandidate`, a candidate described by its values in the point of
+  the candidates and in a second point, its block, its position and its cost
+  (the variable being known to the RelaxationSolver only, by an index),
+  `BranchingFeatures`, its fractionality and its eight features,
+  `StrongBranching`, the product score out of the bounds of the two children
+  that the RelaxationSolver computes, with the CSV of its data, and
+  `LearnedBranching`, a perceptron on the features read from a file
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
