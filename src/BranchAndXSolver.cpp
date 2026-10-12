@@ -499,6 +499,10 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
 
 /*--------------------------------------------------------------------------*/
 /// evaluate the root node and produce its branching list
+/** The root is fenced with the same tolerances \p relAcc and \p absAcc as
+ * any other node [see cannot_improve()]: with none, a root whose bound is
+ * the value of its own true solution up to the accuracy of the relaxation
+ * would be branched, with nothing left to branch upon. */
 
 static int initializeRoot(
                   std::vector< std::pair< RelaxationSolver * ,
@@ -509,15 +513,16 @@ static int initializeRoot(
                   double & bestBound , Solution * & bestSol ,
                   std::atomic< double > * incumbentCell ,
                   RelaxationSolver * & branchSolver ,
-                  std::mutex & globalMutex )
+                  std::mutex & globalMutex ,
+                  double relAcc , double absAcc )
 {
  rootNode->initializeBound( minimizing );
  rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
                                bestBound , bestSol , incumbentCell ,
-                               toPrune , branchSolver , 0 , 0 , 1 ,
-                               &globalMutex );
+                               toPrune , branchSolver , relAcc , absAcc ,
+                               1 , &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  res = computeHeuristic( f_HeuristicSolvers , rootNode , minimizing ,
@@ -1264,7 +1269,8 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
   else
    res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                          rootNode , minimizing , bestBound , bestSolution ,
-                         f_incumbentCell , branchSolver , globalMutex );
+                         f_incumbentCell , branchSolver , globalMutex ,
+                         relTol , absTol );
   if( res == Solver::kOK )
    open.push( rootNode );
   currentNode = rootNode;
@@ -1370,7 +1376,8 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  RelaxationSolver * branchSolver = nullptr;
  int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                            rootNode , minimizing , bestBound , bestSolution ,
-                           f_incumbentCell , branchSolver , globalMutex );
+                           f_incumbentCell , branchSolver , globalMutex ,
+                           relTol , absTol );
  if( res != Solver::kOK ) {
   delete rootNode;
   return( res );

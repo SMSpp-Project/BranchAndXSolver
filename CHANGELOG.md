@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that the RelaxationSolver computes, with the CSV of its data, and
   `LearnedBranching`, a perceptron on the features read from a file
 
+### Fixed
+
+- the root is fenced with `dblRelAcc` and `dblAbsAcc`, as any other node,
+  rather than with no tolerance at all: a root whose relaxation bound was
+  the value of the true solution it gave up to the accuracy of the
+  relaxation (e.g., a Lagrangian dual solved to 1e-5 whose convexified
+  solution is integral, on the ORLib instances of the single-source CFL)
+  was branched, and the RelaxationSolver had nothing left to branch upon
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
