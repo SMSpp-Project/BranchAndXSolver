@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------*/
-/*---------------------- File BranchAndXSolver.h -----------------------*/
+/*---------------------- File BranchAndXSolver.h ---------------------------*/
 /*--------------------------------------------------------------------------*/
 /** @file
  * Header file for the *concrete* class BranchAndXSolver, which implements the
@@ -79,7 +79,7 @@ namespace SMSpp_di_unipi_it
  class OpenList;        // forward declaration of OpenList
 
 /*--------------------------------------------------------------------------*/
-/*---------------------- CLASS BranchAndXSolver ------------------------*/
+/*---------------------- CLASS BranchAndXSolver ----------------------------*/
 /*--------------------------------------------------------------------------*/
 /// a generic Branch-and-Bound Solver driven by ChangeSolver
 /** The BranchAndXSolver explores the enumeration tree whose nodes are
@@ -1289,5 +1289,5 @@ class OpenList {
 #endif  /* BranchAndXSolver.h included */
 
 /*--------------------------------------------------------------------------*/
-/*------------------- End File BranchAndXSolver.h ----------------------*/
+/*------------------- End File BranchAndXSolver.h --------------------------*/
 /*--------------------------------------------------------------------------*/
