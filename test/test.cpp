@@ -209,12 +209,50 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
   return( std::vector< Change * >{ up , down } );
   }
 
- /// a change of the Objective leaves the feasible region as it is
+ /// solve, counting the solves and keeping the data they have been done on
+ int compute( bool changedvars = true ) override {
+  ++n_compute;
+  const int status = BoxBase::compute( changedvars );
+  f_ref = coefficients();
+  return( status );
+  }
+
+ /// a change of the Objective leaves the feasible region as it is; the
+ /// change of the coefficients w.r.t. the last solve is kept for
+ /// bound_shift(), the solve that follows overwriting the data of the last
  int classify( const sp_Mod & mod ) override {
   if( auto fm = std::dynamic_pointer_cast< const FunctionMod >( mod ) )
-   if( dynamic_cast< Objective * >( fm->function()->get_Observer() ) )
+   if( dynamic_cast< Objective * >( fm->function()->get_Observer() ) ) {
+    const auto now = coefficients();
+    f_delta.resize( now.size() );
+    for( std::size_t i = 0 ; i < now.size() ; ++i )
+     f_delta[ i ] = { now[ i ].first - f_ref[ i ].first ,
+                      now[ i ].second - f_ref[ i ].second };
     return( eModObjective );
+    }
   return( eModEverything );
+  }
+
+ /// the worst change of the separable objective over the box of the node,
+ /// coordinate by coordinate (the extrema of a quadratic on an interval)
+ Solver::OFValue bound_shift( void ) override {
+  if( ( ! use_shift ) || ( f_delta.size() != f_box->size() ) )
+   return( Inf< Solver::OFValue >() );
+  const bool max = f_Block->get_objective_sense() == Objective::eMax;
+  double shift = 0;
+  for( std::size_t i = 0 ; i < f_delta.size() ; ++i ) {
+   const auto [ db , dq ] = f_delta[ i ];
+   const double l = ( *f_box )[ i ].get_lhs() , u = ( *f_box )[ i ].get_rhs();
+   auto g = [ & ]( double x ) { return( dq * x * x + db * x ); };
+   double worst = max ? std::max( g( l ) , g( u ) )
+                      : std::min( g( l ) , g( u ) );
+   if( ( max ? dq < 0 : dq > 0 ) ) {
+    const double v = std::clamp( - db / ( 2 * dq ) , l , u );
+    worst = max ? std::max( worst , g( v ) ) : std::min( worst , g( v ) );
+    }
+   shift += max ? worst : - worst;
+   }
+  return( shift );
   }
 
  bool has_true_var_solution( void ) override {
@@ -245,9 +283,28 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
   return( f_Block->get_Solution( solc , false ) );
   }
 
+ static inline int n_compute = 0;     ///< number of solves, all instances
+ static inline bool use_shift = true; ///< whether bound_shift() says it
+
  private:
 
+ /// the (linear, quadratic) coefficients of the Objective
+ std::vector< std::pair< double , double > > coefficients( void ) {
+  auto obj = static_cast< FRealObjective * >( f_Block->get_objective() );
+  auto f = static_cast< DQuadFunction * >( obj->get_function() );
+  std::vector< std::pair< double , double > > c( f_box->size() );
+  for( std::size_t i = 0 ; i < c.size() ; ++i )
+   c[ i ] = { f->get_linear_coefficient( i ) ,
+              f->get_quadratic_coefficient( i ) };
+  return( c );
+  }
+
  static constexpr double eps = 1e-9;  ///< integrality tolerance
+
+ /// the coefficients of the last solve
+ std::vector< std::pair< double , double > > f_ref;
+ /// their change, as seen by classify()
+ std::vector< std::pair< double , double > > f_delta;
 
  SMSpp_insert_in_factory_h;
 
@@ -938,6 +995,56 @@ void test_objective_change( void )
   }
  }
 
+/*--------------------------------------------------------------------------*/
+/// a small change of the linear coefficients, reoptimizing the retained
+/// tree with and without the shifted bounds [see bound_shift()]: the same
+/// optimum, and no more solves of the relaxation with them; then a large
+/// change, which re-opens most of the frontier, and one of the quadratic
+/// coefficients
+
+void test_bound_shift( void )
+{
+ std::cout << "shifted bounds after a change of the Objective" << std::endl;
+ for( bool max : { false , true } )
+  for( double step : { 0.01 , 3.0 } ) {
+   int solves[ 2 ];
+   for( bool shift : { false , true } ) {
+    const std::string tag = std::string( max ? ", max" : ", min" ) +
+                            ", step " + std::to_string( step ) +
+                            ( shift ? ", shifted" : ", re-evaluated" );
+    BoxRelaxation::use_shift = shift;
+    auto inst = make( 11 , max );
+    auto bnx = new_bnx();
+    set_int( bnx , "intReoptimize" , 1 );
+    inst.block->register_Solver( bnx );
+    solve_and_check( bnx , inst , "before the change" + tag );
+
+    for( int i = 0 ; i < N ; ++i ) {
+     inst.data[ i ].b += ( i % 2 ? step : - step );
+     inst.f->modify_term( i , inst.data[ i ].b , inst.data[ i ].q );
+     }
+    const int before = BoxRelaxation::n_compute;
+    solve_and_check( bnx , inst , "after the change" + tag );
+    solves[ shift ] = BoxRelaxation::n_compute - before;
+
+    // a second change on top of the first, the shifted bounds of the
+    // nodes kept fenced being the ones that are shifted again
+    inst.data[ 2 ].q *= 1.01;
+    inst.f->modify_term( 2 , inst.data[ 2 ].b , inst.data[ 2 ].q );
+    solve_and_check( bnx , inst , "after a second change" + tag );
+    destroy( inst );
+    }
+   std::cout << "  solves of the relaxation after the change: "
+             << solves[ 0 ] << " re-evaluating, " << solves[ 1 ]
+             << " with the shifted bounds" << std::endl;
+   check( solves[ 1 ] <= solves[ 0 ] , "more solves with the shifted bounds" );
+   if( step < 1 )
+    check( solves[ 1 ] < solves[ 0 ] ,
+           "no solve saved by the shifted bounds after a small change" );
+   }
+ BoxRelaxation::use_shift = true;
+ }
+
 }  // namespace
 
 /*--------------------------------------------------------------------------*/
@@ -949,7 +1056,7 @@ int main( void )
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization , test_heuristic ,
   test_infeasible , test_integral_root , test_limits , test_parameters ,
-  test_detach_reattach , test_objective_change };
+  test_detach_reattach , test_objective_change , test_bound_shift };
 
  for( auto c : cases ) {
   try {

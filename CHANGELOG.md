@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that the RelaxationSolver computes, with the CSV of its data, and
   `LearnedBranching`, a perceptron on the features read from a file
 
+- with `intReoptimize`, after a change of the Objective alone a node of the
+  fenced frontier is not solved again when its old bound, shifted by what
+  the RelaxationSolver allow [see `RelaxationSolver::bound_shift()` of the
+  core], still cannot improve the incumbent found so far
+
+### Changed
+
+- the Modification between two solves are classified by every
+  RelaxationSolver, and no longer by the first one alone: the bound of a
+  node is the best of theirs, so the tree is kept only if all of them vouch
+  for it, and each of them records what it needs to shift its own
+
 ### Fixed
 
 - the root is fenced with `dblRelAcc` and `dblAbsAcc`, as any other node,

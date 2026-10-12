@@ -927,6 +927,28 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
  for( auto F : frontier ) {
   ExploringNode::moveBetweenNodes( currentNode , F , solvers );
   currentNode = F;
+
+  // after an objective-only change, the old bound shifted by as much as the
+  // RelaxationSolver allow is still valid [see
+  // RelaxationSolver::bound_shift()]: if even that cannot improve the
+  // incumbent, the node stays fenced with no new solve
+  if( ( changes == RelaxationSolver::eModObjective ) &&
+      ( f_incumbentCell->load() != no_incumbent() ) ) {
+   auto shift = - Inf< Solver::OFValue >();
+   for( auto & rs : f_RelaxationSolvers )
+    shift = std::max( shift , rs.first->bound_shift() );
+   if( shift < Inf< Solver::OFValue >() ) {
+    const double shifted = minimizing ? F->get_bound() - shift
+                                      : F->get_bound() + shift;
+    if( cannot_improve( shifted , f_incumbentCell->load() , minimizing ,
+                        relTol , absTol ) ) {
+     F->set_bound( shifted );
+     subOptimalNodes.push_back( F );
+     continue;
+     }
+    }
+   }
+
   F->initializeBound( minimizing );
   bool toPrune = false;
   RelaxationSolver * nodeBranchSolver = nullptr;
@@ -1654,24 +1676,30 @@ void BranchAndXSolver::process_outstanding_Modification( void )
  if( v_mod_tmp.empty() )
   return;
 
- // classify the changes by asking a RelaxationSolver: what a Modification
+ // classify the changes by asking the RelaxationSolver: what a Modification
  // does to the fencing certificates of the tree is problem-specific
  // knowledge [see RelaxationSolver::classify()], so this Solver never
  // looks into the Modification itself; the classes compose bitwise, and
- // anything the RelaxationSolver cannot vouch for invalidates everything
+ // anything that a RelaxationSolver cannot vouch for invalidates everything.
+ // Each of them sees each Modification, since the bound of a node is the
+ // best of theirs and each one records in classify() what it needs to shift
+ // its own [see RelaxationSolver::bound_shift()]
  if( f_RelaxationSolvers.empty() ) {
   changes = 4;
   return;
   }
- auto rs = f_RelaxationSolvers.front().first;
  int acc = changes == 4 ? RelaxationSolver::eModEverything : changes;
  for( const auto & mod : v_mod_tmp ) {
-  const int c = rs->classify( mod );
-  if( c == RelaxationSolver::eModEverything ) {
-   acc = c;
-   break;
+  for( auto & rs : f_RelaxationSolvers ) {
+   const int c = rs.first->classify( mod );
+   if( c == RelaxationSolver::eModEverything ) {
+    acc = c;
+    break;
+    }
+   acc |= c;
    }
-  acc |= c;
+  if( acc == RelaxationSolver::eModEverything )
+   break;
   }
  changes = char( acc );
 

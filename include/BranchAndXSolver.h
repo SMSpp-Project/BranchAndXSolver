@@ -829,7 +829,10 @@ class BranchAndXSolver : public Solver {
   * being either re-fenced or re-opened into \p open; the interior of the
   * tree is NOT re-derived. Class-specific saving: an objective-only change
   * cannot un-fence an infeasible node [see RelaxationSolver::classify()], so
-  * that part of the frontier is left untouched.
+  * that part of the frontier is left untouched, and a node fenced by bound
+  * is not solved again if its old bound, shifted by as much as the
+  * RelaxationSolver allow [see RelaxationSolver::bound_shift()], still
+  * cannot improve the incumbent found so far in the re-evaluation.
   *
   * The re-opened nodes are handed to \p open respecting its discipline (a
   * LIFO stack receives them in reverse), exactly as explore() does with the
