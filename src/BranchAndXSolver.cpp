@@ -810,15 +810,13 @@ int BranchAndXSolver::compute( bool changedvars )
                            ( old_state == kUnbounded ) ) )
   f_state = old_state;
  else {
-  // the outstanding changes are now properly classified (see
-  // process_outstanding_Modification(): 1 = objective only, 2 = feasible
-  // region only, 3 = both, 4 = anything); classes 1 / 2 / 3 reoptimize out
-  // of the fenced frontier of the previous tree (e.g., an objective-only
-  // change leaves every infeasibility certificate valid) rather than solving
-  // from scratch, but the tree retained for reoptimization (if any) can only
-  // be reused by a serial re-solve under class 1-3 changes when retention is
-  // enabled [see intReoptimize / reseedFrontier()]; otherwise it is discarded
-  if( ( changes == 4 ) || ( ! reoptimize ) || parallelDFS )
+  // the outstanding changes say what the Modification have changed [see
+  // process_outstanding_Modification()]: when they leave the tree valid [see
+  // keeps_tree()] a serial re-solve with retention enabled reoptimizes out
+  // of the fenced frontier of the previous tree rather than solving from
+  // scratch [see intReoptimize / reseedFrontier()]; otherwise the retained
+  // tree (if any) is discarded
+  if( ( ! keeps_tree( changes ) ) || ( ! reoptimize ) || parallelDFS )
    discardRetainedTree();
 
   bestBound = no_incumbent();
@@ -898,18 +896,18 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
                                      ExploringNode * & currentNode )
 {
  // the retained tree is taken back: compute() guarantees it is only reused
- // for class 1-3 changes [see RelaxationSolver::classify()], so its interior
- // is NOT re-derived, only its fenced frontier is re-evaluated
+ // under changes that leave it valid [see keeps_tree()], so its interior is
+ // NOT re-derived, only its fenced frontier is re-evaluated
  rootNode = f_treeRoot;
  f_treeRoot = nullptr;              // ownership back to this solve
  currentNode = rootNode;
 
  std::list< ExploringNode * > frontier;
  frontier.swap( subOptimalNodes );
- if( changes != RelaxationSolver::eModObjective ) {
-  // an objective-only change cannot un-fence an infeasible node: in that
-  // case that part of the frontier stays fenced, with no re-evaluation at
-  // all; under any other change it goes back into the frontier
+ if( Modification::may_grow_region( changes ) ) {
+  // only a feasible region that may grow can un-fence an infeasible node:
+  // otherwise (say, when only the Objective changes) that part of the
+  // frontier stays fenced, with no re-evaluation at all
   frontier.splice( frontier.end() , infeasibleNodes );
   infeasibleNodes.clear();
   }
@@ -1097,7 +1095,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      if( retain ) {              // it belongs to the fenced frontier:
       currentNode->get_children().push_back( new_node );
       if( new_node->is_infeasible() )  // infeasibility certificates survive
-       infeasibleNodes.push_back( new_node );  //  objective-only changes
+       infeasibleNodes.push_back( new_node );  //  a region that cannot grow
       else
        subOptimalNodes.push_back( new_node );
       }
@@ -1654,28 +1652,47 @@ void BranchAndXSolver::process_outstanding_Modification( void )
  if( v_mod_tmp.empty() )
   return;
 
- // classify the changes by asking a RelaxationSolver: what a Modification
- // does to the fencing certificates of the tree is problem-specific
- // knowledge [see RelaxationSolver::classify()], so this Solver never
- // looks into the Modification itself; the classes compose bitwise, and
- // anything the RelaxationSolver cannot vouch for invalidates everything
- if( f_RelaxationSolvers.empty() ) {
-  changes = 4;
-  return;
-  }
- auto rs = f_RelaxationSolvers.front().first;
- int acc = changes == 4 ? RelaxationSolver::eModEverything : changes;
- for( const auto & mod : v_mod_tmp ) {
-  const int c = rs->classify( mod );
-  if( c == RelaxationSolver::eModEverything ) {
-   acc = c;
-   break;
-   }
-  acc |= c;
-  }
- changes = char( acc );
+ // what the Modification change, composed by or-ing their bits: the
+ // Modification say it themselves [see Modification::changes()], whatever
+ // the RelaxationSolver; one at a time, those in a GroupModification
+ // included, since a physical Modification that says nothing of the model
+ // may have changed anything, the meaning of the branching Changes
+ // included, and this is lost once its bits are or-ed with those of others
+ std::function< void( const Modification & ) > add =
+  [ & ]( const Modification & mod ) {
+   if( auto gmod = dynamic_cast< const GroupModification * >( & mod ) ) {
+    for( const auto & sub : gmod->sub_Modifications() )
+     add( *sub );
+    return;
+    }
+   const auto c = mod.changes();
+   if( Modification::is_physical( c ) &&
+       ( ! Modification::changes_variables( c ) ) &&
+       ( ! Modification::changes_constraints( c ) ) &&
+       ( ! Modification::changes_objective( c ) ) )
+    changes = Modification::eModAll;
+   else
+    changes |= c;
+   };
+
+ for( const auto & mod : v_mod_tmp )
+  add( *mod );
 
  }  // end( BranchAndXSolver::process_outstanding_Modification )
+
+/*--------------------------------------------------------------------------*/
+
+bool BranchAndXSolver::keeps_tree( Modification::ModConcern c )
+{
+ // a physical Modification that says nothing of the model has already
+ // been turned into "anything" [see process_outstanding_Modification()];
+ // the branching Changes act on the Variable (fixing them, changing their
+ // bounds), so a change of the data of the Variable may be undone by them
+ // when moving across the tree, as well as making them meaningless
+ return( ! ( Modification::changes_variables( c ) ||
+             Modification::changes_structure( c ) ) );
+
+ }  // end( BranchAndXSolver::keeps_tree )
 
 /*--------------------------------------------------------------------------*/
 /*------------------ End File BranchAndXSolver.cpp -------------------------*/

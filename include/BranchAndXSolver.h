@@ -123,8 +123,8 @@ class BranchAndXSolver : public Solver {
    * at most once [see Node::is_evaluated()]. */
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it any serial exploration keeps the tree and its fenced frontier
-   * alive across compute() calls, and a re-solve under class 1-3 changes
-   * [see RelaxationSolver::classify()] re-seeds the search from the
+   * alive across compute() calls, and a re-solve under changes that leave
+   * the tree valid [see keeps_tree()] re-seeds the search from the
    * re-evaluated frontier instead of re-deriving the whole tree [see
    * reseedFrontier()]; the strategy only decides the order in which the
    * frontier is re-explored, which is that of its own open set. The
@@ -211,7 +211,8 @@ class BranchAndXSolver : public Solver {
                       maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
-                      configurationRS( nullptr ) , changes( 4 ) ,
+                      configurationRS( nullptr ) ,
+                      changes( Modification::eModAll ) ,
                       subOptimalNodes() , infeasibleNodes() ,
                       integerNodes() ,
                       f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) { }
@@ -250,7 +251,7 @@ class BranchAndXSolver : public Solver {
    dropInnerSolvers();
   Solver::set_Block( block );
   f_state = kUnEval;
-  changes = 4;
+  changes = Modification::eModAll;
   if( block ) {
    initializeGlobalInformation();
    if( configurationRS )
@@ -388,7 +389,7 @@ class BranchAndXSolver : public Solver {
   configurationRS = cfg;
   if( f_Block && configurationRS ) {
    dropInnerSolvers();
-   changes = 4;
+   changes = Modification::eModAll;
    applyConfigurationToSolvers();
    }
   }
@@ -827,9 +828,10 @@ class BranchAndXSolver : public Solver {
   * one retained by the previous solve is taken back (\p rootNode is set to
   * it) and its fenced frontier is re-evaluated under the new data, each node
   * being either re-fenced or re-opened into \p open; the interior of the
-  * tree is NOT re-derived. Class-specific saving: an objective-only change
-  * cannot un-fence an infeasible node [see RelaxationSolver::classify()], so
-  * that part of the frontier is left untouched.
+  * tree is NOT re-derived. When the changes cannot make the feasible
+  * region grow [see Modification::may_grow_region()], e.g., when only the
+  * Objective changes, no infeasible node can be un-fenced, and that part of
+  * the frontier is left untouched.
   *
   * The re-opened nodes are handed to \p open respecting its discipline (a
   * LIFO stack receives them in reverse), exactly as explore() does with the
@@ -860,12 +862,25 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// process the outstanding Modification
- /** Processes the queued Modification and classifies the kind of change
-  * they amount to (see the changes field), in view of reoptimizing the
-  * tree rather than rebuilding it; the reoptimization itself is NOT
-  * implemented yet, any change currently triggers a solve from scratch. */
+ /** Processes the queued Modification and accumulates what they change
+  * [see Modification::changes()] in the changes field, which tells a
+  * re-solve whether the retained tree can be reused [see keeps_tree()] and
+  * which part of its frontier is to be re-evaluated [see
+  * reseedFrontier()]. */
 
  void process_outstanding_Modification( void );
+
+/*--------------------------------------------------------------------------*/
+ /// true if the retained tree is still valid under the given changes
+ /** True if a tree retained across compute() calls can be reused under the
+  * changes \p c: it cannot when Variable or Constraint are added or
+  * removed, or when the data or the integrality of some Variable change,
+  * since then the branching Changes of the tree, which act on the Variable,
+  * may undo the change or no longer mean the same. A
+  * physical Modification that does not say what it changes of the model
+  * counts as changing anything [see process_outstanding_Modification()]. */
+
+ static bool keeps_tree( Modification::ModConcern c );
 
 /*--------------------------------------------------------------------------*/
 /*---------------------------- PRIVATE FIELDS ------------------------------*/
@@ -947,10 +962,9 @@ class BranchAndXSolver : public Solver {
  /// the per-worker Solver sets [see createWorkerSolvers()]
  std::vector< WorkerSolvers > v_workerSolvers;
 
- /// classification of the outstanding changes, for future reoptimization:
- /// 0 = none, 1 = objective only, 2 = r.h.s. only, 3 = both objective and
- /// r.h.s., anything else = general change (solve from scratch)
- char changes;
+ /// what the outstanding Modification change [see Modification::changes()],
+ /// 0 if there are none
+ Modification::ModConcern changes;
 
  /// nodes pruned as sub-optimal, to be revisited on an objective change
  std::list< ExploringNode * > subOptimalNodes;

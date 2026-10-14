@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that the RelaxationSolver computes, with the CSV of its data, and
   `LearnedBranching`, a perceptron on the features read from a file
 
+### Changed
+
+- the outstanding Modification are read through `Modification::changes()`
+  rather than classified by the RelaxationSolver: the retained tree is
+  discarded when Variable or Constraint are added or removed, when the data
+  or the integrality of some Variable change or when a physical Modification
+  does not say what it changes, and the infeasible part of its frontier
+  stays fenced whenever the feasible region cannot grow (not only when the
+  Objective alone changes)
+
 ### Fixed
 
 - the root is fenced with `dblRelAcc` and `dblAbsAcc`, as any other node,

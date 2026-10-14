@@ -209,14 +209,6 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
   return( std::vector< Change * >{ up , down } );
   }
 
- /// a change of the Objective leaves the feasible region as it is
- int classify( const sp_Mod & mod ) override {
-  if( auto fm = std::dynamic_pointer_cast< const FunctionMod >( mod ) )
-   if( dynamic_cast< Objective * >( fm->function()->get_Observer() ) )
-    return( eModObjective );
-  return( eModEverything );
-  }
-
  bool has_true_var_solution( void ) override {
   if( f_val.empty() )
    return( false );
