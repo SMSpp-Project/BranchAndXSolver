@@ -1690,15 +1690,16 @@ void BranchAndXSolver::process_outstanding_Modification( void )
 
 bool BranchAndXSolver::keeps_tree( Modification::ModConcern c )
 {
- // the branching Changes act on the Variable (fixing them, changing their
- // bounds): a change of the data of the Variable may be undone by them when
- // moving across the tree, a removed Variable may be one they act upon, and
- // a Variable that becomes continuous may have been branched upon as an
- // integer one (x <= 0 and x >= 1 do not cover ( 0 , 1 )), so that the
- // leaves no longer cover the region; anything else is a relaxation or a
- // restriction that the re-evaluation of the frontier takes care of [see
- // reseedFrontier()], an added Variable being free in every node and the
- // Constraint, added or removed, not being what the tree is built upon
+ // the branching Changes act on the Variable and on the Constraint (fixing
+ // the former, changing the bounds of either): a change of the data of the
+ // Variable may be undone by them when moving across the tree, a removed
+ // Variable or Constraint may be one they act upon, and a Variable that
+ // becomes continuous may have been branched upon as an integer one
+ // (x <= 0 and x >= 1 do not cover ( 0 , 1 )), so that the leaves no longer
+ // cover the region; anything else is a relaxation or a restriction that
+ // the re-evaluation of the frontier takes care of [see reseedFrontier()],
+ // an added Variable being free in every node and an added Constraint
+ // holding in every node
  if( c & Modification::eModVarData )
   return( false );
  if( Modification::changes_integrality( c ) &&
@@ -1706,6 +1707,9 @@ bool BranchAndXSolver::keeps_tree( Modification::ModConcern c )
   return( false );
  if( ( c & Modification::eModVarSet ) &&
      Modification::may_shrink_region( c ) )
+  return( false );
+ if( ( c & Modification::eModCnsSet ) &&
+     Modification::may_grow_region( c ) )
   return( false );
  return( true );
 
