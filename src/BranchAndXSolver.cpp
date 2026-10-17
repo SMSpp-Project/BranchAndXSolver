@@ -811,12 +811,16 @@ int BranchAndXSolver::compute( bool changedvars )
   f_state = old_state;
  else {
   // the outstanding changes say what the Modification have changed [see
-  // process_outstanding_Modification()]: when they leave the tree valid [see
-  // keeps_tree()] a serial re-solve with retention enabled reoptimizes out
-  // of the fenced frontier of the previous tree rather than solving from
-  // scratch [see intReoptimize / reseedFrontier()]; otherwise the retained
-  // tree (if any) is discarded
-  if( ( ! keeps_tree( changes ) ) || ( ! reoptimize ) || parallelDFS )
+  // process_outstanding_Modification()], where one that the tree does not
+  // survive [see keeps_tree()] has made them anything: when they are not, a
+  // serial re-solve with retention enabled reoptimizes out of the fenced
+  // frontier of the previous tree rather than solving from scratch [see
+  // intReoptimize / reseedFrontier()]; otherwise the retained tree (if any)
+  // is discarded; the test is not keeps_tree( changes ), since the bits of
+  // different Modification or-ed together (an added Variable and an added
+  // Constraint, say) may read as one that the tree does not survive
+  if( ( changes == Modification::eModAll ) || ( ! reoptimize ) ||
+      parallelDFS )
    discardRetainedTree();
 
   bestBound = no_incumbent();
@@ -1655,9 +1659,10 @@ void BranchAndXSolver::process_outstanding_Modification( void )
  // what the Modification change, composed by or-ing their bits: the
  // Modification say it themselves [see Modification::changes()], whatever
  // the RelaxationSolver; one at a time, those in a GroupModification
- // included, since a physical Modification that says nothing of the model
- // may have changed anything, the meaning of the branching Changes
- // included, and this is lost once its bits are or-ed with those of others
+ // included, since whether the tree survives depends on the kind and the
+ // direction of each change [see keeps_tree()], and this is lost once its
+ // bits are or-ed with those of others: one that the tree does not survive,
+ // or a physical one that says nothing of the model, counts as anything
  std::function< void( const Modification & ) > add =
   [ & ]( const Modification & mod ) {
    if( auto gmod = dynamic_cast< const GroupModification * >( & mod ) ) {
@@ -1666,10 +1671,11 @@ void BranchAndXSolver::process_outstanding_Modification( void )
     return;
     }
    const auto c = mod.changes();
-   if( Modification::is_physical( c ) &&
-       ( ! Modification::changes_variables( c ) ) &&
-       ( ! Modification::changes_constraints( c ) ) &&
-       ( ! Modification::changes_objective( c ) ) )
+   if( ( Modification::is_physical( c ) &&
+         ( ! Modification::changes_variables( c ) ) &&
+         ( ! Modification::changes_constraints( c ) ) &&
+         ( ! Modification::changes_objective( c ) ) ) ||
+       ( ! keeps_tree( c ) ) )
     changes = Modification::eModAll;
    else
     changes |= c;
@@ -1684,13 +1690,24 @@ void BranchAndXSolver::process_outstanding_Modification( void )
 
 bool BranchAndXSolver::keeps_tree( Modification::ModConcern c )
 {
- // a physical Modification that says nothing of the model has already
- // been turned into "anything" [see process_outstanding_Modification()];
  // the branching Changes act on the Variable (fixing them, changing their
- // bounds), so a change of the data of the Variable may be undone by them
- // when moving across the tree, as well as making them meaningless
- return( ! ( Modification::changes_variables( c ) ||
-             Modification::changes_structure( c ) ) );
+ // bounds): a change of the data of the Variable may be undone by them when
+ // moving across the tree, a removed Variable may be one they act upon, and
+ // a Variable that becomes continuous may have been branched upon as an
+ // integer one (x <= 0 and x >= 1 do not cover ( 0 , 1 )), so that the
+ // leaves no longer cover the region; anything else is a relaxation or a
+ // restriction that the re-evaluation of the frontier takes care of [see
+ // reseedFrontier()], an added Variable being free in every node and the
+ // Constraint, added or removed, not being what the tree is built upon
+ if( c & Modification::eModVarData )
+  return( false );
+ if( Modification::changes_integrality( c ) &&
+     Modification::may_grow_region( c ) )
+  return( false );
+ if( ( c & Modification::eModVarSet ) &&
+     Modification::may_shrink_region( c ) )
+  return( false );
+ return( true );
 
  }  // end( BranchAndXSolver::keeps_tree )
 

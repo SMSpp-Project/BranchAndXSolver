@@ -22,12 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - the outstanding Modification are read through `Modification::changes()`
-  rather than classified by the RelaxationSolver: the retained tree is
-  discarded when Variable or Constraint are added or removed, when the data
-  or the integrality of some Variable change or when a physical Modification
-  does not say what it changes, and the infeasible part of its frontier
-  stays fenced whenever the feasible region cannot grow (not only when the
-  Objective alone changes)
+  rather than classified by the RelaxationSolver, each one by itself rather
+  than by the bits of all of them or-ed together: the retained tree survives
+  those that relax or restrict the problem without touching what its
+  branching Changes act upon (added Variable, added or removed Constraint,
+  Variable becoming integer, changed sides or Objective), and it is
+  discarded when the data of some Variable change, when Variable are
+  removed, when some Variable becomes continuous or when a physical
+  Modification does not say what it changes; the infeasible part of its
+  frontier stays fenced whenever the feasible region cannot grow (not only
+  when the Objective alone changes)
 
 ### Fixed
 

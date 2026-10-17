@@ -143,6 +143,7 @@ class BoxBase : public BoxSolver {
   sp_Mod mod = std::make_shared< ConstraintMod >( & f_box->front() );
   BoxSolver::add_Modification( mod );
   const int status = BoxSolver::compute( changedvars );
+  ++n_compute;
   f_val.clear();
   if( BoxSolver::has_var_solution() )
    for( const auto & v : *f_x )
@@ -169,6 +170,12 @@ class BoxBase : public BoxSolver {
  std::vector< ColVariable > * f_x = nullptr;     ///< the ColVariable
  std::vector< BoxConstraint > * f_box = nullptr;  ///< their bounds
  std::vector< double > f_val;  ///< the solution of the last compute()
+
+ public:
+
+ /// the compute() of all the BoxBase so far, which tells how many nodes a
+ /// solve has evaluated
+ static inline int n_compute = 0;
 
  };  // end( class( BoxBase ) )
 
@@ -930,6 +937,50 @@ void test_objective_change( void )
   }
  }
 
+/*--------------------------------------------------------------------------*/
+/// a Variable that becomes integer, a restriction which the retained tree
+/// survives, and one that becomes continuous, which it does not, its
+/// leaves no longer covering the region; the branching treats every
+/// coordinate as integer, so the optimum is the same, and what tells the
+/// two cases apart is the number of nodes evaluated by the re-solve, fewer
+/// than from scratch on the same problem when the tree is reused
+
+void test_integrality_change( void )
+{
+ std::cout << "change of the integrality" << std::endl;
+ // the nodes evaluated by a re-solve after the given change, from scratch
+ // or reoptimizing the retained tree
+ const auto resolve = [ & ]( int reopt , bool integer ,
+                             const std::string & tag ) {
+  auto inst = make( 7 , false );
+  if( ! integer )         // to be made continuous, it is integer first
+   ( *inst.x )[ 2 ].set_type( ColVariable::kInteger , eNoMod );
+  auto bnx = new_bnx();
+  set_int( bnx , "intReoptimize" , reopt );
+  inst.block->register_Solver( bnx );
+  solve_and_check( bnx , inst , "before the change" + tag );
+  ( *inst.x )[ 2 ].set_type( integer ? ColVariable::kInteger
+                                     : ColVariable::kContinuous );
+  const int before = BoxBase::n_compute;
+  solve_and_check( bnx , inst , "after the change" + tag );
+  const int nodes = BoxBase::n_compute - before;
+  destroy( inst );
+  return( nodes );
+  };
+
+ const int scratch_i = resolve( 0 , true , ", integer, from scratch" );
+ const int reopt_i = resolve( 1 , true , ", integer, reoptimizing" );
+ const int scratch_c = resolve( 0 , false , ", continuous, from scratch" );
+ const int reopt_c = resolve( 1 , false , ", continuous, reoptimizing" );
+ std::cout << "  nodes after the change: integer " << scratch_i << " / "
+           << reopt_i << ", continuous " << scratch_c << " / " << reopt_c
+           << " (from scratch / reoptimizing)" << std::endl;
+ check( reopt_i < scratch_i ,
+        "a Variable becoming integer has discarded the retained tree" );
+ check( reopt_c == scratch_c ,
+        "a Variable becoming continuous has kept the retained tree" );
+ }
+
 }  // namespace
 
 /*--------------------------------------------------------------------------*/
@@ -941,7 +992,7 @@ int main( void )
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization , test_heuristic ,
   test_infeasible , test_integral_root , test_limits , test_parameters ,
-  test_detach_reattach , test_objective_change };
+  test_detach_reattach , test_objective_change , test_integrality_change };
 
  for( auto c : cases ) {
   try {

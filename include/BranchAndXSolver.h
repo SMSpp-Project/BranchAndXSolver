@@ -873,12 +873,19 @@ class BranchAndXSolver : public Solver {
 /*--------------------------------------------------------------------------*/
  /// true if the retained tree is still valid under the given changes
  /** True if a tree retained across compute() calls can be reused under the
-  * changes \p c: it cannot when Variable or Constraint are added or
-  * removed, or when the data or the integrality of some Variable change,
-  * since then the branching Changes of the tree, which act on the Variable,
-  * may undo the change or no longer mean the same. A
-  * physical Modification that does not say what it changes of the model
-  * counts as changing anything [see process_outstanding_Modification()]. */
+  * changes \p c, which are those of a single Modification [see
+  * process_outstanding_Modification()]. It cannot when the data of some
+  * Variable change, when Variable are removed or when some Variable becomes
+  * continuous, since the branching Changes of the tree, which act on the
+  * Variable, may then undo the change, act on a Variable that is no longer
+  * there or no longer cover the region (x <= 0 and x >= 1 leave out
+  * ( 0 , 1 )). It can under anything else, which is a relaxation (added
+  * Variable, removed Constraint, enlarged sides) or a restriction (added
+  * Constraint, Variable becoming integer, shrunk sides) of the problem that
+  * the re-evaluation of the fenced frontier takes care of [see
+  * reseedFrontier()]: the infeasible nodes are re-evaluated only when the
+  * region may grow. A physical Modification that does not say what it
+  * changes of the model counts as changing anything. */
 
  static bool keeps_tree( Modification::ModConcern c );
 
