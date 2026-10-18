@@ -1,6 +1,7 @@
 # BranchAndXSolver
 
 [![Pipeline](https://gitlab.com/smspp/branchandxsolver/badges/develop/pipeline.svg)](https://gitlab.com/smspp/branchandxsolver/-/pipelines?ref=develop)
+[![Release](https://gitlab.com/smspp/branchandxsolver/-/badges/release.svg)](https://gitlab.com/smspp/branchandxsolver/-/releases)
 [![Documentation](https://img.shields.io/badge/docs-Doxygen-blue)](https://smspp.gitlab.io/smspp-project/)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
