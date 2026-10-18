@@ -647,24 +647,24 @@ void test_maximization( void )
  }
 
 /*--------------------------------------------------------------------------*/
-/// the branch-and-bound of AStarSearch [see intTreeExplorer]: every
+/// the branch-and-bound of PBeFS [see intTreeExplorer]: every
 /// strategy under both bounding protocols, in both senses, and a node
 /// budget stopping it
 
 void test_tree_explorer( void )
 {
- std::cout << "the branch-and-bound of AStarSearch" << std::endl;
+ std::cout << "the branch-and-bound of PBeFS" << std::endl;
  const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" };
  for( bool max : { false , true } )
   for( int m = 0 ; m < 4 ; ++m )
    for( int p = 0 ; p < 2 ; ++p ) {
     auto inst = make( max ? 11 : 7 , max );
     auto bnx = new_bnx();
-    set_int( bnx , "intTreeExplorer" , BranchAndXSolver::AStarShared );
+    set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
     set_int( bnx , "intSolveMethod" , m );
     set_int( bnx , "intBoundingProtocol" , p );
     inst.block->register_Solver( bnx );
-    solve_and_check( bnx , inst , std::string( "AStarSearch, " ) +
+    solve_and_check( bnx , inst , std::string( "PBeFS, " ) +
                      ( max ? "max, " : "min, " ) + method[ m ] +
                      ( p ? ", lazy" : ", eager" ) );
     destroy( inst );
@@ -674,13 +674,13 @@ void test_tree_explorer( void )
   const std::string tag = max ? ", max" : ", min";
   auto inst = make( 7 , max );
   auto bnx = new_bnx();
-  set_int( bnx , "intTreeExplorer" , BranchAndXSolver::AStarShared );
+  set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
   set_int( bnx , "intMaxNodes" , 2 );
   inst.block->register_Solver( bnx );
   solve_and_check_stop( bnx , inst , Solver::kStopIter ,
-                        "AStarSearch, two nodes" + tag );
+                        "PBeFS, two nodes" + tag );
   set_int( bnx , "intMaxNodes" , 0 );
-  solve_and_check( bnx , inst , "AStarSearch, no node limit" + tag );
+  solve_and_check( bnx , inst , "PBeFS, no node limit" + tag );
   destroy( inst );
   }
 
@@ -697,9 +697,9 @@ void test_tree_explorer( void )
     inst.data[ 2 ].l = 0.2 , inst.data[ 2 ].u = 0.8;
    build( inst );
    auto bnx = new_bnx();
-   set_int( bnx , "intTreeExplorer" , BranchAndXSolver::AStarShared );
+   set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
    inst.block->register_Solver( bnx );
-   const std::string name = std::string( "AStarSearch, " ) +
+   const std::string name = std::string( "PBeFS, " ) +
                             ( kind ? "no integer point" : "empty box" ) +
                             ( max ? ", max" : ", min" );
    const int status = bnx->compute();

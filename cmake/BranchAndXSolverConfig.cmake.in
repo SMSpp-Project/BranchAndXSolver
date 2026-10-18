@@ -18,7 +18,7 @@ include(CMakeFindDependencyMacro)
 
 # ----- Requirements -------------------------------------------------------- #
 find_dependency(SMS++)
-find_dependency(AStarSearch)
+find_dependency(PBeFS)
 
 # ----- Import target ------------------------------------------------------- #
 if (NOT TARGET @modNamespace@::@modName@)

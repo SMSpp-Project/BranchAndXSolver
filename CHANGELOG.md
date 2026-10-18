@@ -10,13 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - the parameter `intTreeExplorer`, by which the tree is explored by the
-  branch-and-bound of AStarSearch instead of the explorations of the
+  branch-and-bound of PBeFS instead of the explorations of the
   BranchAndXSolver: sequential, or on `intMaxThread` workers sharing one
-  queue (`AStarShared`) or with a queue each (`AStarDistributed`), with the
+  queue (`PBeFSShared`) or with a queue each (`PBeFSDistributed`), with the
   same strategies, bounding protocols, tolerances and budgets, each worker
   moving its own inner Solver along the Changes of the path of a node;
-  AStarSearch is found with `find_package` or downloaded at a fixed commit,
-  and in the makefiles through `extlib/makefile-libAStarSearch`
+  PBeFS is found with `find_package` or downloaded at a fixed commit,
+  and in the makefiles through `extlib/makefile-libPBeFS`
 - the components with which a RelaxationSolver can choose the variable to
   branch upon (`BranchingRule.h`), beside the BranchAndXSolver but unknown to
   it: `BranchCandidate`, a candidate described by its values in the point of

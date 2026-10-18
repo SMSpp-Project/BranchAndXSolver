@@ -45,7 +45,7 @@ clean::
 $(BAXSLVSDR)/obj/BranchAndXSolver.o: \
 	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(SMS++OBJ)
 	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
-	$(BAXSLVINC) $(SMS++INC) $(libAStarSearchINC) $(SW)
+	$(BAXSLVINC) $(SMS++INC) $(libPBeFSINC) $(SW)
 
 $(BAXSLVSDR)/obj/BranchingRule.o: \
 	$(BAXSLVSDR)/src/BranchingRule.cpp $(BAXSLVSDR)/include/BranchingRule.h

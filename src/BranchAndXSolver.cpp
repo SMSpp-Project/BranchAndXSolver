@@ -45,9 +45,9 @@
 
 #include "Objective.h"
 
-#include "AStarSearch/BranchAndBound.h"
+#include "PBeFS/bnb/BranchAndBound.h"
 
-#include "AStarSearch/ParallelBranchAndBound.h"
+#include "PBeFS/bnb/ParallelBranchAndBound.h"
 
 /*--------------------------------------------------------------------------*/
 /*------------------------- NAMESPACE AND USING ----------------------------*/
@@ -734,17 +734,17 @@ class DiveOpenList final : public OpenList {
 }  // anonymous namespace
 
 /*--------------------------------------------------------------------------*/
-/*------------------- THE TREE AS A PROBLEM OF AStarSearch -----------------*/
+/*------------------- THE TREE AS A PROBLEM OF PBeFS -----------------------*/
 /*--------------------------------------------------------------------------*/
 // the tree of the BranchAndXSolver as a BranchAndBound problem of
-// AStarSearch [see AStarSearchSolve()]: the classes live here, and not in
+// PBeFS [see PBeFSSolve()]: the classes live here, and not in
 // the member function, since the evaluator has a member template
 
 namespace {
 
-namespace ASt = AStar_di_unipi_it;
+namespace PB = PBeFS_di_unipi_it;
 
-/// a node of the tree for the branch-and-bound of AStarSearch
+/// a node of the tree for the branch-and-bound of PBeFS
 /** The Change that generates the node from its parent, the node of the
  * parent and the depth; its evaluation (the relaxation bound, whether it is
  * pruned, i.e., infeasible or fenced, and its branching Changes) is filled
@@ -822,10 +822,10 @@ class BXWorker {
  ~BXWorker() { move_to( nullptr ); }
 
  /// the evaluation of the node n, done now unless already done
- ASt::Evaluation evaluate( std::shared_ptr< BXLink > & n ) {
+ PB::Evaluation evaluate( std::shared_ptr< BXLink > & n ) {
   if( ! n->evaluated )
    evaluate_here( n );
-  ASt::Evaluation e;
+  PB::Evaluation e;
   e.bound = f_c.sign() * n->bound;
   e.infeasible = n->pruned;
   const double z = f_c.incumbentCell->load();
@@ -952,7 +952,7 @@ class BXWorker {
 struct BXTree {
 
  using node_type = std::shared_ptr< BXLink >;
- static constexpr ASt::Sense sense = ASt::Sense::minimize;
+ static constexpr PB::Sense sense = PB::Sense::minimize;
 
  BXContext & c;                                 ///< the shared data
 
@@ -1037,7 +1037,7 @@ int BranchAndXSolver::compute( bool changedvars )
  // depth-first one, whose worker forest is not kept [see ParallelDFSSolve()]
  const bool parallelDFS = ( solveType == DFS ) &&
                           ( get_int_par( intMaxThread ) > 1 );
- // the branch-and-bound of AStarSearch, which retains no tree either
+ // the branch-and-bound of PBeFS, which retains no tree either
  const bool astar = ( treeExplorer != OwnExplorer );
 
  // incumbent-dependent local fixing folded into the branching Changes is
@@ -1074,7 +1074,7 @@ int BranchAndXSolver::compute( bool changedvars )
   // for [see treeSolve()]; the only separate one is the parallel depth-first,
   // which runs its own workers [see ParallelDFSSolve()]
   if( astar )
-   f_state = AStarSearchSolve( globalMutex , get_int_par( intMaxThread ) );
+   f_state = PBeFSSolve( globalMutex , get_int_par( intMaxThread ) );
   else
    f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
                                              get_int_par( intMaxThread ) )
@@ -1863,7 +1863,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
 /*--------------------------------------------------------------------------*/
 
-int BranchAndXSolver::AStarSearchSolve( std::mutex & globalMutex , int K )
+int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
 {
  K = std::max( 1 , K );
  createWorkerSolvers( Index( K ) );
@@ -1878,15 +1878,15 @@ int BranchAndXSolver::AStarSearchSolve( std::mutex & globalMutex , int K )
   c.heuristic.push_back( & ws.heuristic );
   }
 
- // the strategy as a selection of AStarSearch: the dive of BestFSDive goes
+ // the strategy as a selection of PBeFS: the dive of BestFSDive goes
  // down to a leaf whatever the bound of the child
- ASt::ParallelBBOptions o;
+ PB::ParallelBBOptions o;
  switch( solveType ) {
-  case( DFS ):    o.selection = ASt::Selection::depth_first; break;
-  case( BFS ):    o.selection = ASt::Selection::breadth_first; break;
-  case( BestFS ): o.selection = ASt::Selection::best_first; break;
+  case( DFS ):    o.selection = PB::Selection::depth_first; break;
+  case( BFS ):    o.selection = PB::Selection::breadth_first; break;
+  case( BestFS ): o.selection = PB::Selection::best_first; break;
   default:
-   o.selection = ASt::Selection::plunging;
+   o.selection = PB::Selection::plunging;
    o.plunge_gap = Inf< double >();
   }
  o.rel_gap = relTol;
@@ -1898,28 +1898,28 @@ int BranchAndXSolver::AStarSearchSolve( std::mutex & globalMutex , int K )
  o.threads = unsigned( K );
 
  const BXTree t{ c };
- ASt::BBSolution< BXTree::node_type > s;
+ PB::BBSolution< BXTree::node_type > s;
  if( K == 1 )
-  s = ASt::branch_and_bound( t , o );
+  s = PB::branch_and_bound( t , o );
  else
-  if( treeExplorer == AStarDistributed )
-   s = ASt::DistributedBranchAndBound< BXTree >( t , o ).solve();
+  if( treeExplorer == PBeFSDistributed )
+   s = PB::DistributedBranchAndBound< BXTree >( t , o ).solve();
   else
-   s = ASt::SharedBranchAndBound< BXTree >( t , o ).solve();
+   s = PB::SharedBranchAndBound< BXTree >( t , o ).solve();
 
  if( c.error.load() != kOK )
   return( c.error.load() );
  switch( s.status ) {
-  case( ASt::BBStatus::node_limit ):
+  case( PB::BBStatus::node_limit ):
    f_open_bound = c.sign() * s.bound;
    return( kStopIter );
-  case( ASt::BBStatus::time_limit ):
+  case( PB::BBStatus::time_limit ):
    f_open_bound = c.sign() * s.bound;
    return( kStopTime );
   default:
    return( kOK );
   }
- }  // end( BranchAndXSolver::AStarSearchSolve )
+ }  // end( BranchAndXSolver::PBeFSSolve )
 
 /*--------------------------------------------------------------------------*/
 

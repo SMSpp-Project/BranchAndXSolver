@@ -27,7 +27,7 @@ The cases are:
   having to find the optimum, with both bounds equal to it and the optimal
   integer solution written back in the `Block`;
 - the same strategies and protocols, in both senses, with the tree explored
-  by the branch-and-bound of AStarSearch (`intTreeExplorer`), and a node
+  by the branch-and-bound of PBeFS (`intTreeExplorer`), and a node
   budget stopping it;
 - the rounding heuristic, whose incumbent is the solution written back;
 - an empty box and a box with no integer point (whose relaxation is not

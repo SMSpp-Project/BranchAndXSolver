@@ -161,8 +161,8 @@ class BranchAndXSolver : public Solver {
 
  enum TreeExplorer {
   OwnExplorer = 0 ,                 ///< the explorations of this class
-  AStarShared = 1 ,                 ///< AStarSearch, one shared queue
-  AStarDistributed = 2              ///< AStarSearch, a queue per worker
+  PBeFSShared = 1 ,                 ///< PBeFS, one shared queue
+  PBeFSDistributed = 2              ///< PBeFS, a queue per worker
   };
 
 /*--------------------------------------------------------------------------*/
@@ -299,9 +299,9 @@ class BranchAndXSolver : public Solver {
   *
   * - intTreeExplorer [OwnExplorer]: who explores the tree (see
   *   TreeExplorer): the explorations of this class, or the branch-and-bound
-  *   of AStarSearch [see AStarSearchSolve()], sequential with intMaxThread
+  *   of PBeFS [see PBeFSSolve()], sequential with intMaxThread
   *   <= 1 and otherwise on intMaxThread workers sharing one queue
-  *   (AStarShared) or with a queue each (AStarDistributed); the strategy,
+  *   (PBeFSShared) or with a queue each (PBeFSDistributed); the strategy,
   *   the bounding protocol, the tolerances and the budgets are the same,
   *   and the tree is never retained [see intReoptimize].
   *
@@ -341,7 +341,7 @@ class BranchAndXSolver : public Solver {
     maxNodes = ( value <= 0 ) ? INT_MAX : value;
     break;
    case( intTreeExplorer ):
-    if( ( value < OwnExplorer ) || ( value > AStarDistributed ) )
+    if( ( value < OwnExplorer ) || ( value > PBeFSDistributed ) )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intTreeExplorer" ) );
     treeExplorer = static_cast< TreeExplorer >( value );
@@ -799,9 +799,9 @@ class BranchAndXSolver : public Solver {
  int ParallelDFSSolve( std::mutex & globalMutex , int K );
 
 /*--------------------------------------------------------------------------*/
- /// the exploration of the tree by the branch-and-bound of AStarSearch
+ /// the exploration of the tree by the branch-and-bound of PBeFS
  /** The tree explored by BranchAndBoundSearch, SharedBranchAndBound or
-  * DistributedBranchAndBound of AStarSearch [see intTreeExplorer], with
+  * DistributedBranchAndBound of PBeFS [see intTreeExplorer], with
   * \p K workers, each driving its own set of inner Solver [see
   * createWorkerSolvers()]. A node is the Change that generates it from its
   * parent, linked to the node of the parent, so that any worker can reach
@@ -813,7 +813,7 @@ class BranchAndXSolver : public Solver {
   * children are evaluated when they are generated, with the lazy one when
   * they are extracted. */
 
- int AStarSearchSolve( std::mutex & globalMutex , int K );
+ int PBeFSSolve( std::mutex & globalMutex , int K );
 
 /*--------------------------------------------------------------------------*/
  /// delete the tree retained for reoptimization (if any) and its frontier

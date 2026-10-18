@@ -37,9 +37,9 @@
 SMS++SDR = $(BAXSLVSDR)/../SMS++
 include $(SMS++SDR)/lib/makefile-c
 
-# include the makefile of libAStarSearch, whose branch-and-bound may explore
+# include the makefile of libPBeFS, whose branch-and-bound may explore
 # the tree
-include $(BAXSLVSDR)/../extlib/makefile-libAStarSearch
+include $(BAXSLVSDR)/../extlib/makefile-libPBeFS
 
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
@@ -49,10 +49,10 @@ include $(BAXSLVSDR)/makefile
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
 BAXSLVOBJ := $(BAXSLVOBJ) $(SMS++OBJ)
-BAXSLVINC := $(BAXSLVINC) $(SMS++INC) $(libAStarSearchINC)
+BAXSLVINC := $(BAXSLVINC) $(SMS++INC) $(libPBeFSINC)
 BAXSLVH   := $(BAXSLVH) $(SMS++H)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB = $(SMS++LIB) $(libAStarSearchLIB)
+BAXSLVLIB = $(SMS++LIB) $(libPBeFSLIB)
 
 ############################ End of makefile #################################
