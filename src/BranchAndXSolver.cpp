@@ -45,6 +45,10 @@
 
 #include "Objective.h"
 
+#include "AStarSearch/BranchAndBound.h"
+
+#include "AStarSearch/ParallelBranchAndBound.h"
+
 /*--------------------------------------------------------------------------*/
 /*------------------------- NAMESPACE AND USING ----------------------------*/
 /*--------------------------------------------------------------------------*/
@@ -730,6 +734,243 @@ class DiveOpenList final : public OpenList {
 }  // anonymous namespace
 
 /*--------------------------------------------------------------------------*/
+/*------------------- THE TREE AS A PROBLEM OF AStarSearch -----------------*/
+/*--------------------------------------------------------------------------*/
+// the tree of the BranchAndXSolver as a BranchAndBound problem of
+// AStarSearch [see AStarSearchSolve()]: the classes live here, and not in
+// the member function, since the evaluator has a member template
+
+namespace {
+
+namespace ASt = AStar_di_unipi_it;
+
+/// a node of the tree for the branch-and-bound of AStarSearch
+/** The Change that generates the node from its parent, the node of the
+ * parent and the depth; its evaluation (the relaxation bound, whether it is
+ * pruned, i.e., infeasible or fenced, and its branching Changes) is filled
+ * once by the worker that evaluates it, before the node is handed to any
+ * other worker. The Changes are plain data, applied by the Solver of any
+ * worker [see ParallelDFSSolve()]. */
+
+struct BXLink {
+ std::shared_ptr< Change > change;              ///< from the parent
+ std::shared_ptr< BXLink > parent;              ///< nullptr at the root
+ int depth = 0;                                 ///< the depth
+ double bound = 0;                              ///< in the sense of the Block
+ bool evaluated = false;                        ///< evaluated already
+ bool pruned = false;                           ///< infeasible or fenced
+ std::vector< std::shared_ptr< Change > > branches;  ///< to the children
+ };
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+/// what the workers share: the data of the BranchAndXSolver
+
+struct BXContext {
+
+ using Relaxations = std::vector< std::pair< RelaxationSolver * ,
+                                             Solver * > >;
+ using Heuristics = std::vector< std::pair< ChangeSolver * , Solver * > >;
+
+ BXContext( double & bb , Solution * & bs , std::atomic< double > * ic ,
+            double rt , double at , bool min , bool e , bool l ,
+            std::mutex & gm )
+  : bestBound( bb ) , bestSolution( bs ) , incumbentCell( ic ) ,
+    relTol( rt ) , absTol( at ) , minimizing( min ) , eager( e ) ,
+    lifo( l ) , globalMutex( gm ) {}
+
+ double & bestBound;                     ///< the incumbent value
+ Solution * & bestSolution;              ///< the incumbent solution
+ std::atomic< double > * incumbentCell;  ///< the incumbent, lock-free
+ double relTol;                          ///< the relative tolerance
+ double absTol;                          ///< the absolute tolerance
+ bool minimizing;                        ///< the sense of the Block
+ bool eager;                             ///< the eager bounding protocol
+ bool lifo;                              ///< the first branch last
+ std::mutex & globalMutex;               ///< of the BranchAndXSolver
+ std::mutex incumbentMutex;              ///< serializes the incumbent
+ std::vector< Relaxations * > relaxation;  ///< of each worker
+ std::vector< Heuristics * > heuristic;    ///< of each worker
+ std::atomic< int > error{ Solver::kOK };  ///< the first error, if any
+
+ /// the sign that turns a value of the Block into one to minimize
+ [[nodiscard]] double sign( void ) const { return( minimizing ? 1 : -1 ); }
+
+ };  // end( struct( BXContext ) )
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+/// the evaluator of a worker: its Solver, and the path of the node they
+/// sit on, with the undo Changes of its own
+
+class BXWorker {
+
+ public:
+
+ BXWorker( BXContext & c , unsigned i ) : f_c( c ) , f_i( i ) {
+  for( auto & p : * c.relaxation[ i ] )
+   f_solvers.push_back( p.first );
+  for( auto & p : * c.heuristic[ i ] )
+   f_solvers.push_back( p.first );
+  }
+
+ BXWorker( BXWorker && w ) noexcept
+  : f_c( w.f_c ) , f_i( w.f_i ) , f_solvers( std::move( w.f_solvers ) ) ,
+    v_path( std::move( w.v_path ) ) {
+  w.v_path.clear();
+  }
+
+ /// back to the root, so that the Solver are where they started
+ ~BXWorker() { move_to( nullptr ); }
+
+ /// the evaluation of the node n, done now unless already done
+ ASt::Evaluation evaluate( std::shared_ptr< BXLink > & n ) {
+  if( ! n->evaluated )
+   evaluate_here( n );
+  ASt::Evaluation e;
+  e.bound = f_c.sign() * n->bound;
+  e.infeasible = n->pruned;
+  const double z = f_c.incumbentCell->load();
+  if( std::isfinite( z ) )
+   e.feasible = f_c.sign() * z;
+  return( e );
+  }
+
+ /// the children of the evaluated node n, evaluated now with the eager
+ /// protocol (and then given only if they survive), the first branch
+ /// given last when the open set is a stack
+ template< class F >
+ void branch( const std::shared_ptr< BXLink > & n , F && f ) {
+  std::vector< std::shared_ptr< BXLink > > kids;
+  for( auto & ch : n->branches ) {
+   auto k = std::make_shared< BXLink >();
+   k->change = ch;
+   k->parent = n;
+   k->depth = n->depth + 1;
+   k->bound = n->bound;                 // inherited
+   if( f_c.eager ) {
+    evaluate_here( k );
+    if( k->pruned )
+     continue;
+    }
+   kids.push_back( std::move( k ) );
+   }
+  n->branches.clear();
+  if( f_c.lifo )
+   std::reverse( kids.begin() , kids.end() );
+  for( auto & k : kids ) {
+   const double b = f_c.sign() * k->bound;
+   f( std::move( k ) , b );
+   }
+  }
+
+ private:
+
+ // evaluates the node n [see evaluateNode()], and asks for its branching
+ // Changes while the Solver are on it
+ void evaluate_here( const std::shared_ptr< BXLink > & n ) {
+  move_to( n );
+  DFSNode tmp( nullptr );
+  tmp.set_bound( n->bound );
+  // a node with no undo Change is the root to the evaluation, which tells
+  // an infeasible root from any other infeasible node: the node borrows the
+  // undo Change of the worker, and gives it back before it dies
+  if( n->change )
+   tmp.set_toFather( v_path.back().second );
+  bool toPrune = false;
+  RelaxationSolver * bs = nullptr;
+  const int res = evaluateNode( & tmp , f_solvers , f_c.relaxation[ f_i ] ,
+                                f_c.heuristic[ f_i ] , f_c.minimizing ,
+                                f_c.bestBound , f_c.bestSolution ,
+                                f_c.incumbentCell , toPrune , bs , 1 ,
+                                f_c.relTol , f_c.absTol , f_c.globalMutex ,
+                                & f_c.incumbentMutex , false );
+  tmp.set_toFather( nullptr );
+  n->evaluated = true;
+  n->bound = tmp.get_bound();
+  if( res != Solver::kOK ) {
+   // an infeasible root is no error: the search ends with no incumbent,
+   // and compute() tells that the problem is infeasible
+   if( ( res != Solver::kInfeasible ) || n->change ) {
+    int ok = Solver::kOK;
+    f_c.error.compare_exchange_strong( ok , res );
+    }
+   n->pruned = true;
+   return;
+   }
+  n->pruned = toPrune || tmp.is_infeasible() ||
+              cannot_improve( n->bound , f_c.incumbentCell->load() ,
+                              f_c.minimizing , f_c.relTol , f_c.absTol );
+  if( ( ! n->pruned ) && bs )
+   for( Change * c : bs->branch() )
+    n->branches.emplace_back( c );
+  }
+
+ // moves the Solver from their node to n (nullptr is the root): up to the
+ // deepest common ancestor by the undo Changes, then down by the Changes,
+ // the first Solver giving the undo Change [see moveBetweenNodes()]
+ void move_to( const std::shared_ptr< BXLink > & n ) {
+  std::vector< std::shared_ptr< BXLink > > target;
+  for( auto x = n ; x && x->change ; x = x->parent )
+   target.push_back( x );
+  std::reverse( target.begin() , target.end() );
+  std::size_t k = 0;
+  while( ( k < v_path.size() ) && ( k < target.size() ) &&
+         ( v_path[ k ].first == target[ k ] ) )
+   ++k;
+  while( v_path.size() > k ) {
+   Change * undo = v_path.back().second;
+   for( auto s : f_solvers )
+    s->apply( undo , false );
+   delete undo;
+   v_path.pop_back();
+   }
+  for( ; k < target.size() ; ++k ) {
+   Change * undo = nullptr;
+   bool first = true;
+   for( auto s : f_solvers ) {
+    if( first )
+     undo = s->apply( target[ k ]->change.get() , true );
+    else
+     s->apply( target[ k ]->change.get() , false );
+    first = false;
+    }
+   v_path.emplace_back( target[ k ] , undo );
+   }
+  }
+
+ BXContext & f_c;                               ///< the shared data
+ unsigned f_i;                                  ///< the index of the worker
+ std::list< ChangeSolver * > f_solvers;         ///< its Solver
+ /// the nodes from the root to that of the Solver, with the undo Changes
+ std::vector< std::pair< std::shared_ptr< BXLink > , Change * > > v_path;
+
+ };  // end( class( BXWorker ) )
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+/// the tree of the BranchAndXSolver as a BranchAndBound problem; the values
+/// are those of the Block times BXContext::sign(), so that it minimizes
+
+struct BXTree {
+
+ using node_type = std::shared_ptr< BXLink >;
+ static constexpr ASt::Sense sense = ASt::Sense::minimize;
+
+ BXContext & c;                                 ///< the shared data
+
+ [[nodiscard]] node_type root( void ) const {
+  auto r = std::make_shared< BXLink >();
+  r->bound = c.minimizing ? - Inf< double >() : Inf< double >();
+  return( r );
+  }
+
+ [[nodiscard]] BXWorker make_worker( unsigned i ) const {
+  return( BXWorker( c , i ) );
+  }
+
+ };  // end( struct( BXTree ) )
+
+}  // anonymous namespace
+
+/*--------------------------------------------------------------------------*/
 /*----------------- METHODS OF BranchAndXSolver ----------------------------*/
 /*--------------------------------------------------------------------------*/
 /*-------------------------- PROTECTED METHODS -----------------------------*/
@@ -796,12 +1037,15 @@ int BranchAndXSolver::compute( bool changedvars )
  // depth-first one, whose worker forest is not kept [see ParallelDFSSolve()]
  const bool parallelDFS = ( solveType == DFS ) &&
                           ( get_int_par( intMaxThread ) > 1 );
+ // the branch-and-bound of AStarSearch, which retains no tree either
+ const bool astar = ( treeExplorer != OwnExplorer );
 
  // incumbent-dependent local fixing folded into the branching Changes is
  // unsafe when the tree is retained across re-solves with different
  // incumbents: forbid it in that case, allow it otherwise [see
  // GlobalInformation::local_fixing_allowed()]
- f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( ! parallelDFS ) ) );
+ f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( ! parallelDFS ) &&
+                       ( ! astar ) ) );
 
  // nothing changed since the last solve, which has ended: its answer
  // stands; one stopped by a budget goes on instead [see Solver::kStopTime]
@@ -820,7 +1064,7 @@ int BranchAndXSolver::compute( bool changedvars )
   // different Modification or-ed together (an added Variable and an added
   // Constraint, say) may read as one that the tree does not survive
   if( ( changes == Modification::eModAll ) || ( ! reoptimize ) ||
-      parallelDFS )
+      parallelDFS || astar )
    discardRetainedTree();
 
   bestBound = no_incumbent();
@@ -829,9 +1073,12 @@ int BranchAndXSolver::compute( bool changedvars )
   // one exploration, parameterized by the open set that the strategy asks
   // for [see treeSolve()]; the only separate one is the parallel depth-first,
   // which runs its own workers [see ParallelDFSSolve()]
-  f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
-                                            get_int_par( intMaxThread ) )
-                        : treeSolve( globalMutex );
+  if( astar )
+   f_state = AStarSearchSolve( globalMutex , get_int_par( intMaxThread ) );
+  else
+   f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
+                                             get_int_par( intMaxThread ) )
+                         : treeSolve( globalMutex );
 
   // an exploration that has been completed without ever finding a feasible
   // solution proves that there is none
@@ -1613,6 +1860,66 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  return( result.load() );
 
  }  // end( BranchAndXSolver::ParallelDFSSolve )
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::AStarSearchSolve( std::mutex & globalMutex , int K )
+{
+ K = std::max( 1 , K );
+ createWorkerSolvers( Index( K ) );
+ const bool minimizing =
+  ( f_Block->get_objective_sense() != Objective::eMax );
+ BXContext c( bestBound , bestSolution , f_incumbentCell , relTol , absTol ,
+              minimizing , boundingProtocol == Eager ,
+              ( solveType == DFS ) || ( solveType == BestFSDive ) ,
+              globalMutex );
+ for( auto & ws : v_workerSolvers ) {
+  c.relaxation.push_back( & ws.relaxation );
+  c.heuristic.push_back( & ws.heuristic );
+  }
+
+ // the strategy as a selection of AStarSearch: the dive of BestFSDive goes
+ // down to a leaf whatever the bound of the child
+ ASt::ParallelBBOptions o;
+ switch( solveType ) {
+  case( DFS ):    o.selection = ASt::Selection::depth_first; break;
+  case( BFS ):    o.selection = ASt::Selection::breadth_first; break;
+  case( BestFS ): o.selection = ASt::Selection::best_first; break;
+  default:
+   o.selection = ASt::Selection::plunging;
+   o.plunge_gap = Inf< double >();
+  }
+ o.rel_gap = relTol;
+ o.abs_gap = absTol == Inf< double >() ? 0 : absTol;
+ if( nodeBudget < INT_MAX )
+  o.node_limit = std::size_t( std::max( 1 , nodeBudget ) );
+ if( timeBudget < Inf< double >() )
+  o.time_limit = timeBudget;
+ o.threads = unsigned( K );
+
+ const BXTree t{ c };
+ ASt::BBSolution< BXTree::node_type > s;
+ if( K == 1 )
+  s = ASt::branch_and_bound( t , o );
+ else
+  if( treeExplorer == AStarDistributed )
+   s = ASt::DistributedBranchAndBound< BXTree >( t , o ).solve();
+  else
+   s = ASt::SharedBranchAndBound< BXTree >( t , o ).solve();
+
+ if( c.error.load() != kOK )
+  return( c.error.load() );
+ switch( s.status ) {
+  case( ASt::BBStatus::node_limit ):
+   f_open_bound = c.sign() * s.bound;
+   return( kStopIter );
+  case( ASt::BBStatus::time_limit ):
+   f_open_bound = c.sign() * s.bound;
+   return( kStopTime );
+  default:
+   return( kOK );
+  }
+ }  // end( BranchAndXSolver::AStarSearchSolve )
 
 /*--------------------------------------------------------------------------*/
 

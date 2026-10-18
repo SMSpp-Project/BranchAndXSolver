@@ -26,6 +26,9 @@ The cases are:
   (`intBoundingProtocol`), minimizing, and every strategy maximizing, each run
   having to find the optimum, with both bounds equal to it and the optimal
   integer solution written back in the `Block`;
+- the same strategies and protocols, in both senses, with the tree explored
+  by the branch-and-bound of AStarSearch (`intTreeExplorer`), and a node
+  budget stopping it;
 - the rounding heuristic, whose incumbent is the solution written back;
 - an empty box and a box with no integer point (whose relaxation is not
   empty), both infeasible, with both bounds at the infinity of the sense;

@@ -57,6 +57,24 @@ if (NOT hasParent)
     find_package(SMS++ REQUIRED)
 endif ()
 
+# AStarSearch, whose branch-and-bound may explore the tree [see
+# intTreeExplorer]: installed, or else the sources of the commit
+# BXS_ASTARSEARCH_COMMIT, added as a subproject with the C++ threads only
+set(BXS_ASTARSEARCH_COMMIT cbdca142a4cbe6d9d2fd07de6e23dbd1591858a2
+    CACHE STRING "The commit of AStarSearch to download")
+find_package(AStarSearch CONFIG QUIET)
+if (NOT AStarSearch_FOUND)
+    set(ASTAR_WITH_OPENMP OFF)
+    set(ASTAR_WITH_MPI OFF)
+    set(ASTAR_WITH_FASTFLOW OFF)
+    include(FetchContent)
+    FetchContent_Declare(
+            AStarSearch
+            GIT_REPOSITORY https://github.com/dmeoli/AStarSearch.git
+            GIT_TAG ${BXS_ASTARSEARCH_COMMIT})
+    FetchContent_MakeAvailable(AStarSearch)
+endif ()
+
 # ----- Configuration header ------------------------------------------------ #
 # This will generate a *Config.h header in the build directory.
 configure_file(cmake/${modName}Config.h.in ${modName}Config.h)
@@ -137,6 +155,7 @@ target_include_directories(
 # PUBLIC means they will be linked also to the targets that depend on this
 # library.
 target_link_libraries(${modName} PUBLIC ${modNamespace}::SMS++)
+target_link_libraries(${modName} PRIVATE AStarSearch::AStarSearch)
 
 # This alias is defined so that executables in this same project can use
 # the library with this notation.

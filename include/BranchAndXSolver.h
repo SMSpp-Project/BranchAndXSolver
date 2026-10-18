@@ -137,6 +137,7 @@ class BranchAndXSolver : public Solver {
    * solving from scratch; it is off by default, also because retaining
    * the tree can use a lot of memory. */
   intMaxNodes ,                     ///< max number of nodes to explore
+  intTreeExplorer ,                 ///< who explores the tree
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -153,6 +154,15 @@ class BranchAndXSolver : public Solver {
  enum BoundingProtocol {
   Eager = 0 ,                       ///< when the node is created
   Lazy = 1                          ///< when the node is extracted
+  };
+
+/*--------------------------------------------------------------------------*/
+ /// public enum for who explores the tree [see intTreeExplorer]
+
+ enum TreeExplorer {
+  OwnExplorer = 0 ,                 ///< the explorations of this class
+  AStarShared = 1 ,                 ///< AStarSearch, one shared queue
+  AStarDistributed = 2              ///< AStarSearch, a queue per worker
   };
 
 /*--------------------------------------------------------------------------*/
@@ -208,7 +218,8 @@ class BranchAndXSolver : public Solver {
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
-                      maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
+                      maxNodes( INT_MAX ) , treeExplorer( OwnExplorer ) ,
+                      f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) ,
@@ -286,6 +297,14 @@ class BranchAndXSolver : public Solver {
   *   intMaxIter (a node is not an iteration: a node may take several inner
   *   iterations), which is left to the inner Solvers.
   *
+  * - intTreeExplorer [OwnExplorer]: who explores the tree (see
+  *   TreeExplorer): the explorations of this class, or the branch-and-bound
+  *   of AStarSearch [see AStarSearchSolve()], sequential with intMaxThread
+  *   <= 1 and otherwise on intMaxThread workers sharing one queue
+  *   (AStarShared) or with a queue each (AStarDistributed); the strategy,
+  *   the bounding protocol, the tolerances and the budgets are the same,
+  *   and the tree is never retained [see intReoptimize].
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -320,6 +339,12 @@ class BranchAndXSolver : public Solver {
     break;
    case( intMaxNodes ):
     maxNodes = ( value <= 0 ) ? INT_MAX : value;
+    break;
+   case( intTreeExplorer ):
+    if( ( value < OwnExplorer ) || ( value > AStarDistributed ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intTreeExplorer" ) );
+    treeExplorer = static_cast< TreeExplorer >( value );
     break;
    default:
     Solver::set_par( par , value );
@@ -471,6 +496,7 @@ class BranchAndXSolver : public Solver {
    case( intBoundingProtocol ):          return( int( Eager ) );
    case( intReoptimize ):                return( 0 );
    case( intMaxNodes ):                  return( INT_MAX );
+   case( intTreeExplorer ):              return( int( OwnExplorer ) );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -494,6 +520,7 @@ class BranchAndXSolver : public Solver {
    case( intBoundingProtocol ):          return( int( boundingProtocol ) );
    case( intReoptimize ):                return( reoptimize );
    case( intMaxNodes ):                  return( maxNodes );
+   case( intTreeExplorer ):              return( int( treeExplorer ) );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -528,6 +555,8 @@ class BranchAndXSolver : public Solver {
    return( intReoptimize );
   if( name == "intMaxNodes" )
    return( intMaxNodes );
+  if( name == "intTreeExplorer" )
+   return( intTreeExplorer );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -545,7 +574,8 @@ class BranchAndXSolver : public Solver {
   static const std::string pars[] = { "intSolveMethod" ,
                                       "intThreadForDifferentSolvers" ,
                                       "intBoundingProtocol" ,
-                                      "intReoptimize" , "intMaxNodes" };
+                                      "intReoptimize" , "intMaxNodes" ,
+                                      "intTreeExplorer" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -769,6 +799,23 @@ class BranchAndXSolver : public Solver {
  int ParallelDFSSolve( std::mutex & globalMutex , int K );
 
 /*--------------------------------------------------------------------------*/
+ /// the exploration of the tree by the branch-and-bound of AStarSearch
+ /** The tree explored by BranchAndBoundSearch, SharedBranchAndBound or
+  * DistributedBranchAndBound of AStarSearch [see intTreeExplorer], with
+  * \p K workers, each driving its own set of inner Solver [see
+  * createWorkerSolvers()]. A node is the Change that generates it from its
+  * parent, linked to the node of the parent, so that any worker can reach
+  * it: the worker moves its Solver from its current node to the target one
+  * by undoing the Changes up to their deepest common ancestor (with undo
+  * Changes of its own) and applying those down from it. The evaluation of
+  * a node is that of the other explorations [see evaluateNode()], with the
+  * incumbent shared under a mutex; with the eager bounding protocol the
+  * children are evaluated when they are generated, with the lazy one when
+  * they are extracted. */
+
+ int AStarSearchSolve( std::mutex & globalMutex , int K );
+
+/*--------------------------------------------------------------------------*/
  /// delete the tree retained for reoptimization (if any) and its frontier
 
  void discardRetainedTree( void );
@@ -906,6 +953,9 @@ class BranchAndXSolver : public Solver {
                               ///< intReoptimize / treeSolve())
 
  int maxNodes;                ///< node budget of a solve (see intMaxNodes)
+
+ TreeExplorer treeExplorer;   ///< who explores the tree (see
+                              ///< intTreeExplorer)
 
  /// the inherited dblMaxTime [see set_par( double )]
  double maxTime = Inf< double >();
