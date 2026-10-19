@@ -6,12 +6,17 @@
  * ChangeSolver.h] can use to choose the variable to branch upon: the
  * description of a candidate and its features (BranchingFeatures), strong
  * branching with the product score (StrongBranching), and a scoring function
- * of the candidates read from a file (LearnedBranching). They live beside the
- * BranchAndXSolver but know nothing of it: each RelaxationSolver describes
- * its own candidates, decides which component to use (say, by a parameter of
- * its own), and gives StrongBranching the way to evaluate the children of a
- * candidate, so that the same rule serves any relaxation without the
- * RelaxationSolver exposing anything of its representation.
+ * of the candidates read from a file (LearnedBranching); and, for the order
+ * in which the children are explored, the estimates of the best value under
+ * each of them (BranchEstimator), the pseudocosts that give them
+ * (PseudoCosts), and the pseudocosts read from a file for the candidates
+ * that have none yet (LearnedPseudoCosts). They live beside the
+ * BranchAndXSolver and, but for BranchEstimator, know nothing of it: each
+ * RelaxationSolver describes its own candidates, decides which component to
+ * use (say, by a parameter of its own), and gives StrongBranching the way to
+ * evaluate the children of a candidate, so that the same rule serves any
+ * relaxation without the RelaxationSolver exposing anything of its
+ * representation.
  *
  * \author Donato Meoli \n
  *         Dipartimento di Informatica \n
@@ -36,9 +41,13 @@
 
 #include <functional>
 
+#include <istream>
+
 #include <ostream>
 
 #include <string>
+
+#include <unordered_map>
 
 #include <vector>
 
@@ -204,6 +213,10 @@ class LearnedBranching
  /// read the model from the given file; throws if it is not one
  void load( const std::string & file );
 
+ /// read the model from the given stream, named name in the errors; throws
+ /// if it is not one, and leaves the stream after the model
+ void load( std::istream & in , const std::string & name );
+
  /// whether a model has been read
  [[nodiscard]] bool empty( void ) const { return( f_w1.empty() ); }
 
@@ -224,6 +237,139 @@ class LearnedBranching
  double f_b2 = 0;                            ///< bias of the output
 
  };  // end( class( LearnedBranching ) )
+
+/*--------------------------------------------------------------------------*/
+/*------------------------- CLASS BranchEstimator --------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the estimates of the best value under the children of a branching
+/** A RelaxationSolver [see ChangeSolver.h] that also derives from
+ * BranchEstimator gives, right after each branch() and before any other of
+ * its methods is called, an estimate of the value of the best solution of
+ * the original problem in the region of each child, which the
+ * BranchAndXSolver uses to order the open nodes [see intSolveMethod]. An
+ * estimate is no bound: the nodes are still pruned by their bounds, so that
+ * a wrong estimate only changes the order of the exploration. */
+
+class BranchEstimator
+{
+ public:
+
+ virtual ~BranchEstimator() = default;   ///< destructor: does nothing
+
+ /// the estimates of the children of the last branch()
+ /** One per Change returned by the last branch(), in the same order, in
+  * the sense of the problem (an estimate of a minimum is expected to be no
+  * less than the bound of the child); NaN for a child without one, and an
+  * empty vector if there is none at all. */
+
+ [[nodiscard]] virtual std::vector< double > branch_estimates( void ) = 0;
+
+ };  // end( class( BranchEstimator ) )
+
+/*--------------------------------------------------------------------------*/
+/*--------------------------- CLASS PseudoCosts ----------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the pseudocosts of the candidates, and the estimates they give
+/** The pseudocost \f$ \Psi^d_v \f$ of the candidate v in the direction d (0
+ * "down", 1 "up") is the mean, over the branchings on v observed so far, of
+ * the worsening of the bound from the node to its child in that direction
+ * per unit of the distance moved by the value of v, which is \f$ x_v -
+ * \lfloor x_v \rfloor \f$ down and \f$ \lceil x_v \rceil - x_v \f$ up. A
+ * candidate never branched upon in a direction takes its prior, if one is
+ * given, and otherwise the mean of the pseudocosts of all the candidates in
+ * that direction (0 if there is none).
+ *
+ * The estimate of a child of a node of bound L, branched upon the candidate
+ * b, is that of the best-estimate search of Benichou et al. (1971), i.e., L
+ * worsened by
+ * \f[
+ *  \Psi^d_b \, \delta^d_b + \sum_{v \neq b} \min \{ \Psi^0_v \,
+ *  \delta^0_v \, , \, \Psi^1_v \, \delta^1_v \}
+ * \f]
+ * for the direction d of the child and the distances \f$ \delta^d_v \f$ of
+ * the candidates v: the cheapest rounding of every fractional candidate,
+ * that of b being forced by the child. The ids of the candidates have to
+ * name the same variable at all the nodes. */
+
+class PseudoCosts
+{
+ public:
+
+ /// the priors of the candidate of the given index, down and up, per unit
+ /// of distance (NaN for none)
+ using Prior = std::function< std::array< double , 2 >( std::size_t ) >;
+
+ /// record that branching on the candidate id in the direction dir, its
+ /// value moving by moved > 0, worsened the bound by worse (taken as 0 if
+ /// negative)
+ void record( std::size_t id , int dir , double moved , double worse );
+
+ /// the pseudocost of the candidate id in the direction dir, or prior (if
+ /// not NaN) if it has no observation in that direction
+ [[nodiscard]] double get( std::size_t id , int dir , double prior ) const;
+
+ /// whether the candidate id has an observation in the direction dir
+ [[nodiscard]] bool known( std::size_t id , int dir ) const;
+
+ /// the number of the observations recorded so far
+ [[nodiscard]] unsigned long observations( void ) const {
+  return( f_all[ 0 ].n + f_all[ 1 ].n );
+  }
+
+ /// the estimates of the "down" and of the "up" child of the candidate b of
+ /// cands, at a node of bound node of a problem to be maximized if maximize;
+ /// prior, if given, gives the priors of the candidates by their index
+ [[nodiscard]] std::array< double , 2 > estimates(
+				const std::vector< BranchCandidate > & cands ,
+				std::size_t b , double node , bool maximize ,
+				const Prior & prior = nullptr ) const;
+
+ private:
+
+ /// a sum of observations and their number
+ struct Sum {
+  double s = 0;
+  unsigned long n = 0;
+  };
+
+ std::unordered_map< std::size_t , std::array< Sum , 2 > > f_sums;  ///< by id
+ std::array< Sum , 2 > f_all;                 ///< of all the candidates
+
+ };  // end( class( PseudoCosts ) )
+
+/*--------------------------------------------------------------------------*/
+/*----------------------- CLASS LearnedPseudoCosts -------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the priors of the pseudocosts read from a file
+/** Two models of LearnedBranching, written one after the other in the same
+ * file: the first gives the pseudocost "down" of a candidate out of its
+ * features [see BranchingFeatures::features()], the second the "up" one,
+ * both over \f$ \max \{ | L | , 1 \} \f$ for the bound L of the node, so
+ * that they do not depend on the scale of the data; a negative output counts
+ * as 0. They are learned, e.g., from the bounds of the children that strong
+ * branching computes [see StrongBranching::write_log()]. */
+
+class LearnedPseudoCosts
+{
+ public:
+
+ /// read the two models from the given file; throws if they are not there
+ void load( const std::string & file );
+
+ /// whether the models have been read
+ [[nodiscard]] bool empty( void ) const { return( f_down.empty() ); }
+
+ /// the priors, down and up, of a candidate with the given features at a
+ /// node of bound node
+ [[nodiscard]] std::array< double , 2 > prior(
+		      const BranchingFeatures::Features & x , double node ) const;
+
+ private:
+
+ LearnedBranching f_down;   ///< the model of the pseudocosts "down"
+ LearnedBranching f_up;     ///< the model of the pseudocosts "up"
+
+ };  // end( class( LearnedPseudoCosts ) )
 
 /** @} end( group( BranchingRule_CLASSES ) ) */
 

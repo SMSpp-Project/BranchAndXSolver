@@ -3,8 +3,9 @@
 /*--------------------------------------------------------------------------*/
 /** @file
  * Implementation of the components that a RelaxationSolver can use to
- * choose the variable to branch upon: BranchingFeatures, StrongBranching and
- * LearnedBranching.
+ * choose the variable to branch upon and to estimate its children:
+ * BranchingFeatures, StrongBranching, LearnedBranching, PseudoCosts and
+ * LearnedPseudoCosts.
  *
  * \author Donato Meoli \n
  *         Dipartimento di Informatica \n
@@ -163,7 +164,6 @@ void StrongBranching::write_log( const std::string & file ,
 void LearnedBranching::load( const std::string & file )
 {
  static const std::string _prfx = "LearnedBranching::load: ";
- constexpr auto NF = BranchingFeatures::NFeatures;
 
  f_w1.clear();
  if( file.empty() )
@@ -171,7 +171,18 @@ void LearnedBranching::load( const std::string & file )
  std::ifstream in( file );
  if( ! in )
   throw( std::runtime_error( _prfx + "cannot open " + file ) );
+ load( in , file );
 
+ }  // end( LearnedBranching::load )
+
+/*--------------------------------------------------------------------------*/
+
+void LearnedBranching::load( std::istream & in , const std::string & file )
+{
+ static const std::string _prfx = "LearnedBranching::load: ";
+ constexpr auto NF = BranchingFeatures::NFeatures;
+
+ f_w1.clear();
  std::string tag;
  std::size_t nin , nhid;
  if( ! ( in >> tag >> nin >> nhid ) || ( tag != "LBRModel" ) ||
@@ -233,6 +244,115 @@ std::size_t LearnedBranching::best(
  return( best_c );
 
  }  // end( LearnedBranching::best )
+
+/*--------------------------------------------------------------------------*/
+/*------------------------- METHODS OF PseudoCosts -------------------------*/
+/*--------------------------------------------------------------------------*/
+
+void PseudoCosts::record( std::size_t id , int dir , double moved ,
+			  double worse )
+{
+ if( ( dir < 0 ) || ( dir > 1 ) )
+  throw( std::invalid_argument( "PseudoCosts::record: the direction is "
+				"neither 0 nor 1" ) );
+ if( ! ( moved > 0 ) || ! std::isfinite( worse ) )
+  return;
+ const double psi = std::max( worse , 0.0 ) / moved;
+ auto & s = f_sums[ id ][ dir ];
+ s.s += psi;
+ ++s.n;
+ f_all[ dir ].s += psi;
+ ++f_all[ dir ].n;
+ }
+
+/*--------------------------------------------------------------------------*/
+
+bool PseudoCosts::known( std::size_t id , int dir ) const
+{
+ const auto it = f_sums.find( id );
+ return( ( it != f_sums.end() ) && ( it->second[ dir ].n > 0 ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+double PseudoCosts::get( std::size_t id , int dir , double prior ) const
+{
+ if( const auto it = f_sums.find( id ) ;
+     ( it != f_sums.end() ) && ( it->second[ dir ].n > 0 ) )
+  return( it->second[ dir ].s / double( it->second[ dir ].n ) );
+ if( ! std::isnan( prior ) )
+  return( prior );
+ return( f_all[ dir ].n ? f_all[ dir ].s / double( f_all[ dir ].n ) : 0.0 );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+std::array< double , 2 > PseudoCosts::estimates(
+				const std::vector< BranchCandidate > & cands ,
+				std::size_t b , double node , bool maximize ,
+				const Prior & prior ) const
+{
+ if( b >= cands.size() )
+  throw( std::invalid_argument( "PseudoCosts::estimates: no such "
+				"candidate" ) );
+ constexpr double none = std::numeric_limits< double >::quiet_NaN();
+
+ // the two terms of a candidate: its pseudocosts times its distances, down
+ // and up
+ auto terms = [ & ]( std::size_t c ) {
+  const auto & cd = cands[ c ];
+  const auto pr = prior ? prior( c ) : std::array< double , 2 >{ none ,
+								  none };
+  return( std::array< double , 2 >{
+	   get( cd.id , 0 , pr[ 0 ] ) * ( cd.value - std::floor( cd.value ) ) ,
+	   get( cd.id , 1 , pr[ 1 ] ) * ( std::ceil( cd.value ) - cd.value ) } );
+  };
+
+ double rest = 0;
+ for( std::size_t c = 0 ; c < cands.size() ; ++c )
+  if( c != b ) {
+   const auto t = terms( c );
+   rest += std::min( t[ 0 ] , t[ 1 ] );
+   }
+ const auto tb = terms( b );
+ const double sgn = maximize ? -1 : 1;
+ return( std::array< double , 2 >{ node + sgn * ( tb[ 0 ] + rest ) ,
+                                    node + sgn * ( tb[ 1 ] + rest ) } );
+
+ }  // end( PseudoCosts::estimates )
+
+/*--------------------------------------------------------------------------*/
+/*--------------------- METHODS OF LearnedPseudoCosts ----------------------*/
+/*--------------------------------------------------------------------------*/
+
+void LearnedPseudoCosts::load( const std::string & file )
+{
+ static const std::string _prfx = "LearnedPseudoCosts::load: ";
+
+ if( file.empty() )
+  throw( std::invalid_argument( _prfx + "no file given" ) );
+ std::ifstream in( file );
+ if( ! in )
+  throw( std::runtime_error( _prfx + "cannot open " + file ) );
+ LearnedBranching down , up;
+ down.load( in , file );
+ up.load( in , file );
+ f_down = std::move( down );
+ f_up = std::move( up );
+
+ }  // end( LearnedPseudoCosts::load )
+
+/*--------------------------------------------------------------------------*/
+
+std::array< double , 2 > LearnedPseudoCosts::prior(
+		       const BranchingFeatures::Features & x , double node ) const
+{
+ const double scale = std::max( std::abs( node ) , 1.0 );
+ return( std::array< double , 2 >{
+	   std::max( f_down.score( x ) , 0.0 ) * scale ,
+	   std::max( f_up.score( x ) , 0.0 ) * scale } );
+
+ }  // end( LearnedPseudoCosts::prior )
 
 /*--------------------------------------------------------------------------*/
 /*---------------------- End File BranchingRule.cpp ------------------------*/

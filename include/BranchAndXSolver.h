@@ -11,7 +11,8 @@
  * RelaxationSolver(s) provide relaxation bounds, true (primal) solutions and
  * the branching Changes, and the attached heuristic ChangeSolver(s), if any,
  * provide further primal bounds. The tree can be explored depth-first,
- * breadth-first or best-first (see intSolveMethod); nodes are pruned by the
+ * breadth-first, best-first or by the estimates that the RelaxationSolver
+ * gives of its children (see intSolveMethod); nodes are pruned by the
  * standard inherited tolerances (dblRelAcc / dblAbsAcc), and intMaxNodes / the
  * inherited dblMaxTime bound the number of explored nodes and the total time.
  *
@@ -55,11 +56,15 @@
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
+#include <limits>
 #include <list>
 #include <mutex>
 #include <queue>
 
 #include "BlockSolverConfig.h"
+
+#include "BranchingRule.h"
 
 #include "ChangeSolver.h"
 
@@ -172,7 +177,8 @@ class BranchAndXSolver : public Solver {
   DFS = 0 ,                         ///< depth-first search
   BFS = 1 ,                         ///< breadth-first search
   BestFS = 2 ,                      ///< best-first search
-  BestFSDive = 3                    ///< best-first search with depth-first dives
+  BestFSDive = 3 ,                  ///< best-first search with dives
+  BestEstimate = 4                  ///< best-estimate search
   };
 
 /*--------------------------------------------------------------------------*/
@@ -279,6 +285,13 @@ class BranchAndXSolver : public Solver {
  /** Set the int parameters specific of BranchAndXSolver:
   *
   * - intSolveMethod [BestFS]: how to explore the tree (see SolveMethod);
+  *   BestEstimate extracts first the node whose estimate of the best value
+  *   under it is the best, the estimate being the one that the
+  *   RelaxationSolver that branched gives of the child, if it derives from
+  *   BranchEstimator [see BranchingRule.h], and the bound of the parent
+  *   otherwise, and never better than the bound of the node; the nodes are
+  *   still pruned by their bounds, so that the estimates only change the
+  *   order of the exploration.
   *
   * - intBoundingProtocol [Eager]: when a node is evaluated (see
   *   BoundingProtocol); it changes nothing of what is explored, only when
@@ -314,7 +327,7 @@ class BranchAndXSolver : public Solver {
  void set_par( idx_type par , int value ) override {
   switch( par ) {
    case( intSolveMethod ):
-    if( ( value < DFS ) || ( value > BestFSDive ) )
+    if( ( value < DFS ) || ( value > BestEstimate ) )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intSolveMethod" ) );
     solveType = static_cast< SolveMethod >( value );
@@ -1061,9 +1074,10 @@ class Node {
   *  @param nodeName name of the node (debugging purposes only) */
 
  Node( Change * change , int nodeName = 0 )
-  : bound( - Inf< double >() ) , f_change( change ) ,
-    toFather( nullptr ) , branches() , f_infeasible( false ) ,
-    f_evaluated( false ) , name( nodeName ) {}
+  : bound( - Inf< double >() ) ,
+    estimate( std::numeric_limits< double >::quiet_NaN() ) ,
+    f_change( change ) , toFather( nullptr ) , branches() ,
+    f_infeasible( false ) , f_evaluated( false ) , name( nodeName ) {}
 
 /*--------------------------------------------------------------------------*/
  /// destructor: deletes the owned Changes
@@ -1082,6 +1096,24 @@ class Node {
 
  /// set the value of the relaxation bound
  void set_bound( double db ) { bound = db; }
+
+ /// return the estimate of the best value under the node, NaN if none
+ /** The estimate that the RelaxationSolver that branched the parent gave of
+  * this node [see BranchEstimator]. */
+ double get_estimate( void ) const { return( estimate ); }
+
+ /// set the estimate of the best value under the node
+ void set_estimate( double e ) { estimate = e; }
+
+ /// the key of the node in a best-estimate search
+ /** Its estimate, but never better than its bound (the bound itself if it
+  * has no estimate), in the sense \p minimizing. */
+ double estimate_key( bool minimizing ) const {
+  if( std::isnan( estimate ) )
+   return( bound );
+  return( minimizing ? std::max( estimate , bound )
+                     : std::min( estimate , bound ) );
+  }
 
  /// return the Change that leads to this node
  Change * get_f_change( void ) const { return( f_change ); }
@@ -1122,15 +1154,34 @@ class Node {
 
  /// have the given RelaxationSolver produce the branching Changes
  /** The Changes produced by a previous evaluation, those not yet handed to
-  * a child (whose entries are nullptr), are deleted. */
+  * a child (whose entries are nullptr), are deleted; the estimates of the
+  * children are taken too, if the RelaxationSolver gives them [see
+  * BranchEstimator], and kept only if there is one per Change. */
  void obtainBranchList( RelaxationSolver * solver ) {
   for( auto ch : branches )
    delete ch;
   branches = solver->branch();
+  estimates.clear();
+  if( auto be = dynamic_cast< BranchEstimator * >( solver ) ) {
+   estimates = be->branch_estimates();
+   if( estimates.size() != branches.size() )
+    estimates.clear();
+   }
   }
 
  /// return the Changes generating the children of this node
  std::vector< Change * > & getBranches( void ) { return( branches ); }
+
+ /// forget the estimates of the children, once they have been handed to
+ /// them or when the branching Changes no longer match them
+ void clear_estimates( void ) { estimates.clear(); }
+
+ /// the estimate of the child generated by the i-th branching Change, NaN
+ /// if none [see obtainBranchList()]
+ double child_estimate( std::size_t i ) const {
+  return( i < estimates.size() ? estimates[ i ]
+                               : std::numeric_limits< double >::quiet_NaN() );
+  }
 
 /*--------------------------------------------------------------------------*/
 /*--------------------- PROTECTED PART OF THE CLASS ------------------------*/
@@ -1140,12 +1191,17 @@ class Node {
 
  double bound;     ///< value of the relaxation bound at this node
 
+ double estimate;  ///< estimate of the best value under it, NaN if none
+
  Change * f_change;     ///< the Change to reach this node from the parent
 
  Change * toFather;     ///< the (undo) Change to return to the parent
 
  /// the Changes to reach each child from this node
  std::vector< Change * > branches;
+
+ /// the estimates of the children, one per Change of branches, or none
+ std::vector< double > estimates;
 
  bool f_infeasible;     ///< whether the node's relaxation has no solution
 

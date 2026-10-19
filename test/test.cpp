@@ -26,11 +26,18 @@
  *   fractional coordinate by tightening the BoxConstraint (a BoundChange);
  *
  * - BoxRounding, a BoxSolver and a (heuristic) ChangeSolver, which rounds
- *   the solution of the relaxation to the nearest integer inside the box.
+ *   the solution of the relaxation to the nearest integer inside the box;
+ *
+ * - BoxEstimate, the BoxRelaxation that also estimates the best value under
+ *   each child of a branching [see BranchEstimator], as the value of the
+ *   rounding in the box of the child, and BoxWrongEstimate, which swaps the
+ *   estimates of the two children and at times gives none.
  *
  * The inner Solver are given to BranchAndXSolver by the BlockSolverConfig
- * in InnerBSCfg.txt (the relaxation alone) and InnerBSCfg-rounding.txt
- * (the relaxation and the heuristic), read from the working directory.
+ * in InnerBSCfg.txt (the relaxation alone), InnerBSCfg-rounding.txt (the
+ * relaxation and the heuristic), InnerBSCfg-estimate.txt and
+ * InnerBSCfg-wrong-estimate.txt (the relaxations with the estimates), read
+ * from the working directory.
  *
  * The test needs nothing but the core, so that the CI of BranchAndXSolver
  * builds this module alone. The relaxation acts on the Block rather than on
@@ -48,17 +55,23 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <memory>
 #include <random>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "AbstractBlock.h"
 #include "BoxSolver.h"
 #include "BranchAndXSolver.h"
+#include "BranchingRule.h"
 #include "ChangeSolver.h"
 #include "DQuadFunction.h"
 #include "FRealObjective.h"
@@ -167,6 +180,18 @@ class BoxBase : public BoxSolver {
    ( *f_x )[ i ].set_value( val[ i ] );
   }
 
+ /// the value of the Objective at the point x
+ double objective_value( const std::vector< double > & x ) const {
+  auto obj = static_cast< FRealObjective * >( f_Block->get_objective() );
+  auto qf = static_cast< DQuadFunction * >( obj->get_function() );
+  double v = qf->get_constant_term();
+  for( const auto & el : qf->get_v_var() ) {
+   const double r = x[ std::get< 0 >( el ) - & f_x->front() ];
+   v += std::get< 2 >( el ) * r * r + std::get< 1 >( el ) * r;
+   }
+  return( v );
+  }
+
  std::vector< ColVariable > * f_x = nullptr;     ///< the ColVariable
  std::vector< BoxConstraint > * f_box = nullptr;  ///< their bounds
  std::vector< double > f_val;  ///< the solution of the last compute()
@@ -211,7 +236,10 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
   const double v = f_val[ j ];
   Change * down = new BoundChange( & c , c.get_lhs() , std::floor( v ) );
   Change * up = new BoundChange( & c , std::ceil( v ) , c.get_rhs() );
-  if( v - std::floor( v ) < 0.5 )
+  f_j = j;
+  f_down_first = v - std::floor( v ) < 0.5;
+  trace.push_back( double( j ) + v / 1000 );
+  if( f_down_first )
    return( std::vector< Change * >{ down , up } );
   return( std::vector< Change * >{ up , down } );
   }
@@ -243,6 +271,15 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
   get_true_var_solution( solc );
   return( f_Block->get_Solution( solc , false ) );
   }
+
+ /// the coordinate and the value branched upon by every branch() so far,
+ /// which tells the order in which the nodes are explored
+ static inline std::vector< double > trace;
+
+ protected:
+
+ std::size_t f_j = 0;          ///< the coordinate of the last branch()
+ bool f_down_first = true;     ///< whether its "down" child came first
 
  private:
 
@@ -281,13 +318,7 @@ class BoxRounding : public BoxBase , public ChangeSolver {
    f_round[ i ] = std::clamp( std::round( f_val[ i ] ) , lo , hi );
    }
 
-  auto obj = static_cast< FRealObjective * >( f_Block->get_objective() );
-  auto qf = static_cast< DQuadFunction * >( obj->get_function() );
-  f_value = qf->get_constant_term();
-  for( const auto & el : qf->get_v_var() ) {
-   const double r = f_round[ std::get< 0 >( el ) - & f_x->front() ];
-   f_value += std::get< 2 >( el ) * r * r + std::get< 1 >( el ) * r;
-   }
+  f_value = objective_value( f_round );
   return( f_status );
   }
 
@@ -314,6 +345,88 @@ class BoxRounding : public BoxBase , public ChangeSolver {
  };  // end( class( BoxRounding ) )
 
 SMSpp_insert_in_factory_cpp_0( BoxRounding );
+
+/*--------------------------------------------------------------------------*/
+/*---------------------------- CLASS BoxEstimate ---------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the relaxation that also estimates the best value under each child of a
+/// branching [see BranchEstimator]: the value of the rounding of the
+/// solution of the relaxation to the nearest integer in the box of the
+/// child, NaN if that box has no integer point
+
+class BoxEstimate : public BoxRelaxation , public BranchEstimator {
+
+ public:
+
+ std::vector< double > branch_estimates( void ) override {
+  ++n_estimates;
+  std::vector< double > e;
+  for( bool down : { f_down_first , ! f_down_first } )
+   e.push_back( rounded_value( down ) );
+  return( e );
+  }
+
+ /// the calls of branch_estimates() of all the BoxEstimate so far
+ static inline int n_estimates = 0;
+
+ protected:
+
+ // the value of the rounding of the solution of the relaxation in the box
+ // of the child "down" (or "up") of the last branch(), NaN if none
+ double rounded_value( bool down ) const {
+  std::vector< double > r( f_val.size() );
+  for( std::size_t i = 0 ; i < f_val.size() ; ++i ) {
+   double lo = std::ceil( ( *f_box )[ i ].get_lhs() );
+   double hi = std::floor( ( *f_box )[ i ].get_rhs() );
+   if( i == f_j ) {
+    if( down )
+     hi = std::min( hi , std::floor( f_val[ i ] ) );
+    else
+     lo = std::max( lo , std::ceil( f_val[ i ] ) );
+    }
+   if( lo > hi )
+    return( std::numeric_limits< double >::quiet_NaN() );
+   r[ i ] = std::clamp( std::round( f_val[ i ] ) , lo , hi );
+   }
+  return( objective_value( r ) );
+  }
+
+ SMSpp_insert_in_factory_h;
+
+ };  // end( class( BoxEstimate ) )
+
+SMSpp_insert_in_factory_cpp_0( BoxEstimate );
+
+/*--------------------------------------------------------------------------*/
+/*------------------------- CLASS BoxWrongEstimate -------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the BoxEstimate with the estimates of the two children swapped, and none
+/// at every third branching: the order of a best-estimate search is
+/// misled, but not its optimum, since the nodes are still pruned by their
+/// bounds
+
+class BoxWrongEstimate : public BoxEstimate {
+
+ public:
+
+ std::vector< double > branch_estimates( void ) override {
+  auto e = BoxEstimate::branch_estimates();
+  if( ( ++f_calls % 3 ) == 0 )
+   return( std::vector< double >() );
+  std::swap( e[ 0 ] , e[ 1 ] );
+  return( e );
+  }
+
+ private:
+
+ int f_calls = 0;              ///< the calls so far
+
+ SMSpp_insert_in_factory_h;
+
+ };  // end( class( BoxWrongEstimate ) )
+
+SMSpp_insert_in_factory_cpp_0( BoxWrongEstimate );
+
 
 /*--------------------------------------------------------------------------*/
 /*------------------------------- DATA -------------------------------------*/
@@ -615,8 +728,9 @@ void test_closed_form( void )
 void test_strategies( void )
 {
  std::cout << "strategies, minimization" << std::endl;
- const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" };
- for( int m = 0 ; m < 4 ; ++m )
+ const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
+                          "BestEstimate" };
+ for( int m = 0 ; m < 5 ; ++m )
   for( int p = 0 ; p < 2 ; ++p ) {
    auto inst = make( 7 , false );
    auto bnx = new_bnx();
@@ -635,8 +749,9 @@ void test_strategies( void )
 void test_maximization( void )
 {
  std::cout << "strategies, maximization" << std::endl;
- const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" };
- for( int m = 0 ; m < 4 ; ++m ) {
+ const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
+                          "BestEstimate" };
+ for( int m = 0 ; m < 5 ; ++m ) {
   auto inst = make( 11 , true );
   auto bnx = new_bnx();
   set_int( bnx , "intSolveMethod" , m );
@@ -654,9 +769,10 @@ void test_maximization( void )
 void test_tree_explorer( void )
 {
  std::cout << "the branch-and-bound of PBeFS" << std::endl;
- const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" };
+ const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
+                          "BestEstimate" };
  for( bool max : { false , true } )
-  for( int m = 0 ; m < 4 ; ++m )
+  for( int m = 0 ; m < 5 ; ++m )
    for( int p = 0 ; p < 2 ; ++p ) {
     auto inst = make( max ? 11 : 7 , max );
     auto bnx = new_bnx();
@@ -709,6 +825,144 @@ void test_tree_explorer( void )
           std::to_string( status ) + ", not kInfeasible" );
    destroy( inst );
    }
+ }
+
+/*--------------------------------------------------------------------------*/
+/// the best-estimate search with the estimates of the children given by
+/// the relaxation [see BranchEstimator], right or misleading (swapped, and
+/// at times none), by both explorers, under both bounding protocols, in
+/// both senses: the estimates are asked for, the optimum is the same, and
+/// the order of the branchings depends on the estimates in at least one
+/// case of each explorer
+
+void test_best_estimate( void )
+{
+ std::cout << "best-estimate with the estimates of the relaxation"
+           << std::endl;
+ std::map< std::tuple< bool , int , bool , int > ,
+           std::vector< double > > order;
+ for( const char * cfg : { "InnerBSCfg-estimate.txt" ,
+                           "InnerBSCfg-wrong-estimate.txt" } )
+  for( int t : { int( BranchAndXSolver::OwnExplorer ) ,
+                 int( BranchAndXSolver::PBeFSShared ) } )
+   for( bool max : { false , true } )
+    for( int p = 0 ; p < 2 ; ++p ) {
+     auto inst = make( max ? 11 : 7 , max );
+     auto bnx = new_bnx( cfg );
+     set_int( bnx , "intTreeExplorer" , t );
+     set_int( bnx , "intSolveMethod" , BranchAndXSolver::BestEstimate );
+     set_int( bnx , "intBoundingProtocol" , p );
+     inst.block->register_Solver( bnx );
+     const int before = BoxEstimate::n_estimates;
+     const bool wrong = std::string( cfg ).find( "wrong" ) !=
+                        std::string::npos;
+     const std::string name = std::string( wrong ? "wrong" : "right" ) +
+                              " estimates, " +
+                              ( t ? "PBeFS, " : "own, " ) +
+                              ( max ? "max, " : "min, " ) +
+                              ( p ? "lazy" : "eager" );
+     BoxRelaxation::trace.clear();
+     solve_and_check( bnx , inst , name );
+     check( BoxEstimate::n_estimates > before ,
+            name + ": no estimate asked for" );
+     order[ { wrong , t , max , p } ] = BoxRelaxation::trace;
+     destroy( inst );
+     }
+
+ for( int t : { int( BranchAndXSolver::OwnExplorer ) ,
+                int( BranchAndXSolver::PBeFSShared ) } ) {
+  bool differ = false;
+  for( bool max : { false , true } )
+   for( int p = 0 ; p < 2 ; ++p )
+    differ |= order[ { false , t , max , p } ] !=
+              order[ { true , t , max , p } ];
+  check( differ , std::string( t ? "PBeFS" : "own" ) +
+         ": the order does not depend on the estimates" );
+  }
+ }
+
+/*--------------------------------------------------------------------------*/
+/// the pseudocosts and their priors read from a file [see BranchingRule.h],
+/// against values computed by hand, with their limit cases: no observation
+/// at all, a direction that is neither 0 nor 1, an observation that is not
+/// finite or that moves nothing, a negative output of the model, and a file
+/// with one model only or truncated
+
+void test_pseudocosts( void )
+{
+ std::cout << "pseudocosts and their learned priors" << std::endl;
+ const double nan = std::numeric_limits< double >::quiet_NaN();
+ PseudoCosts pc;
+ check( pc.get( 3 , 0 , nan ) == 0 , "no observation: 0" );
+ check( pc.get( 3 , 1 , 2.5 ) == 2.5 , "no observation: the prior" );
+
+ pc.record( 3 , 0 , 0.5 , 2 );        // 4 per unit
+ pc.record( 3 , 0 , 0.25 , 2 );       // 8 per unit
+ pc.record( 7 , 1 , 0.5 , 1 );        // 2 per unit
+ pc.record( 7 , 1 , 0.5 , -1 );       // worse < 0 counts as 0
+ pc.record( 9 , 0 , 0 , 5 );          // moves nothing: ignored
+ pc.record( 9 , 0 , 0.5 , INF );      // infeasible child: ignored
+ check( ( pc.get( 3 , 0 , nan ) == 6 ) && pc.known( 3 , 0 ) &&
+        ! pc.known( 3 , 1 ) , "mean of the observations" );
+ check( pc.get( 7 , 1 , nan ) == 1 , "a negative worsening counts as 0" );
+ check( ( ! pc.known( 9 , 0 ) ) && ( pc.observations() == 4 ) ,
+        "observations that move nothing or are infinite are ignored" );
+ check( pc.get( 9 , 0 , nan ) == 6 , "no observation: the mean of all" );
+ check( pc.get( 9 , 1 , 0.5 ) == 0.5 , "no observation: the prior first" );
+ bool thrown = false;
+ try { pc.record( 3 , 2 , 1 , 1 ); } catch( std::invalid_argument & ) {
+  thrown = true; }
+ check( thrown , "a direction neither 0 nor 1 is refused" );
+
+ // two candidates, 3 at 0.25 and 7 at 0.5: branching on 3 at a node of
+ // bound 10, its children worsen it by 6 * 0.25 down and by the mean "up"
+ // 1 * 0.75 up, plus the cheapest rounding of 7, min( 6 * 0.5 , 1 * 0.5 )
+ std::vector< BranchCandidate > cands = { { 3 , 0.25 , 0.25 , 1 , 0 , 0 } ,
+                                          { 7 , 0.5 , 0.5 , 1 , 0 , 0 } };
+ const auto e = pc.estimates( cands , 0 , 10 , false );
+ check( ( std::abs( e[ 0 ] - ( 10 + 1.5 + 0.5 ) ) < 1e-12 ) &&
+        ( std::abs( e[ 1 ] - ( 10 + 0.75 + 0.5 ) ) < 1e-12 ) ,
+        "estimates of a minimization" );
+ const auto m = pc.estimates( cands , 0 , 10 , true );
+ check( ( std::abs( m[ 0 ] - ( 10 - 2 ) ) < 1e-12 ) &&
+        ( std::abs( m[ 1 ] - ( 10 - 1.25 ) ) < 1e-12 ) ,
+        "estimates of a maximization" );
+ const auto p = pc.estimates( cands , 0 , 10 , false ,
+                              []( std::size_t ) {
+                               return( std::array< double , 2 >{ 100 , 100 }
+                                       ); } );
+ check( std::abs( p[ 0 ] - e[ 0 ] ) < 1e-12 ,
+        "a prior is not taken where there are observations" );
+ thrown = false;
+ try { ( void ) pc.estimates( cands , 2 , 10 , false ); }
+ catch( std::invalid_argument & ) { thrown = true; }
+ check( thrown , "no such candidate is refused" );
+
+ // two models whose output is the bias: 0.5 down, -1 (hence 0) up
+ const std::string file = "pseudocosts-test.txt";
+ const auto model = []( double bias ) {
+  std::string s = "LBRModel 8 1\n";
+  for( int i = 0 ; i < 8 ; ++i )
+   s += "0 ";
+  return( s + "\n0\n0\n" + std::to_string( bias ) + "\n" );
+  };
+ std::ofstream( file ) << model( 0.5 ) << model( -1 );
+ LearnedPseudoCosts lp;
+ lp.load( file );
+ const auto pr = lp.prior( BranchingFeatures::Features{} , -20 );
+ check( ( std::abs( pr[ 0 ] - 0.5 * 20 ) < 1e-12 ) && ( pr[ 1 ] == 0 ) ,
+        "learned priors, scaled, a negative output counting as 0" );
+ std::ofstream( file ) << model( 0.5 );
+ thrown = false;
+ try { LearnedPseudoCosts().load( file ); }
+ catch( std::invalid_argument & ) { thrown = true; }
+ check( thrown , "a file with one model only is refused" );
+ std::ofstream( file ) << "LBRModel 8 2\n1 2 3\n";
+ thrown = false;
+ try { LearnedPseudoCosts().load( file ); }
+ catch( std::invalid_argument & ) { thrown = true; }
+ check( thrown , "a truncated file is refused" );
+ std::remove( file.c_str() );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1058,7 +1312,8 @@ int main( void )
 {
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
-  test_tree_explorer , test_heuristic ,
+  test_tree_explorer , test_best_estimate , test_pseudocosts ,
+  test_heuristic ,
   test_infeasible , test_integral_root , test_limits , test_parameters ,
   test_detach_reattach , test_objective_change , test_integrality_change };
 

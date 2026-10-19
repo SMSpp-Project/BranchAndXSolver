@@ -757,9 +757,13 @@ struct BXLink {
  std::shared_ptr< BXLink > parent;              ///< nullptr at the root
  int depth = 0;                                 ///< the depth
  double bound = 0;                              ///< in the sense of the Block
+ /// the estimate of the best value under it, in the sense of the Block,
+ /// NaN if none [see BranchEstimator]
+ double estimate = std::numeric_limits< double >::quiet_NaN();
  bool evaluated = false;                        ///< evaluated already
  bool pruned = false;                           ///< infeasible or fenced
  std::vector< std::shared_ptr< Change > > branches;  ///< to the children
+ std::vector< double > estimates;               ///< of the children, if any
  };
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
@@ -840,12 +844,14 @@ class BXWorker {
  template< class F >
  void branch( const std::shared_ptr< BXLink > & n , F && f ) {
   std::vector< std::shared_ptr< BXLink > > kids;
-  for( auto & ch : n->branches ) {
+  for( std::size_t i = 0 ; i < n->branches.size() ; ++i ) {
    auto k = std::make_shared< BXLink >();
-   k->change = ch;
+   k->change = n->branches[ i ];
    k->parent = n;
    k->depth = n->depth + 1;
    k->bound = n->bound;                 // inherited
+   if( i < n->estimates.size() )
+    k->estimate = n->estimates[ i ];
    if( f_c.eager ) {
     evaluate_here( k );
     if( k->pruned )
@@ -854,6 +860,7 @@ class BXWorker {
    kids.push_back( std::move( k ) );
    }
   n->branches.clear();
+  n->estimates.clear();
   if( f_c.lifo )
    std::reverse( kids.begin() , kids.end() );
   for( auto & k : kids ) {
@@ -899,9 +906,15 @@ class BXWorker {
   n->pruned = toPrune || tmp.is_infeasible() ||
               cannot_improve( n->bound , f_c.incumbentCell->load() ,
                               f_c.minimizing , f_c.relTol , f_c.absTol );
-  if( ( ! n->pruned ) && bs )
+  if( ( ! n->pruned ) && bs ) {
    for( Change * c : bs->branch() )
     n->branches.emplace_back( c );
+   if( auto be = dynamic_cast< BranchEstimator * >( bs ) ) {
+    n->estimates = be->branch_estimates();
+    if( n->estimates.size() != n->branches.size() )
+     n->estimates.clear();
+    }
+   }
   }
 
  // moves the Solver from their node to n (nullptr is the root): up to the
@@ -964,6 +977,17 @@ struct BXTree {
 
  [[nodiscard]] BXWorker make_worker( unsigned i ) const {
   return( BXWorker( c , i ) );
+  }
+
+ /// the estimate of the best value under n, which orders the nodes of a
+ /// best-estimate search: the one given by the RelaxationSolver that
+ /// branched, never better than the bound of n, or the bound if none
+ [[nodiscard]] double estimate( const node_type & n ) const {
+  double e = n->bound;
+  if( ! std::isnan( n->estimate ) )
+   e = c.minimizing ? std::max( n->estimate , n->bound )
+                    : std::min( n->estimate , n->bound );
+  return( c.sign() * e );
   }
 
  };  // end( struct( BXTree ) )
@@ -1285,14 +1309,17 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                           minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
    std::vector< ExploringNode * > kept;  // survivors, pushed after the loop
-   for( auto br : branches ) {
-    ExploringNode * new_node = new ExploringNode( br , currentNode ,
+   for( std::size_t i = 0 ; i < branches.size() ; ++i ) {
+    ExploringNode * new_node = new ExploringNode( branches[ i ] ,
+                                                  currentNode ,
                                                   currentNode->get_level()
                                                   + 1 , ++counter );
     // the relaxation bound of the parent is valid for the child, whose region
     // is a part of that of the parent: the child starts from it, and its own
-    // evaluation can only improve it
+    // evaluation can only improve it; the estimate is the one given by the
+    // RelaxationSolver that branched, if any [see BranchEstimator]
     new_node->set_bound( currentNode->get_bound() );
+    new_node->set_estimate( currentNode->child_estimate( i ) );
     if( boundingProtocol == Lazy ) {
      // the child is not evaluated now: it goes into the open set carrying the
      // relaxation bound of its parent, and will be evaluated if and when it is
@@ -1365,6 +1392,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      open.push( n );
    branches.erase( std::remove( branches.begin() , branches.end() ,
                                 nullptr ) , branches.end() );
+   currentNode->clear_estimates();   // they went with their children
    if( currentNode->get_children().empty() ) {
     if( retain )                 // fathomed leaf: fenced frontier
      subOptimalNodes.push_back( currentNode );
@@ -1469,10 +1497,16 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  // the open set *is* the exploration strategy: a LIFO stack explores
  // depth-first, a FIFO queue breadth-first, a relaxation-bound priority queue
  // best-first, and the dive variant wraps the latter so that each best node
- // is followed depth-first down to a leaf [see DiveOpenList]
+ // is followed depth-first down to a leaf [see DiveOpenList]; best-estimate
+ // is a priority queue on the estimates [see Node::estimate_key()]
  auto cmp = [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
   return( minimizing ? a->get_bound() > b->get_bound()
                      : a->get_bound() < b->get_bound() );
+  };
+ auto ecmp = [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
+  const double ka = a->estimate_key( minimizing );
+  const double kb = b->estimate_key( minimizing );
+  return( minimizing ? ka > kb : ka < kb );
   };
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
@@ -1487,6 +1521,9 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    break;
   case( BestFSDive ):
    openPtr.reset( new DiveOpenList( cmp ) );
+   break;
+  case( BestEstimate ):
+   openPtr.reset( new PriorityOpenList( ecmp ) );
    break;
   default:
    delete solvers;
@@ -1885,6 +1922,7 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   case( DFS ):    o.selection = PB::Selection::depth_first; break;
   case( BFS ):    o.selection = PB::Selection::breadth_first; break;
   case( BestFS ): o.selection = PB::Selection::best_first; break;
+  case( BestEstimate ): o.selection = PB::Selection::best_estimate; break;
   default:
    o.selection = PB::Selection::plunging;
    o.plunge_gap = Inf< double >();

@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StrongBranching`, the product score out of the bounds of the two children
   that the RelaxationSolver computes, with the CSV of its data, and
   `LearnedBranching`, a perceptron on the features read from a file
+- the best-estimate search (`intSolveMethod` `BestEstimate`), by both the
+  explorations of the BranchAndXSolver and the branch-and-bound of PBeFS:
+  the open node of best estimate of the value under it is extracted first,
+  the estimate being given by the RelaxationSolver that branched, if it is
+  also a `BranchEstimator` (`BranchingRule.h`), and the bound of the parent
+  otherwise, and never better than the bound of the node, which still
+  prunes it; with the components that a RelaxationSolver can give the
+  estimates by, `PseudoCosts`, which learns the pseudocosts of the
+  candidates and estimates the children as in Benichou et al. (1971), and
+  `LearnedPseudoCosts`, the priors of the pseudocosts of the candidates
+  with no observation read from a file of two `LearnedBranching` models
 
 ### Changed
 
