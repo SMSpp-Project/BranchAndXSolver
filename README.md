@@ -20,7 +20,8 @@ The module provides `BranchAndXSolver`, the enumerative :Solver itself:
 depth-first, breadth-first, best-first or best-estimate exploration (the
 estimates of the children being given by the RelaxationSolver, say by its
 pseudocosts), cut separation, reoptimization of the enumeration tree,
-parallel exploration, and an inner Solver provided either directly or
+parallel exploration (also by synchronous rounds, whose outcome is the
+same at every run), and an inner Solver provided either directly or
 through a BlockSolverConfig. See the class documentation for the full list
 of algorithmic parameters.
 

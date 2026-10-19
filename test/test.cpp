@@ -763,68 +763,80 @@ void test_maximization( void )
 
 /*--------------------------------------------------------------------------*/
 /// the branch-and-bound of PBeFS [see intTreeExplorer]: every
-/// strategy under both bounding protocols, in both senses, and a node
-/// budget stopping it
+/// strategy under both bounding protocols, in both senses, with one queue
+/// and by synchronous rounds, a node budget stopping it, and the
+/// infeasible boxes; one worker only, since the Box Solver write their
+/// bounds in the Block that the workers share (the tests with several
+/// workers are the batteries of the BinaryKnapsackBlock)
 
 void test_tree_explorer( void )
 {
  std::cout << "the branch-and-bound of PBeFS" << std::endl;
  const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
                           "BestEstimate" };
- for( bool max : { false , true } )
-  for( int m = 0 ; m < 5 ; ++m )
-   for( int p = 0 ; p < 2 ; ++p ) {
-    auto inst = make( max ? 11 : 7 , max );
-    auto bnx = new_bnx();
-    set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
-    set_int( bnx , "intSolveMethod" , m );
-    set_int( bnx , "intBoundingProtocol" , p );
-    inst.block->register_Solver( bnx );
-    solve_and_check( bnx , inst , std::string( "PBeFS, " ) +
-                     ( max ? "max, " : "min, " ) + method[ m ] +
-                     ( p ? ", lazy" : ", eager" ) );
-    destroy( inst );
-    }
+ const auto label = []( int t ) {
+  return( std::string( t == BranchAndXSolver::PBeFSDeterministic ?
+                       "PBeFS rounds, " : "PBeFS, " ) );
+  };
+ const int explorers[] = { BranchAndXSolver::PBeFSShared ,
+                           BranchAndXSolver::PBeFSDeterministic };
+ for( int t : explorers )
+  for( bool max : { false , true } )
+   for( int m = 0 ; m < 5 ; ++m )
+    for( int p = 0 ; p < 2 ; ++p ) {
+     auto inst = make( max ? 11 : 7 , max );
+     auto bnx = new_bnx();
+     set_int( bnx , "intTreeExplorer" , t );
+     set_int( bnx , "intSolveMethod" , m );
+     set_int( bnx , "intBoundingProtocol" , p );
+     inst.block->register_Solver( bnx );
+     solve_and_check( bnx , inst , label( t ) +
+                      ( max ? "max, " : "min, " ) + method[ m ] +
+                      ( p ? ", lazy" : ", eager" ) );
+     destroy( inst );
+     }
 
- for( bool max : { false , true } ) {
-  const std::string tag = max ? ", max" : ", min";
-  auto inst = make( 7 , max );
-  auto bnx = new_bnx();
-  set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
-  set_int( bnx , "intMaxNodes" , 2 );
-  inst.block->register_Solver( bnx );
-  solve_and_check_stop( bnx , inst , Solver::kStopIter ,
-                        "PBeFS, two nodes" + tag );
-  set_int( bnx , "intMaxNodes" , 0 );
-  solve_and_check( bnx , inst , "PBeFS, no node limit" + tag );
-  destroy( inst );
-  }
+ for( int t : explorers )
+  for( bool max : { false , true } ) {
+   const std::string tag = max ? ", max" : ", min";
+   auto inst = make( 7 , max );
+   auto bnx = new_bnx();
+   set_int( bnx , "intTreeExplorer" , t );
+   set_int( bnx , "intMaxNodes" , 2 );
+   inst.block->register_Solver( bnx );
+   solve_and_check_stop( bnx , inst , Solver::kStopIter ,
+                         label( t ) + "two nodes" + tag );
+   set_int( bnx , "intMaxNodes" , 0 );
+   solve_and_check( bnx , inst , label( t ) + "no node limit" + tag );
+   destroy( inst );
+   }
 
  // an empty box, and a box with no integer point whose relaxation is not
  // empty, as in test_infeasible(): an infeasible node is no infeasible root
- for( int kind = 0 ; kind < 2 ; ++kind )
-  for( bool max : { false , true } ) {
-   Instance inst;
-   inst.data = random_data( 7 , max );
-   inst.max = max;
-   if( kind == 0 )
-    inst.data[ 2 ].l = 1 , inst.data[ 2 ].u = 0;
-   else
-    inst.data[ 2 ].l = 0.2 , inst.data[ 2 ].u = 0.8;
-   build( inst );
-   auto bnx = new_bnx();
-   set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFSShared );
-   inst.block->register_Solver( bnx );
-   const std::string name = std::string( "PBeFS, " ) +
-                            ( kind ? "no integer point" : "empty box" ) +
-                            ( max ? ", max" : ", min" );
-   const int status = bnx->compute();
-   std::cout << std::left << std::setw( 40 ) << name << std::right
-             << " status " << status << std::endl;
-   check( status == Solver::kInfeasible , name + ": status " +
-          std::to_string( status ) + ", not kInfeasible" );
-   destroy( inst );
-   }
+ for( int t : explorers )
+  for( int kind = 0 ; kind < 2 ; ++kind )
+   for( bool max : { false , true } ) {
+    Instance inst;
+    inst.data = random_data( 7 , max );
+    inst.max = max;
+    if( kind == 0 )
+     inst.data[ 2 ].l = 1 , inst.data[ 2 ].u = 0;
+    else
+     inst.data[ 2 ].l = 0.2 , inst.data[ 2 ].u = 0.8;
+    build( inst );
+    auto bnx = new_bnx();
+    set_int( bnx , "intTreeExplorer" , t );
+    inst.block->register_Solver( bnx );
+    const std::string name = label( t ) +
+                             ( kind ? "no integer point" : "empty box" ) +
+                             ( max ? ", max" : ", min" );
+    const int status = bnx->compute();
+    std::cout << std::left << std::setw( 40 ) << name << std::right
+              << " status " << status << std::endl;
+    check( status == Solver::kInfeasible , name + ": status " +
+           std::to_string( status ) + ", not kInfeasible" );
+    destroy( inst );
+    }
  }
 
 /*--------------------------------------------------------------------------*/

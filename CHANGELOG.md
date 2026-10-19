@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates and estimates the children as in Benichou et al. (1971), and
   `LearnedPseudoCosts`, the priors of the pseudocosts of the candidates
   with no observation read from a file of two `LearnedBranching` models
+- `PBeFSDeterministic` of `intTreeExplorer`, the branch-and-bound of PBeFS
+  by synchronous rounds of `intMaxThread` nodes, each evaluated against
+  the incumbent of the start of its round, which each worker keeps on its
+  own with the solutions it finds, so that the outcome does not depend on
+  the timing of the workers and is the same at every run
 
 ### Changed
 

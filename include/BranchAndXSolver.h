@@ -167,7 +167,8 @@ class BranchAndXSolver : public Solver {
  enum TreeExplorer {
   OwnExplorer = 0 ,                 ///< the explorations of this class
   PBeFSShared = 1 ,                 ///< PBeFS, one shared queue
-  PBeFSDistributed = 2              ///< PBeFS, a queue per worker
+  PBeFSDistributed = 2 ,            ///< PBeFS, a queue per worker
+  PBeFSDeterministic = 3            ///< PBeFS, by synchronous rounds
   };
 
 /*--------------------------------------------------------------------------*/
@@ -314,9 +315,12 @@ class BranchAndXSolver : public Solver {
   *   TreeExplorer): the explorations of this class, or the branch-and-bound
   *   of PBeFS [see PBeFSSolve()], sequential with intMaxThread
   *   <= 1 and otherwise on intMaxThread workers sharing one queue
-  *   (PBeFSShared) or with a queue each (PBeFSDistributed); the strategy,
-  *   the bounding protocol, the tolerances and the budgets are the same,
-  *   and the tree is never retained [see intReoptimize].
+  *   (PBeFSShared) or with a queue each (PBeFSDistributed), or by
+  *   synchronous rounds of intMaxThread nodes (PBeFSDeterministic), whose
+  *   outcome does not depend on the timing of the workers, and hence is
+  *   the same at every run with the same intMaxThread; the strategy, the
+  *   bounding protocol, the tolerances and the budgets are the same, and
+  *   the tree is never retained [see intReoptimize].
   *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
@@ -354,7 +358,7 @@ class BranchAndXSolver : public Solver {
     maxNodes = ( value <= 0 ) ? INT_MAX : value;
     break;
    case( intTreeExplorer ):
-    if( ( value < OwnExplorer ) || ( value > PBeFSDistributed ) )
+    if( ( value < OwnExplorer ) || ( value > PBeFSDeterministic ) )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intTreeExplorer" ) );
     treeExplorer = static_cast< TreeExplorer >( value );
@@ -813,8 +817,9 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// the exploration of the tree by the branch-and-bound of PBeFS
- /** The tree explored by BranchAndBoundSearch, SharedBranchAndBound or
-  * DistributedBranchAndBound of PBeFS [see intTreeExplorer], with
+ /** The tree explored by BranchAndBoundSearch, SharedBranchAndBound,
+  * DistributedBranchAndBound or DeterministicBranchAndBound of PBeFS [see
+  * intTreeExplorer], with
   * \p K workers, each driving its own set of inner Solver [see
   * createWorkerSolvers()]. A node is the Change that generates it from its
   * parent, linked to the node of the parent, so that any worker can reach
@@ -824,7 +829,15 @@ class BranchAndXSolver : public Solver {
   * a node is that of the other explorations [see evaluateNode()], with the
   * incumbent shared under a mutex; with the eager bounding protocol the
   * children are evaluated when they are generated, with the lazy one when
-  * they are extracted. */
+  * they are extracted. With PBeFSDeterministic, the rounds of
+  * DeterministicBranchAndBound are evaluated each against the incumbent
+  * of its start, which every worker keeps on its own with the Solution it
+  * finds; the Solution stays in the node, and that of the incumbent node
+  * is the one of the solve. Then, with the eager protocol, a child whose
+  * evaluation has found a feasible solution is given to the search even
+  * when it cannot improve on that solution, and the solution is lost only
+  * if the incumbent is within the tolerances of it when the child is
+  * extracted. */
 
  int PBeFSSolve( std::mutex & globalMutex , int K );
 

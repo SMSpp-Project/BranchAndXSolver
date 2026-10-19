@@ -47,6 +47,8 @@
 
 #include "PBeFS/bnb/BranchAndBound.h"
 
+#include "PBeFS/bnb/DeterministicBranchAndBound.h"
+
 #include "PBeFS/bnb/ParallelBranchAndBound.h"
 
 /*--------------------------------------------------------------------------*/
@@ -764,6 +766,11 @@ struct BXLink {
  bool pruned = false;                           ///< infeasible or fenced
  std::vector< std::shared_ptr< Change > > branches;  ///< to the children
  std::vector< double > estimates;               ///< of the children, if any
+ /// the value of the feasible solution its evaluation has found, in the
+ /// sense of the Block, NaN if none, and the solution (only by synchronous
+ /// rounds [see BXContext::deterministic])
+ double found = std::numeric_limits< double >::quiet_NaN();
+ std::unique_ptr< Solution > solution;          ///< that solution
  };
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
@@ -776,11 +783,11 @@ struct BXContext {
  using Heuristics = std::vector< std::pair< ChangeSolver * , Solver * > >;
 
  BXContext( double & bb , Solution * & bs , std::atomic< double > * ic ,
-            double rt , double at , bool min , bool e , bool l ,
+            double rt , double at , bool min , bool e , bool l , bool d ,
             std::mutex & gm )
   : bestBound( bb ) , bestSolution( bs ) , incumbentCell( ic ) ,
     relTol( rt ) , absTol( at ) , minimizing( min ) , eager( e ) ,
-    lifo( l ) , globalMutex( gm ) {}
+    lifo( l ) , deterministic( d ) , globalMutex( gm ) {}
 
  double & bestBound;                     ///< the incumbent value
  Solution * & bestSolution;              ///< the incumbent solution
@@ -790,6 +797,9 @@ struct BXContext {
  bool minimizing;                        ///< the sense of the Block
  bool eager;                             ///< the eager bounding protocol
  bool lifo;                              ///< the first branch last
+ /// by synchronous rounds: each worker keeps the incumbent of the round
+ /// [see BXWorker::cutoff()] and the solutions stay in the nodes
+ bool deterministic;
  std::mutex & globalMutex;               ///< of the BranchAndXSolver
  std::mutex incumbentMutex;              ///< serializes the incumbent
  std::vector< Relaxations * > relaxation;  ///< of each worker
@@ -809,7 +819,9 @@ class BXWorker {
 
  public:
 
- BXWorker( BXContext & c , unsigned i ) : f_c( c ) , f_i( i ) {
+ BXWorker( BXContext & c , unsigned i )
+  : f_c( c ) , f_i( i ) , f_best( c.sign() * Inf< double >() ) ,
+    f_cell( f_best ) {
   for( auto & p : * c.relaxation[ i ] )
    f_solvers.push_back( p.first );
   for( auto & p : * c.heuristic[ i ] )
@@ -818,19 +830,40 @@ class BXWorker {
 
  BXWorker( BXWorker && w ) noexcept
   : f_c( w.f_c ) , f_i( w.f_i ) , f_solvers( std::move( w.f_solvers ) ) ,
-    v_path( std::move( w.v_path ) ) {
+    v_path( std::move( w.v_path ) ) , f_best( w.f_best ) ,
+    f_sol( w.f_sol ) , f_cell( w.f_cell.load() ) {
   w.v_path.clear();
+  w.f_sol = nullptr;
   }
 
  /// back to the root, so that the Solver are where they started
- ~BXWorker() { move_to( nullptr ); }
+ ~BXWorker() {
+  move_to( nullptr );
+  delete f_sol;
+  }
 
- /// the evaluation of the node n, done now unless already done
+ /// the incumbent z of the search, in the sense of PBeFS, which by
+ /// synchronous rounds is the one the worker evaluates against
+ void cutoff( double z ) {
+  if( ! f_c.deterministic )
+   return;
+  f_best = f_c.sign() * z;
+  f_cell.store( f_best );
+  }
+
+ /// the evaluation of the node n, done now unless already done; by
+ /// synchronous rounds, the feasible value is the one found by the node
  PB::Evaluation evaluate( std::shared_ptr< BXLink > & n ) {
   if( ! n->evaluated )
    evaluate_here( n );
   PB::Evaluation e;
   e.bound = f_c.sign() * n->bound;
+  if( f_c.deterministic ) {
+   e.infeasible = n->pruned && std::isnan( n->found );
+   if( ! std::isnan( n->found ) )
+    e.feasible = f_c.sign() * n->found;
+   return( e );
+   }
   e.infeasible = n->pruned;
   const double z = f_c.incumbentCell->load();
   if( std::isfinite( z ) )
@@ -854,7 +887,7 @@ class BXWorker {
     k->estimate = n->estimates[ i ];
    if( f_c.eager ) {
     evaluate_here( k );
-    if( k->pruned )
+    if( k->pruned && std::isnan( k->found ) )
      continue;
     }
    kids.push_back( std::move( k ) );
@@ -884,15 +917,24 @@ class BXWorker {
    tmp.set_toFather( v_path.back().second );
   bool toPrune = false;
   RelaxationSolver * bs = nullptr;
+  // by synchronous rounds, the incumbent of the worker [see cutoff()]
+  const bool d = f_c.deterministic;
+  std::atomic< double > * cell = d ? & f_cell : f_c.incumbentCell;
   const int res = evaluateNode( & tmp , f_solvers , f_c.relaxation[ f_i ] ,
                                 f_c.heuristic[ f_i ] , f_c.minimizing ,
-                                f_c.bestBound , f_c.bestSolution ,
-                                f_c.incumbentCell , toPrune , bs , 1 ,
-                                f_c.relTol , f_c.absTol , f_c.globalMutex ,
-                                & f_c.incumbentMutex , false );
+                                d ? f_best : f_c.bestBound ,
+                                d ? f_sol : f_c.bestSolution , cell ,
+                                toPrune , bs , 1 , f_c.relTol , f_c.absTol ,
+                                f_c.globalMutex ,
+                                d ? nullptr : & f_c.incumbentMutex , false );
   tmp.set_toFather( nullptr );
   n->evaluated = true;
   n->bound = tmp.get_bound();
+  if( f_sol ) {                         // found by this node
+   n->solution.reset( f_sol );
+   n->found = f_best;
+   f_sol = nullptr;
+   }
   if( res != Solver::kOK ) {
    // an infeasible root is no error: the search ends with no incumbent,
    // and compute() tells that the problem is infeasible
@@ -904,7 +946,7 @@ class BXWorker {
    return;
    }
   n->pruned = toPrune || tmp.is_infeasible() ||
-              cannot_improve( n->bound , f_c.incumbentCell->load() ,
+              cannot_improve( n->bound , cell->load() ,
                               f_c.minimizing , f_c.relTol , f_c.absTol );
   if( ( ! n->pruned ) && bs ) {
    for( Change * c : bs->branch() )
@@ -955,6 +997,12 @@ class BXWorker {
  std::list< ChangeSolver * > f_solvers;         ///< its Solver
  /// the nodes from the root to that of the Solver, with the undo Changes
  std::vector< std::pair< std::shared_ptr< BXLink > , Change * > > v_path;
+ /// by synchronous rounds, the incumbent of the worker [see cutoff()]: its
+ /// value, the solution found by the node being evaluated, if any, and the
+ /// value as the cell that evaluateNode() reads
+ double f_best;
+ Solution * f_sol = nullptr;
+ std::atomic< double > f_cell;
 
  };  // end( class( BXWorker ) )
 
@@ -1909,7 +1957,7 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
  BXContext c( bestBound , bestSolution , f_incumbentCell , relTol , absTol ,
               minimizing , boundingProtocol == Eager ,
               ( solveType == DFS ) || ( solveType == BestFSDive ) ,
-              globalMutex );
+              treeExplorer == PBeFSDeterministic , globalMutex );
  for( auto & ws : v_workerSolvers ) {
   c.relaxation.push_back( & ws.relaxation );
   c.heuristic.push_back( & ws.heuristic );
@@ -1937,16 +1985,26 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
 
  const BXTree t{ c };
  PB::BBSolution< BXTree::node_type > s;
- if( K == 1 )
-  s = PB::branch_and_bound( t , o );
+ if( c.deterministic )
+  s = PB::DeterministicBranchAndBound< BXTree >( t , o ).solve();
  else
-  if( treeExplorer == PBeFSDistributed )
-   s = PB::DistributedBranchAndBound< BXTree >( t , o ).solve();
+  if( K == 1 )
+   s = PB::branch_and_bound( t , o );
   else
-   s = PB::SharedBranchAndBound< BXTree >( t , o ).solve();
+   if( treeExplorer == PBeFSDistributed )
+    s = PB::DistributedBranchAndBound< BXTree >( t , o ).solve();
+   else
+    s = PB::SharedBranchAndBound< BXTree >( t , o ).solve();
 
  if( c.error.load() != kOK )
   return( c.error.load() );
+ // by synchronous rounds, the solution is that of the incumbent node
+ if( c.deterministic && s.node && ( *s.node )->solution ) {
+  bestBound = ( *s.node )->found;
+  f_incumbentCell->store( bestBound );
+  delete bestSolution;
+  bestSolution = ( *s.node )->solution.release();
+  }
  switch( s.status ) {
   case( PB::BBStatus::node_limit ):
    f_open_bound = c.sign() * s.bound;
