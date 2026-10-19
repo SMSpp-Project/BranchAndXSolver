@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - the parameter `intTreeExplorer`, by which the tree is explored by the
   branch-and-bound of PBeFS instead of the explorations of the
-  BranchAndXSolver: sequential, or on `intMaxThread` workers sharing one
-  queue (`PBeFSShared`) or with a queue each (`PBeFSDistributed`), with the
-  same strategies, bounding protocols, tolerances and budgets, each worker
-  moving its own inner Solver along the Changes of the path of a node;
-  PBeFS is found with `find_package` or downloaded at a fixed commit,
-  and in the makefiles through `extlib/makefile-libPBeFS`
+  BranchAndXSolver, on `intMaxThread` workers and by the scheme of PBeFS
+  that `strPBeFSScheme` names (`"shared"` by default), which is given to
+  PBeFS as it is, with the same strategies, bounding protocols, tolerances
+  and budgets; each worker moves its own inner Solver along the Changes of
+  the path of a node and evaluates it against the incumbent that PBeFS
+  gives it, so that the outcome is that of the scheme, also when the
+  scheme makes it the same at every run; PBeFS is found with
+  `find_package` or downloaded at a fixed commit, and in the makefiles
+  through `extlib/makefile-libPBeFS`
 - the components with which a RelaxationSolver can choose the variable to
   branch upon (`BranchingRule.h`), beside the BranchAndXSolver but unknown to
   it: `BranchCandidate`, a candidate described by its values in the point of
@@ -37,11 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates and estimates the children as in Benichou et al. (1971), and
   `LearnedPseudoCosts`, the priors of the pseudocosts of the candidates
   with no observation read from a file of two `LearnedBranching` models
-- `PBeFSDeterministic` of `intTreeExplorer`, the branch-and-bound of PBeFS
-  by synchronous rounds of `intMaxThread` nodes, each evaluated against
-  the incumbent of the start of its round, which each worker keeps on its
-  own with the solutions it finds, so that the outcome does not depend on
-  the timing of the workers and is the same at every run
 
 ### Changed
 

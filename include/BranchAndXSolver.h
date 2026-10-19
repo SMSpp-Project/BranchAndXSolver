@@ -151,6 +151,7 @@ class BranchAndXSolver : public Solver {
  enum str_par_type_BXS {
   /// name of the BlockSolverConfig file providing the inner Solver
   strNameOfBlockSolverConfigurationFile = strLastAlgPar ,
+  strPBeFSScheme ,                 ///< the scheme of PBeFS
   strLastBXSPar                    ///< first allowed new string parameter
   };
 
@@ -166,9 +167,7 @@ class BranchAndXSolver : public Solver {
 
  enum TreeExplorer {
   OwnExplorer = 0 ,                 ///< the explorations of this class
-  PBeFSShared = 1 ,                 ///< PBeFS, one shared queue
-  PBeFSDistributed = 2 ,            ///< PBeFS, a queue per worker
-  PBeFSDeterministic = 3            ///< PBeFS, by synchronous rounds
+  PBeFS = 1                         ///< the branch-and-bound of PBeFS
   };
 
 /*--------------------------------------------------------------------------*/
@@ -313,14 +312,10 @@ class BranchAndXSolver : public Solver {
   *
   * - intTreeExplorer [OwnExplorer]: who explores the tree (see
   *   TreeExplorer): the explorations of this class, or the branch-and-bound
-  *   of PBeFS [see PBeFSSolve()], sequential with intMaxThread
-  *   <= 1 and otherwise on intMaxThread workers sharing one queue
-  *   (PBeFSShared) or with a queue each (PBeFSDistributed), or by
-  *   synchronous rounds of intMaxThread nodes (PBeFSDeterministic), whose
-  *   outcome does not depend on the timing of the workers, and hence is
-  *   the same at every run with the same intMaxThread; the strategy, the
-  *   bounding protocol, the tolerances and the budgets are the same, and
-  *   the tree is never retained [see intReoptimize].
+  *   of PBeFS [see PBeFSSolve()] by the scheme that strPBeFSScheme names,
+  *   on max( intMaxThread , 1 ) workers; the strategy, the bounding
+  *   protocol, the tolerances and the budgets are the same, and the tree
+  *   is never retained [see intReoptimize].
   *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
@@ -358,7 +353,7 @@ class BranchAndXSolver : public Solver {
     maxNodes = ( value <= 0 ) ? INT_MAX : value;
     break;
    case( intTreeExplorer ):
-    if( ( value < OwnExplorer ) || ( value > PBeFSDeterministic ) )
+    if( ( value < OwnExplorer ) || ( value > PBeFS ) )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intTreeExplorer" ) );
     treeExplorer = static_cast< TreeExplorer >( value );
@@ -408,10 +403,21 @@ class BranchAndXSolver : public Solver {
   *   name (the default) means no BlockSolverConfig: the inner Solver
   *   already there, if any, are kept.
   *
+  * - strPBeFSScheme ["shared"]: the name of the scheme of the
+  *   branch-and-bound of PBeFS that explores the tree when intTreeExplorer
+  *   is PBeFS, which is given to PBeFS as it is, so that every scheme of
+  *   PBeFS can be named [see bb_scheme() in PBeFS]; an unknown name throws
+  *   std::invalid_argument.
+  *
   * The string parameters are taken by the rvalue version, which the one
   * taking a const reference forwards to [see ThinComputeInterface]. */
 
  void set_par( idx_type par , std::string && value ) override {
+  if( par == strPBeFSScheme ) {
+   checkPBeFSScheme( value );
+   pbefsScheme = std::move( value );
+   return;
+   }
   if( par != strNameOfBlockSolverConfigurationFile ) {
    Solver::set_par( par , std::move( value ) );
    return;
@@ -524,6 +530,10 @@ class BranchAndXSolver : public Solver {
    static const std::string dfltRS;
    return( dfltRS );
    }
+  if( par == strPBeFSScheme ) {
+   static const std::string dfltScheme = "shared";
+   return( dfltScheme );
+   }
   return( Solver::get_dflt_str_par( par ) );
   }
 
@@ -555,6 +565,8 @@ class BranchAndXSolver : public Solver {
   const override {
   if( par == strNameOfBlockSolverConfigurationFile )
    return( nameRS );
+  if( par == strPBeFSScheme )
+   return( pbefsScheme );
   return( Solver::get_str_par( par ) );
   }
 
@@ -581,6 +593,8 @@ class BranchAndXSolver : public Solver {
   const override {
   if( name == "strNameOfBlockSolverConfigurationFile" )
    return( strNameOfBlockSolverConfigurationFile );
+  if( name == "strPBeFSScheme" )
+   return( strPBeFSScheme );
   return( Solver::str_par_str2idx( name ) );
   }
 
@@ -602,6 +616,10 @@ class BranchAndXSolver : public Solver {
   const override {
   if( idx == strNameOfBlockSolverConfigurationFile ) {
    static const std::string par = "strNameOfBlockSolverConfigurationFile";
+   return( par );
+   }
+  if( idx == strPBeFSScheme ) {
+   static const std::string par = "strPBeFSScheme";
    return( par );
    }
   return( Solver::str_par_idx2str( idx ) );
@@ -817,29 +835,33 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// the exploration of the tree by the branch-and-bound of PBeFS
- /** The tree explored by BranchAndBoundSearch, SharedBranchAndBound,
-  * DistributedBranchAndBound or DeterministicBranchAndBound of PBeFS [see
-  * intTreeExplorer], with
-  * \p K workers, each driving its own set of inner Solver [see
-  * createWorkerSolvers()]. A node is the Change that generates it from its
-  * parent, linked to the node of the parent, so that any worker can reach
-  * it: the worker moves its Solver from its current node to the target one
-  * by undoing the Changes up to their deepest common ancestor (with undo
-  * Changes of its own) and applying those down from it. The evaluation of
-  * a node is that of the other explorations [see evaluateNode()], with the
-  * incumbent shared under a mutex; with the eager bounding protocol the
+ /** The tree explored by the branch-and-bound of PBeFS, by the scheme that
+  * strPBeFSScheme names [see intTreeExplorer], with \p K workers, each
+  * driving its own set of inner Solver [see createWorkerSolvers()]. A node
+  * is the Change that generates it from its parent, linked to the node of
+  * the parent, so that any worker can reach it: the worker moves its Solver
+  * from its current node to the target one by undoing the Changes up to
+  * their deepest common ancestor (with undo Changes of its own) and
+  * applying those down from it. The evaluation of a node is that of the
+  * other explorations [see evaluateNode()], against the incumbent that
+  * PBeFS gives the worker before each evaluation (by cutoff()), which the
+  * worker keeps on its own together with the Solution it finds; hence, the
+  * outcome is that of the scheme, also when the scheme makes it the same
+  * at every run. The Solution stays in the node, and that of the incumbent
+  * node is the one of the solve. With the eager bounding protocol the
   * children are evaluated when they are generated, with the lazy one when
-  * they are extracted. With PBeFSDeterministic, the rounds of
-  * DeterministicBranchAndBound are evaluated each against the incumbent
-  * of its start, which every worker keeps on its own with the Solution it
-  * finds; the Solution stays in the node, and that of the incumbent node
-  * is the one of the solve. Then, with the eager protocol, a child whose
-  * evaluation has found a feasible solution is given to the search even
-  * when it cannot improve on that solution, and the solution is lost only
-  * if the incumbent is within the tolerances of it when the child is
-  * extracted. */
+  * they are extracted; with the eager one, a child whose evaluation has
+  * found a feasible solution is given to the search even when it cannot
+  * improve on that solution, and the solution is lost only if the
+  * incumbent is within the tolerances of it when the child is extracted. */
 
  int PBeFSSolve( std::mutex & globalMutex , int K );
+
+/*--------------------------------------------------------------------------*/
+ /// throws std::invalid_argument if PBeFS has no scheme of the given name
+ /// [see strPBeFSScheme]
+
+ static void checkPBeFSScheme( const std::string & name );
 
 /*--------------------------------------------------------------------------*/
  /// delete the tree retained for reoptimization (if any) and its frontier
@@ -1030,6 +1052,9 @@ class BranchAndXSolver : public Solver {
  double absTol;   ///< the inherited dblAbsAcc, cached at compute() start
 
  std::string nameRS;          ///< name of the BlockSolverConfig file
+
+ std::string pbefsScheme = "shared";  ///< the scheme of PBeFS (see
+                                      ///< strPBeFSScheme)
 
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
 

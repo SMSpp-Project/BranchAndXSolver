@@ -594,6 +594,12 @@ void set_int( Solver * s , const std::string & name , int value )
  s->set_par( s->int_par_str2idx( name ) , value );
  }
 
+void set_str( Solver * s , const std::string & name ,
+              const std::string & value )
+{
+ s->set_par( s->str_par_str2idx( name ) , value );
+ }
+
 int get_int( Solver * s , const std::string & name )
 {
  return( s->get_int_par( s->int_par_str2idx( name ) ) );
@@ -763,30 +769,46 @@ void test_maximization( void )
 
 /*--------------------------------------------------------------------------*/
 /// the branch-and-bound of PBeFS [see intTreeExplorer]: every
-/// strategy under both bounding protocols, in both senses, with one queue
-/// and by synchronous rounds, a node budget stopping it, and the
-/// infeasible boxes; one worker only, since the Box Solver write their
-/// bounds in the Block that the workers share (the tests with several
-/// workers are the batteries of the BinaryKnapsackBlock)
+/// strategy under both bounding protocols, in both senses, by every scheme
+/// that strPBeFSScheme names, a node budget stopping it, and the
+/// infeasible boxes, while an unknown scheme is refused; one worker only,
+/// since the Box Solver write their bounds in the Block that the workers
+/// share (the tests with several workers are the batteries of the
+/// BinaryKnapsackBlock)
 
 void test_tree_explorer( void )
 {
  std::cout << "the branch-and-bound of PBeFS" << std::endl;
  const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
                           "BestEstimate" };
- const auto label = []( int t ) {
-  return( std::string( t == BranchAndXSolver::PBeFSDeterministic ?
-                       "PBeFS rounds, " : "PBeFS, " ) );
+ const auto label = []( const std::string & t ) {
+  return( "PBeFS " + t + ", " );
   };
- const int explorers[] = { BranchAndXSolver::PBeFSShared ,
-                           BranchAndXSolver::PBeFSDeterministic };
- for( int t : explorers )
+ const auto pbefs = []( Solver * bnx , const std::string & t ) {
+  set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFS );
+  set_str( bnx , "strPBeFSScheme" , t );
+  };
+ const std::string explorers[] = { "sequential" , "shared" , "distributed" ,
+                                   "deterministic" , "selfsplit" };
+
+ bool refused = false;
+ auto none = new_bnx();
+ try {
+  set_str( none , "strPBeFSScheme" , "nonesuch" );
+  }
+ catch( const std::invalid_argument & ) {
+  refused = true;
+  }
+ delete none;
+ check( refused , "PBeFS: an unknown scheme is refused" );
+
+ for( const auto & t : explorers )
   for( bool max : { false , true } )
    for( int m = 0 ; m < 5 ; ++m )
     for( int p = 0 ; p < 2 ; ++p ) {
      auto inst = make( max ? 11 : 7 , max );
      auto bnx = new_bnx();
-     set_int( bnx , "intTreeExplorer" , t );
+     pbefs( bnx , t );
      set_int( bnx , "intSolveMethod" , m );
      set_int( bnx , "intBoundingProtocol" , p );
      inst.block->register_Solver( bnx );
@@ -796,12 +818,12 @@ void test_tree_explorer( void )
      destroy( inst );
      }
 
- for( int t : explorers )
+ for( const auto & t : explorers )
   for( bool max : { false , true } ) {
    const std::string tag = max ? ", max" : ", min";
    auto inst = make( 7 , max );
    auto bnx = new_bnx();
-   set_int( bnx , "intTreeExplorer" , t );
+   pbefs( bnx , t );
    set_int( bnx , "intMaxNodes" , 2 );
    inst.block->register_Solver( bnx );
    solve_and_check_stop( bnx , inst , Solver::kStopIter ,
@@ -813,7 +835,7 @@ void test_tree_explorer( void )
 
  // an empty box, and a box with no integer point whose relaxation is not
  // empty, as in test_infeasible(): an infeasible node is no infeasible root
- for( int t : explorers )
+ for( const auto & t : explorers )
   for( int kind = 0 ; kind < 2 ; ++kind )
    for( bool max : { false , true } ) {
     Instance inst;
@@ -825,7 +847,7 @@ void test_tree_explorer( void )
      inst.data[ 2 ].l = 0.2 , inst.data[ 2 ].u = 0.8;
     build( inst );
     auto bnx = new_bnx();
-    set_int( bnx , "intTreeExplorer" , t );
+    pbefs( bnx , t );
     inst.block->register_Solver( bnx );
     const std::string name = label( t ) +
                              ( kind ? "no integer point" : "empty box" ) +
@@ -856,7 +878,7 @@ void test_best_estimate( void )
  for( const char * cfg : { "InnerBSCfg-estimate.txt" ,
                            "InnerBSCfg-wrong-estimate.txt" } )
   for( int t : { int( BranchAndXSolver::OwnExplorer ) ,
-                 int( BranchAndXSolver::PBeFSShared ) } )
+                 int( BranchAndXSolver::PBeFS ) } )
    for( bool max : { false , true } )
     for( int p = 0 ; p < 2 ; ++p ) {
      auto inst = make( max ? 11 : 7 , max );
@@ -882,7 +904,7 @@ void test_best_estimate( void )
      }
 
  for( int t : { int( BranchAndXSolver::OwnExplorer ) ,
-                int( BranchAndXSolver::PBeFSShared ) } ) {
+                int( BranchAndXSolver::PBeFS ) } ) {
   bool differ = false;
   for( bool max : { false , true } )
    for( int p = 0 ; p < 2 ; ++p )
