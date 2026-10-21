@@ -789,7 +789,8 @@ void test_tree_explorer( void )
   set_str( bnx , "strPBeFSScheme" , t );
   };
  const std::string explorers[] = { "sequential" , "shared" , "distributed" ,
-                                   "deterministic" , "selfsplit" };
+                                   "deterministic" , "selfsplit" ,
+                                   "stealing" };
 
  bool refused = false;
  auto none = new_bnx();
