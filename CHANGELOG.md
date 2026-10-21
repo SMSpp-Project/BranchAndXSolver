@@ -41,7 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LearnedPseudoCosts`, the priors of the pseudocosts of the candidates
   with no observation read from a file of two `LearnedBranching` models
 
+- the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
+  which exports every name that the headers declare at namespace scope and
+  re-exports `smspp`, so that a source file can write `import
+  smspp.branchandxsolver;` in place of the `#include` of the headers; it is
+  built with the CMake option `SMSpp_BUILD_MODULE`, as the target
+  `SMS++::BranchAndXSolver_module`
+
 ### Changed
+
+- the exploration allocates less, with the same nodes in the same order: a
+  move between two nodes collects the path in a buffer of the thread rather
+  than in a list built each time, the children of a node are a vector, the
+  surviving children of the nodes share one buffer, the nodes of a
+  depth-first worker live in its stack frames, the best-first open lists
+  compare with a function object rather than through a std::function, and
+  an idle worker of the parallel depth-first search waits on a condition
+  variable rather than polling the pool every 100 microseconds
 
 - the outstanding Modification are read through `Modification::changes()`
   rather than classified by the RelaxationSolver, each one by itself rather

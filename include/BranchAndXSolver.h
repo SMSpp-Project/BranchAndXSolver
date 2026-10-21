@@ -53,6 +53,7 @@
 /*------------------------------ INCLUDES ----------------------------------*/
 /*--------------------------------------------------------------------------*/
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -61,6 +62,7 @@
 #include <list>
 #include <mutex>
 #include <queue>
+#include <vector>
 
 #include "BlockSolverConfig.h"
 
@@ -1318,8 +1320,8 @@ class ExploringNode : public Node {
  /// setter for the parent node
  void set_parent( ExploringNode * p ) { parent = p; }
 
- /// getter for the list of children nodes
- std::list< ExploringNode * > & get_children( void ) {
+ /// getter for the children nodes
+ std::vector< ExploringNode * > & get_children( void ) {
   return( f_children );
   }
 
@@ -1328,12 +1330,17 @@ class ExploringNode : public Node {
  /** Moves the given :ChangeSolver from \p sourceNode to \p destNode by
   * applying, along the path joining them, the undo Changes (climbing up
   * from the source to the common ancestor) and then, top-down, the node
-  * Changes (descending from the common ancestor to the destination). */
+  * Changes (descending from the common ancestor to the destination). The
+  * nodes to descend are collected bottom-up in a buffer of the thread, which
+  * is taken for the call, so that a move costs no allocation. */
 
  static void moveBetweenNodes( ExploringNode * sourceNode ,
                                ExploringNode * destNode ,
                                std::list< ChangeSolver * > * solvers ) {
-  std::list< ExploringNode * > toDescend;
+  thread_local std::vector< ExploringNode * > buffer;
+  std::vector< ExploringNode * > toDescend;
+  toDescend.swap( buffer );
+  toDescend.clear();
   while( sourceNode->level != destNode->level ) {
    if( sourceNode->level > destNode->level ) {
     for( const auto s : *solvers )
@@ -1341,7 +1348,7 @@ class ExploringNode : public Node {
     sourceNode = sourceNode->parent;
     }
    else {
-    toDescend.push_front( destNode );
+    toDescend.push_back( destNode );
     destNode = destNode->parent;
     }
    }
@@ -1349,14 +1356,15 @@ class ExploringNode : public Node {
    for( const auto s : *solvers )
     s->apply( sourceNode->toFather , false );
    sourceNode = sourceNode->parent;
-   toDescend.push_front( destNode );
+   toDescend.push_back( destNode );
    destNode = destNode->parent;
    }
   // descending, the first solver produces the undo Change of any node that
   // does not have one yet, which is how a node entered for the first time
   // gets it [see BranchAndXSolver::intBoundingProtocol: a node evaluated
   // lazily is created without the solvers ever descending into it]
-  for( auto node : toDescend ) {
+  for( auto it = toDescend.rbegin() ; it != toDescend.rend() ; ++it ) {
+   auto node = *it;
    bool modified = false;
    for( const auto s : *solvers ) {
     if( ( ! modified ) && ( ! node->toFather ) )
@@ -1366,6 +1374,7 @@ class ExploringNode : public Node {
     modified = true;
     }
    }
+  toDescend.swap( buffer );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -1381,8 +1390,9 @@ class ExploringNode : public Node {
   if( nodeToPrune->get_toFather() )
    for( const auto s : *solvers )
     s->apply( nodeToPrune->get_toFather() , false );
-  if( ! parentNode->get_children().empty() )
-   parentNode->get_children().remove( nodeToPrune );
+  auto & children = parentNode->get_children();
+  children.erase( std::remove( children.begin() , children.end() ,
+                               nodeToPrune ) , children.end() );
   auto & branches = parentNode->getBranches();
   branches.erase( std::remove( branches.begin() , branches.end() ,
                                nodeToPrune->get_f_change() ) ,
@@ -1399,7 +1409,7 @@ class ExploringNode : public Node {
 
  protected:
 
- std::list< ExploringNode * > f_children;  ///< list of the children nodes
+ std::vector< ExploringNode * > f_children;  ///< the children nodes
 
  int level;                                ///< level of the node in the tree
 
