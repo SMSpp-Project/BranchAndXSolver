@@ -38,6 +38,7 @@
 #include <stack>
 #include <thread>
 #include <functional>
+#include <condition_variable>
 
 #include "BranchAndXSolver.h"
 
@@ -649,9 +650,21 @@ class QueueOpenList final : public OpenList {
 /*--------------------------------------------------------------------------*/
 /// relaxation-bound priority open list: a std::priority_queue, best-first
 
+/// the order of a best-first open list: the worse relaxation bound first
+/** A plain function object rather than a std::function, so that the heap
+ * calls it directly. */
+
+struct BoundCmp {
+ bool minimizing;
+ bool operator()( ExploringNode * a , ExploringNode * b ) const {
+  return( minimizing ? a->get_bound() > b->get_bound()
+                     : a->get_bound() < b->get_bound() );
+  }
+ };
+
 class PriorityOpenList final : public OpenList {
 
- using Cmp = std::function< bool( ExploringNode * , ExploringNode * ) >;
+ using Cmp = BoundCmp;
 
  public:
 
@@ -688,7 +701,7 @@ class PriorityOpenList final : public OpenList {
 
 class DiveOpenList final : public OpenList {
 
- using Cmp = std::function< bool( ExploringNode * , ExploringNode * ) >;
+ using Cmp = BoundCmp;
 
  public:
 
@@ -991,6 +1004,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  int res = Solver::kOK;
  ExploringNode * oldNode = nullptr;
  int iterations = 0;      // extractions from the open set, for the log
+ std::vector< ExploringNode * > kept;  // surviving children of a node
 
  while( ( ! open.empty() ) && ( nodeBudget > 1 ) &&
         ( timeBudget > std::chrono::duration< double >(
@@ -1037,7 +1051,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
       ( ! cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                           minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
-   std::vector< ExploringNode * > kept;  // survivors, pushed after the loop
+   kept.clear();         // survivors, pushed after the loop
    for( auto br : branches ) {
     ExploringNode * new_node = new ExploringNode( br , currentNode ,
                                                   currentNode->get_level()
@@ -1223,10 +1237,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  // depth-first, a FIFO queue breadth-first, a relaxation-bound priority queue
  // best-first, and the dive variant wraps the latter so that each best node
  // is followed depth-first down to a leaf [see DiveOpenList]
- auto cmp = [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
-  return( minimizing ? a->get_bound() > b->get_bound()
-                     : a->get_bound() < b->get_bound() );
-  };
+ const BoundCmp cmp{ minimizing };
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
   case( DFS ):
@@ -1330,12 +1341,12 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
                          minimizing , relTol , absTol ) ) ) {
   auto branches = branchSolver->branch();
   for( auto br : branches ) {
-   DFSNode * new_node = new DFSNode( br , ++nameCounter );
-   new_node->set_bound( currentNode->get_bound() );  // inherited
-   int RV = workerDFS( new_node , solvers , relaxation , heuristic ,
+   // the node lives as long as its exploration, i.e., in this frame
+   DFSNode new_node( br , ++nameCounter );
+   new_node.set_bound( currentNode->get_bound() );  // inherited
+   int RV = workerDFS( & new_node , solvers , relaxation , heuristic ,
                        minimizing , incumbentMutex , nodeBdg , deadline ,
                        nameCounter );
-   delete new_node;
    if( RV != Solver::kOK )
     return( RV );
    }
@@ -1455,6 +1466,9 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
   std::mutex poolMutex , incumbentMutex;
   std::atomic< std::size_t > poolSize( pool.size() );
   std::atomic< int > busy( 0 );
+  // an idle worker waits on this for the pool to be fed or for the last
+  // busy worker to finish, both of which happen under poolMutex
+  std::condition_variable poolChanged;
 
   auto workerLoop = [ & ]( int w ) {
    auto & ws = v_workerSolvers[ w ];
@@ -1464,38 +1478,34 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
    for( auto & pr : ws.heuristic )
     wsolvers.push_back( pr.first );
    int wNameCounter = ( w + 1 ) * 10000000;  // disjoint per-worker names
+   std::vector< Change * > path;  // the Changes from a node to the root
 
    while( result.load() == Solver::kOK ) {
     ExploringNode * node;
     {
-     std::lock_guard< std::mutex > guard( poolMutex );
-     if( pool.empty() ) {
-      // the pool may be re-fed by the work-sharing of a busy worker: only
-      // an empty pool with NO busy worker means there is no work left
-      if( busy.load() == 0 )
-       break;
-      node = nullptr;
-      }
-     else {
-      node = pool.front();
-      pool.pop_front();
-      --poolSize;
-      ++busy;
-      }
-     }
-    if( ! node ) {              // pool empty but someone is still working
-     std::this_thread::sleep_for( std::chrono::microseconds( 100 ) );
-     continue;
+     std::unique_lock< std::mutex > guard( poolMutex );
+     // the pool may be re-fed by the work-sharing of a busy worker: only an
+     // empty pool with NO busy worker means there is no work left
+     poolChanged.wait( guard , [ & ] {
+      return( ( ! pool.empty() ) || ( busy.load() == 0 ) ||
+              ( result.load() != Solver::kOK ) );
+      } );
+     if( pool.empty() || ( result.load() != Solver::kOK ) )
+      break;
+     node = pool.front();
+     pool.pop_front();
+     --poolSize;
+     ++busy;
      }
 
     // claim the subtree: re-apply the path of Changes from the root
-    std::list< Change * > path;
+    path.clear();
     for( auto n = node ; n ; n = n->get_parent() )
      if( n->get_f_change() )
-      path.push_front( n->get_f_change() );
-    for( auto chg : path )
+      path.push_back( n->get_f_change() );
+    for( auto it = path.rbegin() ; it != path.rend() ; ++it )
      for( auto s : wsolvers )
-      s->apply( chg , false );
+      s->apply( *it , false );
 
     // explore the subtree depth-first, unless meanwhile fenced
     if( ! cannot_improve( node->get_bound() , f_incumbentCell->load() ,
@@ -1551,9 +1561,12 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
         }
        if( donate ) {
         node->get_children().push_back( new_node );
-        std::lock_guard< std::mutex > guard( poolMutex );
-        pool.push_back( new_node );
-        ++poolSize;
+        {
+         std::lock_guard< std::mutex > guard( poolMutex );
+         pool.push_back( new_node );
+         ++poolSize;
+         }
+        poolChanged.notify_one();
         }
        else                      // pruned or fenced: nothing to donate
         delete new_node;
@@ -1562,14 +1575,13 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
       // the DFSNode takes the ownership of the branching Change: null the
       // entry so that ~Node does not double-delete it on the final cleanup
-      DFSNode * new_node = new DFSNode( br , ++wNameCounter );
-      new_node->set_bound( node->get_bound() );  // inherited
+      DFSNode new_node( br , ++wNameCounter );
+      new_node.set_bound( node->get_bound() );  // inherited
       br = nullptr;
       first = false;
-      int RV = workerDFS( new_node , wsolvers , ws.relaxation ,
+      int RV = workerDFS( & new_node , wsolvers , ws.relaxation ,
                           ws.heuristic , minimizing , incumbentMutex ,
                           nodeBdg , deadline , wNameCounter );
-      delete new_node;
       if( RV != Solver::kOK ) {
        int expected = Solver::kOK;
        result.compare_exchange_strong( expected , RV );
@@ -1584,7 +1596,11 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
       for( auto s : wsolvers )
        s->apply( n->get_toFather() , false );
 
-    --busy;
+    {
+     std::lock_guard< std::mutex > guard( poolMutex );
+     --busy;
+     }
+    poolChanged.notify_all();
     }
    };
 
