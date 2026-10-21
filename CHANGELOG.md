@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that the RelaxationSolver computes, with the CSV of its data, and
   `LearnedBranching`, a perceptron on the features read from a file
 
+- the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
+  which exports every name that the headers declare at namespace scope and
+  re-exports `smspp`, so that a source file can write `import
+  smspp.branchandxsolver;` in place of the `#include` of the headers; it is
+  built with the CMake option `SMSpp_BUILD_MODULE`, as the target
+  `SMS++::BranchAndXSolver_module`
+
 ### Changed
 
 - the outstanding Modification are read through `Modification::changes()`
