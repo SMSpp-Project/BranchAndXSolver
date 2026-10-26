@@ -39,7 +39,7 @@ BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
 # [see makefile-mod of SMS++]
 
 $(eval $(call SMSppMODrule,BAXSLV,$(BAXSLVSDR),BranchAndXSolver,\
-	smspp.branchandxsolver,$(SMS++MOD)))
+	smspp.branchandxsolver,SMS++))
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
