@@ -122,8 +122,7 @@ endif ()
 # added to this library and to any target that links to it.
 # Note: do not GLOB files here.
 target_sources(${modName} PRIVATE
-        src/BranchAndXSolver.cpp
-        src/BranchingRule.cpp)
+        src/BranchAndXSolver.cpp)
 
 # Different INSTALL_INTERFACE and BUILD_INTERFACE paths are used when
 # generating the target import file (***Targets.cmake).

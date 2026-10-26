@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontier stays fenced whenever the feasible region cannot grow (not only
   when the Objective alone changes)
 
+### Removed
+
+- `BranchingRule.h` (`BranchingFeatures`, `StrongBranching`,
+  `LearnedBranching`), which moved to LagrangianDualSolver: the only one that
+  uses them is its `LagrangianDualRelaxationSolver`, and BranchAndXSolver
+  never did, so that LagrangianDualSolver no longer depends on it
+
 ### Fixed
 
 - the makefiles of the tests and of the tools build also with g++: they
