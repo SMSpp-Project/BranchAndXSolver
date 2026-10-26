@@ -13,15 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SMSppMOD` is not empty (e.g., `make SMSppMOD=1`), with clang++ 16 or
   later [see `lib/makefile-mod` of SMS++]
 
-- the components with which a RelaxationSolver can choose the variable to
-  branch upon (`BranchingRule.h`), beside the BranchAndXSolver but unknown to
-  it: `BranchCandidate`, a candidate described by its values in the point of
-  the candidates and in a second point, its block, its position and its cost
-  (the variable being known to the RelaxationSolver only, by an index),
-  `BranchingFeatures`, its fractionality and its eight features,
-  `StrongBranching`, the product score out of the bounds of the two children
-  that the RelaxationSolver computes, with the CSV of its data, and
-  `LearnedBranching`, a perceptron on the features read from a file
+- the best-estimate search (`intSolveMethod` `BestEstimate`): the open node
+  of best estimate of the value under it is extracted first, the estimate
+  being given by the RelaxationSolver that branched, if it is also a
+  `BranchEstimator` (`BranchingRule.h` of SMS++), and the bound of the
+  parent otherwise, and never better than the bound of the node, which
+  still prunes it
 
 - the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
   which exports every name that the headers declare at namespace scope and
@@ -62,13 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Modification does not say what it changes; the infeasible part of its
   frontier stays fenced whenever the feasible region cannot grow (not only
   when the Objective alone changes)
-
-### Removed
-
-- `BranchingRule.h` (`BranchingFeatures`, `StrongBranching`,
-  `LearnedBranching`), which moved to LagrangianDualSolver: the only one that
-  uses them is its `LagrangianDualRelaxationSolver`, and BranchAndXSolver
-  never did, so that LagrangianDualSolver no longer depends on it
 
 ### Fixed
 

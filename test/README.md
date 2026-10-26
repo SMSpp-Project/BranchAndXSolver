@@ -15,10 +15,15 @@ solves the continuous relaxation (the `ColVariable` are continuous in the
 `Block`, their integrality is the knowledge of this `Solver`) and branches on
 its most fractional coordinate by tightening the `BoxConstraint`, while
 `BoxRounding` is a heuristic `ChangeSolver` rounding the solution of the
-relaxation inside the box. They are given to `BranchAndXSolver` by the
-`BlockSolverConfig` in `InnerBSCfg.txt` (the relaxation alone) and
-`InnerBSCfg-rounding.txt` (the relaxation and the heuristic), which the tester
-reads from its working directory, this one.
+relaxation inside the box. `BoxEstimate` is the `BoxRelaxation` that is also a
+`BranchEstimator` (`BranchingRule.h` of the core), estimating the best value
+under each child of a branching as the value of the rounding in the box of
+the child, and `BoxWrongEstimate` swaps those estimates and at times gives
+none. They are given to `BranchAndXSolver` by the `BlockSolverConfig` in
+`InnerBSCfg.txt` (the relaxation alone), `InnerBSCfg-rounding.txt` (the
+relaxation and the heuristic), `InnerBSCfg-estimate.txt` and
+`InnerBSCfg-wrong-estimate.txt` (the relaxations with the estimates), which
+the tester reads from its working directory, this one.
 
 The cases are:
 
@@ -26,6 +31,10 @@ The cases are:
   (`intBoundingProtocol`), minimizing, and every strategy maximizing, each run
   having to find the optimum, with both bounds equal to it and the optimal
   integer solution written back in the `Block`;
+- the best-estimate search (`BestEstimate`) with the estimates of the
+  relaxation, right or misleading, under both bounding protocols and in both
+  senses: the estimates have to be asked for, the optimum has to be the
+  same, and the order of the branchings has to depend on the estimates;
 - the rounding heuristic, whose incumbent is the solution written back;
 - an empty box and a box with no integer point (whose relaxation is not
   empty), both infeasible, with both bounds at the infinity of the sense;

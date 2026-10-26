@@ -267,10 +267,11 @@ static int computeRelaxations(
   pr.second->set_par( minimizing ? Solver::dblUpCutOff : Solver::dblLwCutOff ,
                       incumbent );
 
- // parallel evaluation of the (several) relaxations of this node: only when more
- // than one thread is asked, there are at least two solvers, and no shared
- // incumbent lock is in force (a parallel-tree worker evaluates its per-node
- // solvers serially); the reduction is bit-identical to the serial path below
+ // parallel evaluation of the (several) relaxations of this node: only when
+ // more than one thread is asked, there are at least two solvers, and no
+ // shared incumbent lock is in force (a parallel-tree worker evaluates its
+ // per-node solvers serially); the reduction is bit-identical to the serial
+ // path below
  if( ( nThreads > 1 ) && ( f_RelaxationSolvers->size() > 1 ) &&
      ( ! incumbentMutex ) ) {
   const std::size_t n = f_RelaxationSolvers->size();
@@ -543,10 +544,10 @@ static int initializeRoot(
  * undo Change), solves the relaxations and heuristics, and leaves the solvers
  * ON the node (the caller then keeps it and branches it, or prunes it and
  * moves them back). \p nThreads > 1 evaluates the several solvers of the node
- * concurrently (serial-tree explorations only); \p incumbentMutex != nullptr
- * serializes the incumbent updates (parallel-tree exploration). Sets \p toPrune
- * / \p branchSolver, and marks the node infeasible [see Node::set_infeasible()]
- * when its relaxation has no solution.
+ * concurrently (serial-tree explorations only); \p incumbentMutex !=
+ * nullptr serializes the incumbent updates (parallel-tree exploration). Sets
+ * \p toPrune / \p branchSolver, and marks the node infeasible [see
+ * Node::set_infeasible()] when its relaxation has no solution.
  *  @return the sol_type [see Solver.h] of the evaluation */
 
 static int evaluateNode(
@@ -574,9 +575,10 @@ static int evaluateNode(
  node->set_bound( inherited );
  node->set_evaluated( true );
 
- // computeRelaxations() / computeHeuristic() dispatch internally on nThreads:
- // a worker of the parallel tree exploration (incumbentMutex set) evaluates its
- // per-node solvers serially, otherwise nThreads > 1 runs them in parallel
+ // computeRelaxations() / computeHeuristic() dispatch internally on
+ // nThreads: a worker of the parallel tree exploration (incumbentMutex set)
+ // evaluates its per-node solvers serially, otherwise nThreads > 1 runs them
+ // in parallel
  int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
                                bestSol , incumbentCell , toPrune ,
                                branchSolver , relAcc ,
@@ -584,8 +586,8 @@ static int evaluateNode(
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
- return( computeHeuristic( heuristic , node , minimizing , bestBound , bestSol ,
-                           incumbentCell , toPrune , nThreads ,
+ return( computeHeuristic( heuristic , node , minimizing , bestBound ,
+                           bestSol , incumbentCell , toPrune , nThreads ,
                            incumbentMutex ) );
  }
 
@@ -650,15 +652,18 @@ class QueueOpenList final : public OpenList {
 /*--------------------------------------------------------------------------*/
 /// relaxation-bound priority open list: a std::priority_queue, best-first
 
-/// the order of a best-first open list: the worse relaxation bound first
+/// the order of a best-first open list: the worse relaxation bound first,
+/// or the worse estimate first in a best-estimate search
 /** A plain function object rather than a std::function, so that the heap
  * calls it directly. */
 
 struct BoundCmp {
  bool minimizing;
+ bool estimate = false;  ///< by Node::estimate_key() rather than the bound
  bool operator()( ExploringNode * a , ExploringNode * b ) const {
-  return( minimizing ? a->get_bound() > b->get_bound()
-                     : a->get_bound() < b->get_bound() );
+  const double ka = estimate ? a->estimate_key( minimizing ) : a->get_bound();
+  const double kb = estimate ? b->estimate_key( minimizing ) : b->get_bound();
+  return( minimizing ? ka > kb : ka < kb );
   }
  };
 
@@ -1052,14 +1057,17 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                           minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
    kept.clear();         // survivors, pushed after the loop
-   for( auto br : branches ) {
-    ExploringNode * new_node = new ExploringNode( br , currentNode ,
+   for( std::size_t i = 0 ; i < branches.size() ; ++i ) {
+    ExploringNode * new_node = new ExploringNode( branches[ i ] ,
+                                                  currentNode ,
                                                   currentNode->get_level()
                                                   + 1 , ++counter );
     // the relaxation bound of the parent is valid for the child, whose region
     // is a part of that of the parent: the child starts from it, and its own
-    // evaluation can only improve it
+    // evaluation can only improve it; the estimate is the one given by the
+    // RelaxationSolver that branched, if any [see BranchEstimator]
     new_node->set_bound( currentNode->get_bound() );
+    new_node->set_estimate( currentNode->child_estimate( i ) );
     if( boundingProtocol == Lazy ) {
      // the child is not evaluated now: it goes into the open set carrying the
      // relaxation bound of its parent, and will be evaluated if and when it is
@@ -1132,6 +1140,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      open.push( n );
    branches.erase( std::remove( branches.begin() , branches.end() ,
                                 nullptr ) , branches.end() );
+   currentNode->clear_estimates();   // they went with their children
    if( currentNode->get_children().empty() ) {
     if( retain )                 // fathomed leaf: fenced frontier
      subOptimalNodes.push_back( currentNode );
@@ -1236,7 +1245,8 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  // the open set *is* the exploration strategy: a LIFO stack explores
  // depth-first, a FIFO queue breadth-first, a relaxation-bound priority queue
  // best-first, and the dive variant wraps the latter so that each best node
- // is followed depth-first down to a leaf [see DiveOpenList]
+ // is followed depth-first down to a leaf [see DiveOpenList]; best-estimate
+ // is a priority queue on the estimates [see Node::estimate_key()]
  const BoundCmp cmp{ minimizing };
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
@@ -1251,6 +1261,9 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    break;
   case( BestFSDive ):
    openPtr.reset( new DiveOpenList( cmp ) );
+   break;
+  case( BestEstimate ):
+   openPtr.reset( new PriorityOpenList( BoundCmp{ minimizing , true } ) );
    break;
   default:
    delete solvers;
