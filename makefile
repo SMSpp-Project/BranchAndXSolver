@@ -27,13 +27,17 @@
 
 # macros to be exported - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o \
-	$(BAXSLVSDR)/obj/BranchingRule.o
+BAXSLVOBJ = $(BAXSLVSDR)/obj/BranchAndXSolver.o
 
 BAXSLVINC = -I$(BAXSLVSDR)/include
 
-BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h \
-	$(BAXSLVSDR)/include/BranchingRule.h
+BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h
+
+# the C++20 module smspp.branchandxsolver - - - - - - - - - - - - - - - - - -
+# [see makefile-mod of SMS++]
+
+$(eval $(call SMSppMODrule,BAXSLV,$(BAXSLVSDR),BranchAndXSolver,\
+	smspp.branchandxsolver,SMS++))
 
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -46,11 +50,6 @@ $(BAXSLVSDR)/obj/BranchAndXSolver.o: \
 	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(SMS++OBJ)
 	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
 	$(BAXSLVINC) $(SMS++INC) $(libPBeFSINC) $(SW)
-
-$(BAXSLVSDR)/obj/BranchingRule.o: \
-	$(BAXSLVSDR)/src/BranchingRule.cpp $(BAXSLVSDR)/include/BranchingRule.h
-	$(CC) -c $(BAXSLVSDR)/src/BranchingRule.cpp -o $@ \
-	$(BAXSLVINC) $(SW)
 
 
 ############################ End of makefile #################################

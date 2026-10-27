@@ -36,7 +36,6 @@
 module;
 
 #include "BranchAndXSolver.h"
-#include "BranchingRule.h"
 
 /*--------------------------------------------------------------------------*/
 /*----------------------------- MODULE PURVIEW -----------------------------*/
@@ -54,12 +53,6 @@ export namespace SMSpp_di_unipi_it {
  using SMSpp_di_unipi_it::ExploringNode;
  using SMSpp_di_unipi_it::Node;
  using SMSpp_di_unipi_it::OpenList;
-
- // BranchingRule.h
- using SMSpp_di_unipi_it::BranchCandidate;
- using SMSpp_di_unipi_it::BranchingFeatures;
- using SMSpp_di_unipi_it::LearnedBranching;
- using SMSpp_di_unipi_it::StrongBranching;
 }
 
 /*--------------------------------------------------------------------------*/

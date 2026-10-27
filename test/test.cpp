@@ -55,8 +55,6 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
-#include <cstdio>
-#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -917,90 +915,6 @@ void test_best_estimate( void )
  }
 
 /*--------------------------------------------------------------------------*/
-/// the pseudocosts and their priors read from a file [see BranchingRule.h],
-/// against values computed by hand, with their limit cases: no observation
-/// at all, a direction that is neither 0 nor 1, an observation that is not
-/// finite or that moves nothing, a negative output of the model, and a file
-/// with one model only or truncated
-
-void test_pseudocosts( void )
-{
- std::cout << "pseudocosts and their learned priors" << std::endl;
- const double nan = std::numeric_limits< double >::quiet_NaN();
- PseudoCosts pc;
- check( pc.get( 3 , 0 , nan ) == 0 , "no observation: 0" );
- check( pc.get( 3 , 1 , 2.5 ) == 2.5 , "no observation: the prior" );
-
- pc.record( 3 , 0 , 0.5 , 2 );        // 4 per unit
- pc.record( 3 , 0 , 0.25 , 2 );       // 8 per unit
- pc.record( 7 , 1 , 0.5 , 1 );        // 2 per unit
- pc.record( 7 , 1 , 0.5 , -1 );       // worse < 0 counts as 0
- pc.record( 9 , 0 , 0 , 5 );          // moves nothing: ignored
- pc.record( 9 , 0 , 0.5 , INF );      // infeasible child: ignored
- check( ( pc.get( 3 , 0 , nan ) == 6 ) && pc.known( 3 , 0 ) &&
-        ! pc.known( 3 , 1 ) , "mean of the observations" );
- check( pc.get( 7 , 1 , nan ) == 1 , "a negative worsening counts as 0" );
- check( ( ! pc.known( 9 , 0 ) ) && ( pc.observations() == 4 ) ,
-        "observations that move nothing or are infinite are ignored" );
- check( pc.get( 9 , 0 , nan ) == 6 , "no observation: the mean of all" );
- check( pc.get( 9 , 1 , 0.5 ) == 0.5 , "no observation: the prior first" );
- bool thrown = false;
- try { pc.record( 3 , 2 , 1 , 1 ); } catch( std::invalid_argument & ) {
-  thrown = true; }
- check( thrown , "a direction neither 0 nor 1 is refused" );
-
- // two candidates, 3 at 0.25 and 7 at 0.5: branching on 3 at a node of
- // bound 10, its children worsen it by 6 * 0.25 down and by the mean "up"
- // 1 * 0.75 up, plus the cheapest rounding of 7, min( 6 * 0.5 , 1 * 0.5 )
- std::vector< BranchCandidate > cands = { { 3 , 0.25 , 0.25 , 1 , 0 , 0 } ,
-                                          { 7 , 0.5 , 0.5 , 1 , 0 , 0 } };
- const auto e = pc.estimates( cands , 0 , 10 , false );
- check( ( std::abs( e[ 0 ] - ( 10 + 1.5 + 0.5 ) ) < 1e-12 ) &&
-        ( std::abs( e[ 1 ] - ( 10 + 0.75 + 0.5 ) ) < 1e-12 ) ,
-        "estimates of a minimization" );
- const auto m = pc.estimates( cands , 0 , 10 , true );
- check( ( std::abs( m[ 0 ] - ( 10 - 2 ) ) < 1e-12 ) &&
-        ( std::abs( m[ 1 ] - ( 10 - 1.25 ) ) < 1e-12 ) ,
-        "estimates of a maximization" );
- const auto p = pc.estimates( cands , 0 , 10 , false ,
-                              []( std::size_t ) {
-                               return( std::array< double , 2 >{ 100 , 100 }
-                                       ); } );
- check( std::abs( p[ 0 ] - e[ 0 ] ) < 1e-12 ,
-        "a prior is not taken where there are observations" );
- thrown = false;
- try { ( void ) pc.estimates( cands , 2 , 10 , false ); }
- catch( std::invalid_argument & ) { thrown = true; }
- check( thrown , "no such candidate is refused" );
-
- // two models whose output is the bias: 0.5 down, -1 (hence 0) up
- const std::string file = "pseudocosts-test.txt";
- const auto model = []( double bias ) {
-  std::string s = "LBRModel 8 1\n";
-  for( int i = 0 ; i < 8 ; ++i )
-   s += "0 ";
-  return( s + "\n0\n0\n" + std::to_string( bias ) + "\n" );
-  };
- std::ofstream( file ) << model( 0.5 ) << model( -1 );
- LearnedPseudoCosts lp;
- lp.load( file );
- const auto pr = lp.prior( BranchingFeatures::Features{} , -20 );
- check( ( std::abs( pr[ 0 ] - 0.5 * 20 ) < 1e-12 ) && ( pr[ 1 ] == 0 ) ,
-        "learned priors, scaled, a negative output counting as 0" );
- std::ofstream( file ) << model( 0.5 );
- thrown = false;
- try { LearnedPseudoCosts().load( file ); }
- catch( std::invalid_argument & ) { thrown = true; }
- check( thrown , "a file with one model only is refused" );
- std::ofstream( file ) << "LBRModel 8 2\n1 2 3\n";
- thrown = false;
- try { LearnedPseudoCosts().load( file ); }
- catch( std::invalid_argument & ) { thrown = true; }
- check( thrown , "a truncated file is refused" );
- std::remove( file.c_str() );
- }
-
-/*--------------------------------------------------------------------------*/
 /// the rounding heuristic gives the incumbent, whose solution is kept
 
 void test_heuristic( void )
@@ -1347,10 +1261,9 @@ int main( void )
 {
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
-  test_tree_explorer , test_best_estimate , test_pseudocosts ,
-  test_heuristic ,
-  test_infeasible , test_integral_root , test_limits , test_parameters ,
-  test_detach_reattach , test_objective_change , test_integrality_change };
+  test_tree_explorer , test_best_estimate , test_heuristic , test_infeasible ,
+  test_integral_root , test_limits , test_parameters , test_detach_reattach ,
+  test_objective_change , test_integrality_change };
 
  for( auto c : cases ) {
   try {

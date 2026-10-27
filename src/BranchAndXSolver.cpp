@@ -269,10 +269,11 @@ static int computeRelaxations(
   pr.second->set_par( minimizing ? Solver::dblUpCutOff : Solver::dblLwCutOff ,
                       incumbent );
 
- // parallel evaluation of the (several) relaxations of this node: only when more
- // than one thread is asked, there are at least two solvers, and no shared
- // incumbent lock is in force (a parallel-tree worker evaluates its per-node
- // solvers serially); the reduction is bit-identical to the serial path below
+ // parallel evaluation of the (several) relaxations of this node: only when
+ // more than one thread is asked, there are at least two solvers, and no
+ // shared incumbent lock is in force (a parallel-tree worker evaluates its
+ // per-node solvers serially); the reduction is bit-identical to the serial
+ // path below
  if( ( nThreads > 1 ) && ( f_RelaxationSolvers->size() > 1 ) &&
      ( ! incumbentMutex ) ) {
   const std::size_t n = f_RelaxationSolvers->size();
@@ -545,10 +546,10 @@ static int initializeRoot(
  * undo Change), solves the relaxations and heuristics, and leaves the solvers
  * ON the node (the caller then keeps it and branches it, or prunes it and
  * moves them back). \p nThreads > 1 evaluates the several solvers of the node
- * concurrently (serial-tree explorations only); \p incumbentMutex != nullptr
- * serializes the incumbent updates (parallel-tree exploration). Sets \p toPrune
- * / \p branchSolver, and marks the node infeasible [see Node::set_infeasible()]
- * when its relaxation has no solution.
+ * concurrently (serial-tree explorations only); \p incumbentMutex !=
+ * nullptr serializes the incumbent updates (parallel-tree exploration). Sets
+ * \p toPrune / \p branchSolver, and marks the node infeasible [see
+ * Node::set_infeasible()] when its relaxation has no solution.
  *  @return the sol_type [see Solver.h] of the evaluation */
 
 static int evaluateNode(
@@ -576,9 +577,10 @@ static int evaluateNode(
  node->set_bound( inherited );
  node->set_evaluated( true );
 
- // computeRelaxations() / computeHeuristic() dispatch internally on nThreads:
- // a worker of the parallel tree exploration (incumbentMutex set) evaluates its
- // per-node solvers serially, otherwise nThreads > 1 runs them in parallel
+ // computeRelaxations() / computeHeuristic() dispatch internally on
+ // nThreads: a worker of the parallel tree exploration (incumbentMutex set)
+ // evaluates its per-node solvers serially, otherwise nThreads > 1 runs them
+ // in parallel
  int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
                                bestSol , incumbentCell , toPrune ,
                                branchSolver , relAcc ,
@@ -586,8 +588,8 @@ static int evaluateNode(
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
- return( computeHeuristic( heuristic , node , minimizing , bestBound , bestSol ,
-                           incumbentCell , toPrune , nThreads ,
+ return( computeHeuristic( heuristic , node , minimizing , bestBound ,
+                           bestSol , incumbentCell , toPrune , nThreads ,
                            incumbentMutex ) );
  }
 
@@ -653,14 +655,13 @@ class QueueOpenList final : public OpenList {
 /// relaxation-bound priority open list: a std::priority_queue, best-first
 
 /// the order of a best-first open list: the worse relaxation bound first,
-/// or the worse estimate first for the best-estimate search [see
-/// Node::estimate_key()]
+/// or the worse estimate first in a best-estimate search
 /** A plain function object rather than a std::function, so that the heap
  * calls it directly. */
 
-struct NodeCmp {
+struct BoundCmp {
  bool minimizing;
- bool estimate = false;
+ bool estimate = false;  ///< by Node::estimate_key() rather than the bound
  bool operator()( ExploringNode * a , ExploringNode * b ) const {
   const double ka = estimate ? a->estimate_key( minimizing ) : a->get_bound();
   const double kb = estimate ? b->estimate_key( minimizing ) : b->get_bound();
@@ -670,7 +671,7 @@ struct NodeCmp {
 
 class PriorityOpenList final : public OpenList {
 
- using Cmp = NodeCmp;
+ using Cmp = BoundCmp;
 
  public:
 
@@ -707,7 +708,7 @@ class PriorityOpenList final : public OpenList {
 
 class DiveOpenList final : public OpenList {
 
- using Cmp = NodeCmp;
+ using Cmp = BoundCmp;
 
  public:
 
@@ -1538,8 +1539,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  // best-first, and the dive variant wraps the latter so that each best node
  // is followed depth-first down to a leaf [see DiveOpenList]; best-estimate
  // is a priority queue on the estimates [see Node::estimate_key()]
- const NodeCmp cmp{ minimizing };
- const NodeCmp ecmp{ minimizing , true };
+ const BoundCmp cmp{ minimizing };
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
   case( DFS ):
@@ -1555,7 +1555,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    openPtr.reset( new DiveOpenList( cmp ) );
    break;
   case( BestEstimate ):
-   openPtr.reset( new PriorityOpenList( ecmp ) );
+   openPtr.reset( new PriorityOpenList( BoundCmp{ minimizing , true } ) );
    break;
   default:
    delete solvers;

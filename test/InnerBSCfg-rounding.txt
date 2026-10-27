@@ -15,7 +15,7 @@ BlockSolverConfig     # exact type of the Configuration object
 
 2  # number of (the names of) Solver in this BlockSolverConfig
 # now all the names of the Solver - - - - - - - - - - - - - - - - - - - - - -
-BoxRelaxation  # name of 1st Solver
+BoxRelaxation     # name of 1st Solver
 BoxRounding    # name of 2nd Solver
 
 0  # number of ComputeConfig in this BlockSolverConfig

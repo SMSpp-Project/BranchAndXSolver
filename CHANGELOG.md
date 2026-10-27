@@ -9,37 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the makefiles build the C++20 module `smspp.branchandxsolver` when
+  `SMSppMOD` is not empty (e.g., `make SMSppMOD=1`), with clang++ 16 or
+  later [see `lib/makefile-mod` of SMS++]
+
+- the best-estimate search (`intSolveMethod` `BestEstimate`): the open node
+  of best estimate of the value under it is extracted first, the estimate
+  being given by the RelaxationSolver that branched, if it is also a
+  `BranchEstimator` (`BranchingRule.h` of SMS++), and the bound of the
+  parent otherwise, and never better than the bound of the node, which
+  still prunes it
+
 - the parameter `intTreeExplorer`, by which the tree is explored by the
   branch-and-bound of PBeFS instead of the explorations of the
   BranchAndXSolver, on `intMaxThread` workers and by the scheme of PBeFS
   that `strPBeFSScheme` names (`"shared"` by default), which is given to
-  PBeFS as it is, with the same strategies, bounding protocols, tolerances
-  and budgets; each worker moves its own inner Solver along the Changes of
-  the path of a node and evaluates it against the incumbent that PBeFS
-  gives it, so that the outcome is that of the scheme, also when the
-  scheme makes it the same at every run; PBeFS is found with
-  `find_package` or downloaded at a fixed commit, and in the makefiles
-  through `extlib/makefile-libPBeFS`
-- the components with which a RelaxationSolver can choose the variable to
-  branch upon (`BranchingRule.h`), beside the BranchAndXSolver but unknown to
-  it: `BranchCandidate`, a candidate described by its values in the point of
-  the candidates and in a second point, its block, its position and its cost
-  (the variable being known to the RelaxationSolver only, by an index),
-  `BranchingFeatures`, its fractionality and its eight features,
-  `StrongBranching`, the product score out of the bounds of the two children
-  that the RelaxationSolver computes, with the CSV of its data, and
-  `LearnedBranching`, a perceptron on the features read from a file
-- the best-estimate search (`intSolveMethod` `BestEstimate`), by both the
-  explorations of the BranchAndXSolver and the branch-and-bound of PBeFS:
-  the open node of best estimate of the value under it is extracted first,
-  the estimate being given by the RelaxationSolver that branched, if it is
-  also a `BranchEstimator` (`BranchingRule.h`), and the bound of the parent
-  otherwise, and never better than the bound of the node, which still
-  prunes it; with the components that a RelaxationSolver can give the
-  estimates by, `PseudoCosts`, which learns the pseudocosts of the
-  candidates and estimates the children as in Benichou et al. (1971), and
-  `LearnedPseudoCosts`, the priors of the pseudocosts of the candidates
-  with no observation read from a file of two `LearnedBranching` models
+  PBeFS as it is, with the same strategies (`BestEstimate` included),
+  bounding protocols, tolerances and budgets; each worker moves its own
+  inner Solver along the Changes of the path of a node and evaluates it
+  against the incumbent that PBeFS gives it, so that the outcome is that of
+  the scheme, also when the scheme makes it the same at every run; PBeFS is
+  found with `find_package` or downloaded at a fixed commit, and in the
+  makefiles through `extlib/makefile-libPBeFS`
 
 - the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
   which exports every name that the headers declare at namespace scope and
@@ -49,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SMS++::BranchAndXSolver_module`
 
 ### Changed
+
+- the pipeline builds the module also with its makefiles, after CMake, and
+  runs on a change of the makefiles too [see `ci/makefile` of the umbrella]
+
+- `SMSpp_BUILD_MODULE` no longer stops the configuration when the C++20
+  module cannot be built, i.e., with a CMake older than 3.28, a generator
+  other than Ninja or Visual Studio, a compiler other than Clang 16 (with
+  `clang-scan-deps`) or MSVC 19.34, or a module it imports that is not
+  there: the option is turned off with a warning that says why, and the
+  build goes on with the headers [see `cmake/CheckModule.cmake` of SMS++]
 
 - the exploration allocates less, with the same nodes in the same order: a
   move between two nodes collects the path in a buffer of the thread rather
@@ -72,6 +73,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the Objective alone changes)
 
 ### Fixed
+
+- the makefiles of the tests and of the tools build also with g++: they
+  take the option that stops at the first error and the one of the
+  debugging information, which clang++ and g++ spell differently
+  (`-ferror-limit=1` and `-glldb` against `-fmax-errors=1` and `-ggdb`),
+  from `SMSppSWERR` and `SMSppSWDBG` of `lib/makefile-OS` of SMS++
 
 - the root is fenced with `dblRelAcc` and `dblAbsAcc`, as any other node,
   rather than with no tolerance at all: a root whose relaxation bound was
