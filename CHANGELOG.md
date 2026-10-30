@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built with the CMake option `SMSpp_BUILD_MODULE`, as the target
   `SMS++::BranchAndXSolver_module`
 
+- the documentation of the class gives the formulation of the search: the
+  tree and the algebra of the undo Changes, the move along the common
+  ancestor, the pruning test with its tolerances, the bound and the
+  incumbent of the Solver of a node, the exploration strategies, the two
+  kinds of parallelism and the tightening, with the references
+
 ### Changed
 
 - the pipeline builds the module also with its makefiles, after CMake, and
