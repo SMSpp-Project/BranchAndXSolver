@@ -155,6 +155,15 @@ namespace SMSpp_di_unipi_it
  * "not active", i.e., as \f$ \varepsilon_a = 0 \f$: plugged in literally it
  * would prune every node as soon as there is an incumbent.
  *
+ * A node whose evaluation is inconclusive, i.e., whose relaxation returns
+ * kStopTime, kStopIter or kLowPrecision (say, a Lagrangian Dual not solved
+ * to the required accuracy whose solution gives nothing to branch upon), is
+ * set aside: it is neither branched upon nor fenced, the exploration goes on
+ * with the other nodes, and its bound enters that of the whole solve as the
+ * bound of an open node does. If, at the end, some node so set aside can
+ * still improve the incumbent, compute() returns kLowPrecision rather than
+ * kOK; a relaxation returning kError still stops the whole solve.
+ *
  * \par The Solver of a node.
  * A node is evaluated by a set of inner Solver, all described by the
  * BlockSolverConfig [see strNameOfBlockSolverConfigurationFile]: one or more
@@ -933,6 +942,15 @@ class BranchAndXSolver : public Solver {
  void discardRetainedTree( void );
 
 /*--------------------------------------------------------------------------*/
+ /// account for the nodes set aside unresolved in the global bound
+ /** Improves f_open_bound with the relaxation bounds of the nodes set aside
+  * unresolved in this solve [see v_unresolved], and returns true if some of
+  * them can still improve the incumbent, i.e., if the solve, all the rest
+  * being explored, is still not conclusive. */
+
+ bool add_unresolved_bounds( bool minimizing );
+
+/*--------------------------------------------------------------------------*/
  /// the depth-first subtree exploration of one worker
  /** The recursive core of one worker of ParallelDFSSolve(): a depth-first
   * exploration on the worker's own Solver set, with the shared
@@ -1140,6 +1158,16 @@ class BranchAndXSolver : public Solver {
 
  /// nodes pruned as integer-feasible, to be revisited on reoptimization
  std::list< ExploringNode * > integerNodes;
+
+ /// the relaxation bounds of the nodes set aside unresolved in this solve
+ /** A node whose evaluation is inconclusive (its relaxation returns
+  * kStopTime, kStopIter or kLowPrecision) can be neither branched upon nor
+  * fenced: it is set aside, and its relaxation bound (that of its father,
+  * if its own evaluation has not improved it) is kept here, so that the
+  * bound of the whole solve accounts for the part of the region that it
+  * covers [see add_unresolved_bounds()]. Written under the incumbent mutex
+  * by the workers of the parallel exploration. */
+ std::vector< double > v_unresolved;
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 

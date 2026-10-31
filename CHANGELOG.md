@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- a node whose relaxation returns `kStopTime`, `kStopIter` or
+  `kLowPrecision` (e.g., a Lagrangian Dual not solved to the required
+  accuracy whose solution gives nothing to branch upon) no longer stops the
+  whole exploration: it is set aside, neither branched upon nor fenced, the
+  other nodes are explored, and its relaxation bound enters the bound of the
+  solve as that of an open node; `compute()` returns `kLowPrecision` if some
+  node so set aside can still improve the incumbent, while a relaxation
+  returning `kError` still stops the solve
+
 - the pipeline builds the module also with its makefiles, after CMake, and
   runs on a change of the makefiles too [see `ci/makefile` of the umbrella]
 
