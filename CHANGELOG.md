@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the README leaves the channels that distribute SMS++ to the
+  installation guide of the wiki (Installing-SMS++), keeping the names
+  of the packages of the module
+
 - a node whose relaxation returns `kStopTime`, `kStopIter` or
   `kLowPrecision` (e.g., a Lagrangian Dual not solved to the required
   accuracy whose solution gives nothing to branch upon) no longer stops the
