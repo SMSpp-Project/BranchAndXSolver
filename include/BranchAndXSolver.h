@@ -430,6 +430,16 @@ class BranchAndXSolver : public Solver {
 /*---------------------- METHODS FOR READING RESULTS -----------------------*/
 /*--------------------------------------------------------------------------*/
 
+ /// whether an incumbent solution is actually available
+ /** A solve stopped before finding an incumbent has no solution to write.
+  * bestSolution alone can still belong to an earlier solve, whose bound
+  * has been reset to no_incumbent() at the start of a new exploration. */
+
+ [[nodiscard]] bool has_var_solution( void ) override {
+  return( bestSolution && ( bestBound != no_incumbent() ) );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// write the best solution found into the Variable of the Block
 
  void get_var_solution( Configuration * solc = nullptr ) override {
@@ -462,6 +472,17 @@ class BranchAndXSolver : public Solver {
   * nodes left open and the incumbent) for a maximization one. */
 
  OFValue get_ub( void ) override;
+
+/*--------------------------------------------------------------------------*/
+ /// number of node evaluations started by the last compute(), root included
+ /** Counts each node once per evaluation, independently of the number of
+  * inner solvers; reoptimization counts the frontier evaluations of this
+  * solve. Nodes fenced without evaluation are excluded. Zero before the
+  * first compute(), or when an unchanged problem reuses its answer. */
+
+ [[nodiscard]] long get_evaluated_nodes( void ) const {
+  return( f_evaluated_nodes.load( std::memory_order_relaxed ) );
+  }
 
 /*--------------------------------------------------------------------------*/
 /*------------------- METHODS FOR HANDLING THE PARAMETERS ------------------*/
@@ -955,6 +976,9 @@ class BranchAndXSolver : public Solver {
 
  /// the root of the tree retained for reoptimization, nullptr if none
  ExploringNode * f_treeRoot;
+
+ /// node evaluations in the current compute(), also shared by DFS workers
+ std::atomic< long > f_evaluated_nodes{ 0 };
 
  /// residual node budget of the current solve (from intMaxNodes), consumed
  /// by the exploration

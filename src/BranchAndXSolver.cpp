@@ -799,6 +799,7 @@ int BranchAndXSolver::compute( bool changedvars )
  if( f_state == kStillRunning )
   return( kError );
  f_state = kStillRunning;
+ f_evaluated_nodes.store( 0 , std::memory_order_relaxed );
  // no bound until an exploration says otherwise [see explore()]
  f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
                 ? Inf< double >() : - Inf< double >();
@@ -856,6 +857,12 @@ int BranchAndXSolver::compute( bool changedvars )
   if( ( f_state == kOK ) && ( bestBound == no_incumbent() ) )
    f_state = kInfeasible;
   }
+
+ // The summary also covers an eager root closed without entering explore(),
+ // and the parallel search, whose worker nodes do not use the serial CSV log.
+ if( f_log )
+  ( *f_log ) << "[BranchAndXSolver] nodes_evaluated="
+             << get_evaluated_nodes() << std::endl;
 
  changes = 0;
  unlock();
@@ -950,6 +957,7 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   F->initializeBound( minimizing );
   bool toPrune = false;
   RelaxationSolver * nodeBranchSolver = nullptr;
+  f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
                             bestSolution , f_incumbentCell , toPrune ,
                             nodeBranchSolver ,
@@ -1027,6 +1035,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   bool prunedHere = false;
   if( ! currentNode->is_evaluated() ) {
    auto evalStart = std::chrono::high_resolution_clock::now();
+   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
                        &f_HeuristicSolvers , minimizing , bestBound ,
                        bestSolution , f_incumbentCell , prunedHere ,
@@ -1082,6 +1091,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      }
     bool toPrune = false;
     auto evalStart = std::chrono::high_resolution_clock::now();
+    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , toPrune ,
@@ -1292,11 +1302,13 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    rootNode->initializeBound( minimizing );
    res = Solver::kOK;
    }
-  else
+  else {
+   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                          rootNode , minimizing , bestBound , bestSolution ,
                          f_incumbentCell , branchSolver , globalMutex ,
                          relTol , absTol );
+   }
   if( res == Solver::kOK )
    open.push( rootNode );
   currentNode = rootNode;
@@ -1341,6 +1353,7 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  // happens under incumbentMutex with a double check. The solvers run serially
  // (the per-node-solvers parallelism does not lock the incumbent), so the
  // globalMutex argument is unused here
+ f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
  int res = evaluateNode( currentNode , solvers , &relaxation , &heuristic ,
                          minimizing , bestBound , bestSolution ,
                          f_incumbentCell , toPrune ,
@@ -1400,6 +1413,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  int nameCounter = 0;
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
+ f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
  int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                            rootNode , minimizing , bestBound , bestSolution ,
                            f_incumbentCell , branchSolver , globalMutex ,
@@ -1433,6 +1447,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     new_node->set_bound( currentNode->get_bound() );  // inherited
     bool toPrune = false;
     RelaxationSolver * nodeBranchSolver = nullptr;
+    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , toPrune ,
@@ -1545,6 +1560,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        new_node->set_bound( node->get_bound() );  // inherited
        bool toPrune = false;
        RelaxationSolver * nodeBranchSolver = nullptr;
+       f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
        int RV = computeRelaxations( &ws.relaxation , new_node , minimizing ,
                                     bestBound , bestSolution ,
                                     f_incumbentCell , toPrune ,
