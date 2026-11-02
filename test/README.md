@@ -19,11 +19,14 @@ relaxation inside the box. `BoxEstimate` is the `BoxRelaxation` that is also a
 `BranchEstimator` (`BranchingRule.h` of the core), estimating the best value
 under each child of a branching as the value of the rounding in the box of
 the child, and `BoxWrongEstimate` swaps those estimates and at times gives
-none. They are given to `BranchAndXSolver` by the `BlockSolverConfig` in
-`InnerBSCfg.txt` (the relaxation alone), `InnerBSCfg-rounding.txt` (the
+none. `BoxUnresolved` is the `BoxRelaxation` that at every third `compute()`
+but the first says `kLowPrecision`, leaving a node that can be neither
+branched upon nor fenced. They are given to `BranchAndXSolver` by the
+`BlockSolverConfig` in `InnerBSCfg.txt` (the relaxation alone), `InnerBSCfg-rounding.txt` (the
 relaxation and the heuristic), `InnerBSCfg-estimate.txt` and
-`InnerBSCfg-wrong-estimate.txt` (the relaxations with the estimates), which
-the tester reads from its working directory, this one.
+`InnerBSCfg-wrong-estimate.txt` (the relaxations with the estimates) and
+`InnerBSCfg-unresolved.txt` (the inconclusive relaxation), which the tester
+reads from its working directory, this one.
 
 The cases are:
 
@@ -35,6 +38,11 @@ The cases are:
   relaxation, right or misleading, under both bounding protocols and in both
   senses: the estimates have to be asked for, the optimum has to be the
   same, and the order of the branchings has to depend on the estimates;
+- a relaxation that is inconclusive at some nodes, with every strategy under
+  both bounding protocols, in both senses and with a retained tree: the
+  exploration has to go on past the nodes set aside, the status has to be
+  `kLowPrecision` when some of them could still improve the incumbent and
+  `kOK` with the optimum otherwise, and both bounds have to hold;
 - the rounding heuristic, whose incumbent is the solution written back;
 - an empty box and a box with no integer point (whose relaxation is not
   empty), both infeasible, with both bounds at the infinity of the sense;

@@ -86,6 +86,19 @@ static bool improves( double value , double best , bool minimizing )
  return( minimizing ? value < best : value > best );
  }
 
+/// whether the evaluation of a node has ended inconclusively
+/** True for the return codes with which a relaxation says that it has
+ * neither solved nor failed (stopped by a budget of its own, or unable to
+ * reach the required accuracy): the relaxation bound that the node has is
+ * still valid, but the node can be neither branched upon nor fenced, and it
+ * is set aside [see BranchAndXSolver::v_unresolved]. */
+
+static bool inconclusive( int res )
+{
+ return( ( res == Solver::kStopTime ) || ( res == Solver::kStopIter ) ||
+         ( res == Solver::kLowPrecision ) );
+ }
+
 /// the Solution corresponding to the current solution of \p slvr
 /** Writes the current solution of \p slvr into its Block (under lock) and
  * returns the corresponding newly minted Solution object, whose ownership
@@ -803,6 +816,7 @@ int BranchAndXSolver::compute( bool changedvars )
  // no bound until an exploration says otherwise [see explore()]
  f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
                 ? Inf< double >() : - Inf< double >();
+ v_unresolved.clear();
  std::mutex globalMutex;
 
  // per-solve budgets and tolerances from the inherited standard parameters
@@ -899,6 +913,8 @@ void BranchAndXSolver::discardTree( ExploringNode * root , OpenList & open ,
                                                  bounds.end() )
                             : *std::max_element( bounds.begin() ,
                                                  bounds.end() );
+ if( ! bounds.empty() )        // so do the nodes set aside unresolved
+  add_unresolved_bounds( minimizing );
  std::function< void( ExploringNode * ) > deleteTree =
   [ & ]( ExploringNode * node ) {
    if( ! node )
@@ -966,6 +982,12 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
                            bestSolution , f_incumbentCell , toPrune ,
                            maxThreadForSolvers );
+  if( inconclusive( res ) ) {    // set aside, still in the frontier
+   v_unresolved.push_back( F->get_bound() );
+   subOptimalNodes.push_back( F );
+   res = Solver::kOK;
+   continue;
+   }
   if( res != Solver::kOK )
    break;
   if( ( ! toPrune ) &&
@@ -1042,6 +1064,11 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                        branchSolver ,
                        maxThreadForSolvers , relTol , absTol , globalMutex ,
                        nullptr , false );
+   if( inconclusive( res ) ) {     // set aside, as if fenced
+    v_unresolved.push_back( currentNode->get_bound() );
+    prunedHere = true;
+    res = Solver::kOK;
+    }
    if( res != Solver::kOK ) {       // an infeasible root ends up here
     // leave the solvers at the root, the Changes of the node undone
     ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
@@ -1097,6 +1124,11 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                         bestSolution , f_incumbentCell , toPrune ,
                         branchSolver ,
                         maxThreadForSolvers , relTol , absTol , globalMutex );
+    if( inconclusive( res ) ) {    // set aside, as if fenced
+     v_unresolved.push_back( new_node->get_bound() );
+     toPrune = true;
+     res = Solver::kOK;
+     }
     if( res != Solver::kOK ) {
      // leave the solvers at the root, the Changes of the child undone
      ExploringNode::moveBetweenNodes( new_node , rootNode , solvers );
@@ -1234,9 +1266,11 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 
  // open nodes that can improve are left only when the loop has run out of
  // one of the budgets: the node one is gone when a single node is left
- if( ! complete )
+ if( ! complete ) {
+  add_unresolved_bounds( minimizing );
   return( nodeBudget <= 1 ? Solver::kStopIter : Solver::kStopTime );
- return( kOK );
+  }
+ return( add_unresolved_bounds( minimizing ) ? Solver::kLowPrecision : kOK );
 
  }  // end( BranchAndXSolver::explore )
 
@@ -1359,6 +1393,14 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
                          f_incumbentCell , toPrune ,
                          branchSolver , 1 ,
                          relTol , absTol , incumbentMutex , &incumbentMutex );
+ if( inconclusive( res ) ) {       // set aside, as if fenced
+  {
+   std::lock_guard< std::mutex > guard( incumbentMutex );
+   v_unresolved.push_back( currentNode->get_bound() );
+   }
+  moveSolverToFather( currentNode , &solvers );
+  return( Solver::kOK );
+  }
  if( res != ThinComputeInterface::kOK )
   return( res );
 
@@ -1453,6 +1495,11 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                         bestSolution , f_incumbentCell , toPrune ,
                         nodeBranchSolver ,
                         1 , relTol , absTol , globalMutex );
+    if( inconclusive( res ) ) {    // set aside, as if fenced
+     v_unresolved.push_back( new_node->get_bound() );
+     toPrune = true;
+     res = Solver::kOK;
+     }
     if( res != Solver::kOK ) {
      moveSolverToFather( new_node , &solvers );
      delete new_node;
@@ -1571,6 +1618,14 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                                bestBound , bestSolution ,
                                f_incumbentCell , toPrune ,
                                1 , &incumbentMutex );
+       if( inconclusive( RV ) ) {  // set aside, as if fenced
+        {
+         std::lock_guard< std::mutex > guard( incumbentMutex );
+         v_unresolved.push_back( new_node->get_bound() );
+         }
+        toPrune = true;
+        RV = Solver::kOK;
+        }
        // the branches are asked while the Solver are still at the child,
        // whose relaxation they come out of, as everywhere else [see
        // obtainBranchList()]: only then the Solver goes back to the father
@@ -1655,9 +1710,30 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
  if( ( result.load() == Solver::kOK ) && ( nodeBdg <= 0 ) )
   return( Solver::kStopIter );
+ // all explored but the nodes set aside unresolved, which alone bound what
+ // is left [see add_unresolved_bounds()]
+ if( result.load() == Solver::kOK ) {
+  f_open_bound = minimizing ? Inf< double >() : - Inf< double >();
+  if( add_unresolved_bounds( minimizing ) )
+   return( Solver::kLowPrecision );
+  }
  return( result.load() );
 
  }  // end( BranchAndXSolver::ParallelDFSSolve )
+
+/*--------------------------------------------------------------------------*/
+
+bool BranchAndXSolver::add_unresolved_bounds( bool minimizing )
+{
+ bool open = false;
+ for( const auto b : v_unresolved ) {
+  f_open_bound = minimizing ? std::min( f_open_bound , b )
+                            : std::max( f_open_bound , b );
+  open |= ! cannot_improve( b , f_incumbentCell->load() , minimizing ,
+                            relTol , absTol );
+  }
+ return( open );
+ }
 
 /*--------------------------------------------------------------------------*/
 

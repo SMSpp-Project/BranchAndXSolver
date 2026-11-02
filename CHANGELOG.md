@@ -27,7 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built with the CMake option `SMSpp_BUILD_MODULE`, as the target
   `SMS++::BranchAndXSolver_module`
 
+- the documentation of the class gives the formulation of the search: the
+  tree and the algebra of the undo Changes, the move along the common
+  ancestor, the pruning test with its tolerances, the bound and the
+  incumbent of the Solver of a node, the exploration strategies, the two
+  kinds of parallelism and the tightening, with the references
+
 ### Changed
+
+- the README leaves the channels that distribute SMS++ to the
+  installation guide of the wiki (Installing-SMS++), keeping the names
+  of the packages of the module
+
+- a node whose relaxation returns `kStopTime`, `kStopIter` or
+  `kLowPrecision` (e.g., a Lagrangian Dual not solved to the required
+  accuracy whose solution gives nothing to branch upon) no longer stops the
+  whole exploration: it is set aside, neither branched upon nor fenced, the
+  other nodes are explored, and its relaxation bound enters the bound of the
+  solve as that of an open node; `compute()` returns `kLowPrecision` if some
+  node so set aside can still improve the incumbent, while a relaxation
+  returning `kError` still stops the solve
 
 - the pipeline builds the module also with its makefiles, after CMake, and
   runs on a change of the makefiles too [see `ci/makefile` of the umbrella]
@@ -61,6 +80,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the Objective alone changes)
 
 ### Fixed
+
+- on Windows, the executables that copy their DLLs next to themselves
+  are linked one at a time (a job pool of Ninja), since two copies of the
+  same DLL into one directory collided (e.g., with the clang++ of MSYS2)
+
+- with the compilers of MinGW (MSYS2) the target asks whoever links it
+  for the symbol that forces the module in, as with MSVC and on macOS:
+  the linker imports a DLL only for the symbols asked for, so that a
+  program that used none had the module left out and its classes
+  missing from the factory
 
 - the makefiles of the tests and of the tools build also with g++: they
   take the option that stops at the first error and the one of the

@@ -31,13 +31,19 @@
  * - BoxEstimate, the BoxRelaxation that also estimates the best value under
  *   each child of a branching [see BranchEstimator], as the value of the
  *   rounding in the box of the child, and BoxWrongEstimate, which swaps the
- *   estimates of the two children and at times gives none.
+ *   estimates of the two children and at times gives none;
+ *
+ * - BoxUnresolved, the BoxRelaxation that at every third compute() but the
+ *   first says kLowPrecision, as a Lagrangian Dual not solved to the
+ *   required accuracy does, leaving a node that can be neither branched
+ *   upon nor fenced.
  *
  * The inner Solver are given to BranchAndXSolver by the BlockSolverConfig
  * in InnerBSCfg.txt (the relaxation alone), InnerBSCfg-rounding.txt (the
  * relaxation and the heuristic), InnerBSCfg-estimate.txt and
- * InnerBSCfg-wrong-estimate.txt (the relaxations with the estimates), read
- * from the working directory.
+ * InnerBSCfg-wrong-estimate.txt (the relaxations with the estimates) and
+ * InnerBSCfg-unresolved.txt (the inconclusive relaxation), read from the
+ * working directory.
  *
  * The test needs nothing but the core, so that the CI of BranchAndXSolver
  * builds this module alone. The relaxation acts on the Block rather than on
@@ -425,6 +431,39 @@ class BoxWrongEstimate : public BoxEstimate {
 
 SMSpp_insert_in_factory_cpp_0( BoxWrongEstimate );
 
+/*--------------------------------------------------------------------------*/
+/*--------------------------- CLASS BoxUnresolved --------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the BoxRelaxation that at every third compute() but the first says
+/// kLowPrecision instead of kOK, as a Lagrangian Dual not solved to the
+/// required accuracy does: the node can be neither branched upon nor fenced
+
+class BoxUnresolved : public BoxRelaxation {
+
+ public:
+
+ int compute( bool changedvars = true ) override {
+  const int status = BoxRelaxation::compute( changedvars );
+  if( ( status == kOK ) && ( ( ++n_calls % 3 ) == 0 ) ) {
+   ++n_unresolved;
+   return( kLowPrecision );
+   }
+  return( status );
+  }
+
+ /// the compute() of all the BoxUnresolved so far, and how many of them
+ /// said kLowPrecision
+ static inline int n_calls = 0;
+ static inline int n_unresolved = 0;
+
+ private:
+
+ SMSpp_insert_in_factory_h;
+
+ };  // end( class( BoxUnresolved ) )
+
+SMSpp_insert_in_factory_cpp_0( BoxUnresolved );
+
 
 /*--------------------------------------------------------------------------*/
 /*------------------------------- DATA -------------------------------------*/
@@ -687,6 +726,55 @@ void solve_and_check_stop( Solver * bnx , Instance & inst , int expected ,
  }
 
 /*--------------------------------------------------------------------------*/
+/// solve with an inconclusive relaxation [see BoxUnresolved] and check that
+/// the exploration has gone on past the first node set aside, that the
+/// status says whether some of them could still improve the incumbent, and
+/// that the bounds hold on both sides of the optimum; \p bounded says that
+/// the nodes set aside have a finite bound, which a node of the frontier of
+/// a retained tree has not, since its re-evaluation starts with none [see
+/// BranchAndXSolver::reseedFrontier()]
+
+void solve_and_check_unresolved( Solver * bnx , Instance & inst ,
+                                 const std::string & name ,
+                                 bool bounded = true )
+{
+ const double opt = closed_form( inst.data , inst.max );
+ BoxUnresolved::n_calls = 0;
+ BoxUnresolved::n_unresolved = 0;
+ int status = Solver::kError;
+ try {
+  status = bnx->compute();
+  }
+ catch( std::exception & e ) {
+  check( false , name + ": compute() threw " + e.what() );
+  return;
+  }
+ const double v = bnx->get_var_value();
+ const double lb = bnx->get_lb() , ub = bnx->get_ub();
+ std::cout << std::left << std::setw( 40 ) << name << std::right
+           << std::scientific << std::setprecision( 9 ) << " lb " << lb
+           << " ub " << ub << " status " << status << " set aside "
+           << BoxUnresolved::n_unresolved << std::endl;
+ check( ( status == Solver::kOK ) || ( status == Solver::kLowPrecision ) ,
+        name + ": status " + std::to_string( status ) +
+        ", neither kOK nor kLowPrecision" );
+ check( BoxUnresolved::n_calls > 3 ,
+        name + ": the exploration stopped at the first node set aside" );
+ // a node set aside covers a part of the region that has not been explored,
+ // so its bound only is valid there: the bound on its side is not the
+ // optimum unless the incumbent is, and both bounds hold
+ check( ( lb <= opt + tol ) && ( ub >= opt - tol ) ,
+        name + ": the bounds do not hold" );
+ check( inst.max ? v <= opt + tol : v >= opt - tol ,
+        name + ": a value better than the optimum" );
+ if( status == Solver::kOK )
+  check( std::abs( v - opt ) <= tol , name + ": kOK with a wrong value" );
+ else if( bounded )
+  check( inst.max ? ub < INF : lb > - INF ,
+         name + ": no relaxation bound from the nodes set aside" );
+ }
+
+/*--------------------------------------------------------------------------*/
 /// delete the Block of the instance, the Solver registered to it and its
 /// Objective, which the Block does not own
 
@@ -799,6 +887,42 @@ void test_best_estimate( void )
   for( int p = 0 ; p < 2 ; ++p )
    differ |= order[ { false , max , p } ] != order[ { true , max , p } ];
  check( differ , "the order does not depend on the estimates" );
+ }
+
+/*--------------------------------------------------------------------------*/
+/// a relaxation that is inconclusive at some nodes [see BoxUnresolved]:
+/// every strategy under both bounding protocols, both senses, and a
+/// retained tree, whose re-solve re-evaluates the nodes set aside
+
+void test_unresolved( void )
+{
+ std::cout << "nodes whose relaxation is inconclusive" << std::endl;
+ const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
+                          "BestEstimate" };
+ bool some = false;
+ for( bool max : { false , true } )
+  for( int m = 0 ; m < 5 ; ++m )
+   for( int p = 0 ; p < 2 ; ++p ) {
+    auto inst = make( max ? 11 : 7 , max );
+    auto bnx = new_bnx( "InnerBSCfg-unresolved.txt" );
+    set_int( bnx , "intSolveMethod" , m );
+    set_int( bnx , "intBoundingProtocol" , p );
+    inst.block->register_Solver( bnx );
+    solve_and_check_unresolved( bnx , inst , std::string( "unresolved, " ) +
+                                ( max ? "max, " : "min, " ) + method[ m ] +
+                                ( p ? ", lazy" : ", eager" ) );
+    some |= BoxUnresolved::n_unresolved > 0;
+    destroy( inst );
+    }
+ check( some , "no node set aside" );
+
+ auto inst = make( 7 , false );
+ auto bnx = new_bnx( "InnerBSCfg-unresolved.txt" );
+ set_int( bnx , "intReoptimize" , 1 );
+ inst.block->register_Solver( bnx );
+ solve_and_check_unresolved( bnx , inst , "unresolved, retained tree" );
+ solve_and_check_unresolved( bnx , inst , "unresolved, re-solve" , false );
+ destroy( inst );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1146,8 +1270,8 @@ int main( void )
 {
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
-  test_best_estimate , test_heuristic , test_infeasible , test_integral_root ,
-  test_limits , test_parameters , test_detach_reattach ,
+  test_best_estimate , test_unresolved , test_heuristic , test_infeasible ,
+  test_integral_root , test_limits , test_parameters , test_detach_reattach ,
   test_objective_change , test_integrality_change };
 
  for( auto c : cases ) {
