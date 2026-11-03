@@ -33,6 +33,12 @@ BAXSLVINC = -I$(BAXSLVSDR)/include
 
 BAXSLVH   = $(BAXSLVSDR)/include/BranchAndXSolver.h
 
+# the C++20 module smspp.branchandxsolver - - - - - - - - - - - - - - - - - -
+# [see makefile-mod of SMS++]
+
+$(eval $(call SMSppMODrule,BAXSLV,$(BAXSLVSDR),BranchAndXSolver,\
+	smspp.branchandxsolver,SMS++))
+
 # clean - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 clean::

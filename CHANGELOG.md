@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
+### Added
+
+- the makefiles build the C++20 module `smspp.branchandxsolver` when
+  `SMSppMOD` is not empty (e.g., `make SMSppMOD=1`), with clang++ 16 or
+  later [see `lib/makefile-mod` of SMS++]
+
+- the best-estimate search (`intSolveMethod` `BestEstimate`): the open node
+  of best estimate of the value under it is extracted first, the estimate
+  being given by the RelaxationSolver that branched, if it is also a
+  `BranchEstimator` (`BranchingRule.h` of SMS++), and the bound of the
+  parent otherwise, and never better than the bound of the node, which
+  still prunes it
+
+- the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
+  which exports every name that the headers declare at namespace scope and
+  re-exports `smspp`, so that a source file can write `import
+  smspp.branchandxsolver;` in place of the `#include` of the headers; it is
+  built with the CMake option `SMSpp_BUILD_MODULE`, as the target
+  `SMS++::BranchAndXSolver_module`
+
+- the documentation of the class gives the formulation of the search: the
+  tree and the algebra of the undo Changes, the move along the common
+  ancestor, the pruning test with its tolerances, the bound and the
+  incumbent of the Solver of a node, the exploration strategies, the two
+  kinds of parallelism and the tightening, with the references
+
+### Changed
+
+- the README leaves the channels that distribute SMS++ to the
+  installation guide of the wiki (Installing-SMS++), keeping the names
+  of the packages of the module
+
+- a node whose relaxation returns `kStopTime`, `kStopIter` or
+  `kLowPrecision` (e.g., a Lagrangian Dual not solved to the required
+  accuracy whose solution gives nothing to branch upon) no longer stops the
+  whole exploration: it is set aside, neither branched upon nor fenced, the
+  other nodes are explored, and its relaxation bound enters the bound of the
+  solve as that of an open node; `compute()` returns `kLowPrecision` if some
+  node so set aside can still improve the incumbent, while a relaxation
+  returning `kError` still stops the solve
+
+- the pipeline builds the module also with its makefiles, after CMake, and
+  runs on a change of the makefiles too [see `ci/makefile` of the umbrella]
+
+- `SMSpp_BUILD_MODULE` no longer stops the configuration when the C++20
+  module cannot be built, i.e., with a CMake older than 3.28, a generator
+  other than Ninja or Visual Studio, a compiler other than Clang 16 (with
+  `clang-scan-deps`) or MSVC 19.34, or a module it imports that is not
+  there: the option is turned off with a warning that says why, and the
+  build goes on with the headers [see `cmake/CheckModule.cmake` of SMS++]
+
+- the exploration allocates less, with the same nodes in the same order: a
+  move between two nodes collects the path in a buffer of the thread rather
+  than in a list built each time, the children of a node are a vector, the
+  surviving children of the nodes share one buffer, the nodes of a
+  depth-first worker live in its stack frames, the best-first open lists
+  compare with a function object rather than through a std::function, and
+  an idle worker of the parallel depth-first search waits on a condition
+  variable rather than polling the pool every 100 microseconds
+
+- the outstanding Modification are read through `Modification::changes()`
+  rather than classified by the RelaxationSolver, each one by itself rather
+  than by the bits of all of them or-ed together: the retained tree survives
+  those that relax or restrict the problem without touching what its
+  branching Changes act upon (added Variable or Constraint, Variable
+  becoming integer, changed sides or Objective), and it is discarded when
+  the data of some Variable change, when Variable or Constraint are
+  removed, when some Variable becomes continuous or when a physical
+  Modification does not say what it changes; the infeasible part of its
+  frontier stays fenced whenever the feasible region cannot grow (not only
+  when the Objective alone changes)
+
+### Fixed
+
+- on Windows, the executables that copy their DLLs next to themselves
+  are linked one at a time (a job pool of Ninja), since two copies of the
+  same DLL into one directory collided (e.g., with the clang++ of MSYS2)
+
+- with the compilers of MinGW (MSYS2) the target asks whoever links it
+  for the symbol that forces the module in, as with MSVC and on macOS:
+  the linker imports a DLL only for the symbols asked for, so that a
+  program that used none had the module left out and its classes
+  missing from the factory
+
+- the makefiles of the tests and of the tools build also with g++: they
+  take the option that stops at the first error and the one of the
+  debugging information, which clang++ and g++ spell differently
+  (`-ferror-limit=1` and `-glldb` against `-fmax-errors=1` and `-ggdb`),
+  from `SMSppSWERR` and `SMSppSWDBG` of `lib/makefile-OS` of SMS++
+
+- the root is fenced with `dblRelAcc` and `dblAbsAcc`, as any other node,
+  rather than with no tolerance at all: a root whose relaxation bound was
+  the value of the true solution it gave up to the accuracy of the
+  relaxation (e.g., a Lagrangian dual solved to 1e-5 whose convexified
+  solution is integral, on the ORLib instances of the single-source CFL)
+  was branched, and the RelaxationSolver had nothing left to branch upon
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
@@ -140,6 +239,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RPATH relative to itself, so that an installed tree keeps working wherever
   it is moved
 
-[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...develop
+[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.3.0...develop
+[0.3.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...0.3.0
 [0.2.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/branchandxsolver/-/tags/0.1.0

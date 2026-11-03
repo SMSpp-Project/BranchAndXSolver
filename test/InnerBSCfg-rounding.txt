@@ -22,8 +22,7 @@ BoxRounding    # name of 2nd Solver
 
 # now all the ComputeConfig
 # [none]
-
-# end of BlockSolverConfig- - - - - - - - - - - - - - - - - - - - - - - - - -
+# end of BlockSolverConfig - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # - - - - - - - - - - -  END InnerBSCfg-rounding.txt  - - - - - - - - - - - -

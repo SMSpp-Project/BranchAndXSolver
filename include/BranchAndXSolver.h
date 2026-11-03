@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------*/
-/*---------------------- File BranchAndXSolver.h -----------------------*/
+/*---------------------- File BranchAndXSolver.h ---------------------------*/
 /*--------------------------------------------------------------------------*/
 /** @file
  * Header file for the *concrete* class BranchAndXSolver, which implements the
@@ -11,7 +11,8 @@
  * RelaxationSolver(s) provide relaxation bounds, true (primal) solutions and
  * the branching Changes, and the attached heuristic ChangeSolver(s), if any,
  * provide further primal bounds. The tree can be explored depth-first,
- * breadth-first or best-first (see intSolveMethod); nodes are pruned by the
+ * breadth-first, best-first or by the estimates that the RelaxationSolver
+ * gives of its children (see intSolveMethod); nodes are pruned by the
  * standard inherited tolerances (dblRelAcc / dblAbsAcc), and intMaxNodes / the
  * inherited dblMaxTime bound the number of explored nodes and the total time.
  *
@@ -52,14 +53,20 @@
 /*------------------------------ INCLUDES ----------------------------------*/
 /*--------------------------------------------------------------------------*/
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
+#include <cmath>
+#include <limits>
 #include <list>
 #include <mutex>
 #include <queue>
+#include <vector>
 
 #include "BlockSolverConfig.h"
+
+#include "BranchingRule.h"
 
 #include "ChangeSolver.h"
 
@@ -79,15 +86,168 @@ namespace SMSpp_di_unipi_it
  class OpenList;        // forward declaration of OpenList
 
 /*--------------------------------------------------------------------------*/
-/*---------------------- CLASS BranchAndXSolver ------------------------*/
+/*---------------------- CLASS BranchAndXSolver ----------------------------*/
 /*--------------------------------------------------------------------------*/
 /// a generic Branch-and-Bound Solver driven by ChangeSolver
-/** The BranchAndXSolver explores the enumeration tree whose nodes are
- * identified by the Change leading to them from their parent; moving the
- * attached :ChangeSolver between two nodes amounts to applying the Changes
- * (or the undo Changes) found along the joining path. RelaxationSolver(s)
- * provide the relaxation bound, possibly true solutions, and the branching
- * Changes; plain ChangeSolver(s) act as primal heuristics. */
+/** The BranchAndXSolver solves the problem
+ *  \f[
+ *    z^* = \max \{ f(x) : x \in X \}
+ *  \f]
+ * encoded by its Block (minimization being the mirror image, handled by the
+ * sense of the Objective) by recursively partitioning \f$ X \f$ and bounding
+ * each part through a relaxation \f$ \hat{X} \supseteq X \f$ over which
+ * maximizing \f$ f \f$ is "easy", the relaxation being solved by the
+ * attached :RelaxationSolver [see ChangeSolver.h]. In the following
+ * \f$ \bar{z} \f$ is the value of the best feasible solution found so far
+ * (the incumbent), and, for a node \f$ \nu \f$ of the enumeration tree,
+ * \f$ X_\nu \subseteq X \f$ is the subproblem it represents and
+ * \f$ D( \nu ) \geq \max \{ f(x) : x \in X_\nu \} \f$ the (dual) bound
+ * given by its relaxation.
+ *
+ * \par The enumeration tree.
+ * A node \f$ \nu \f$ is identified by the Change \f$ c_\nu \f$ that
+ * generates it from its father \f$ p( \nu ) \f$, and it owns \f$ c_\nu \f$,
+ * the undo \f$ c_\nu^{-1} \f$ that goes back to the father, and its bound;
+ * hence \f$ X_\nu \f$ is the result of applying to \f$ X \f$ the Changes
+ * along the path from the root, i.e.,
+ *  \f[
+ *    X_\nu = ( c_\nu \circ c_{p( \nu )} \circ \dots \circ c_{r'} ) X
+ *  \f]
+ * where \f$ r' \f$ is the child of the root on that path. A GroupChange
+ * \f$ g = \langle c_1 , \dots , c_k \rangle \f$ is applied as the single
+ * Change \f$ c_k \circ \dots \circ c_1 \f$, and its undo is the composition
+ * of the undos in reverse order,
+ *  \f[
+ *    g^{-1} = c_1^{-1} \circ \dots \circ c_k^{-1} \;,
+ *  \f]
+ * which is what makes a branching decision touching several things at once
+ * a Change like any other, and the round trip down and up a subtree exact.
+ * Since the Changes of the children of a node partition its subproblem
+ * (the RelaxationSolver must ensure that \f$ X_\nu = \bigcup_i
+ * X_{\nu c_i} \f$ for those returned by branch()), the leaves of any cut
+ * through the tree partition \f$ X \f$, and no feasible solution is lost.
+ *
+ * \par Moving along the tree.
+ * One :ChangeSolver visits many nodes without being rebuilt: it is moved
+ * from a node \f$ s \f$ to a node \f$ t \f$ along the unique path through
+ * their lowest common ancestor \f$ a \f$, applying the undos from
+ * \f$ s \f$ up to \f$ a \f$ and then the Changes from \f$ a \f$ down to
+ * \f$ t \f$. A :ChangeSolver may intercept the Changes it understands and
+ * apply them to its own internal state rather than to the Block, which is
+ * where the efficiency of the enumeration (possibly) comes from, since
+ * moving along the tree then never locks nor reads the Block. The
+ * depth-first exploration needs no explicit links (the recursion is the
+ * path to the root), while the others keep the father of each node, so as
+ * to jump between any two open nodes.
+ *
+ * \par Bounding and pruning.
+ * Since \f$ X_\nu \subseteq \hat{X}_\nu \f$, no solution in \f$ X_\nu \f$
+ * is better than \f$ D( \nu ) \f$; hence, \f$ \nu \f$ is pruned when its
+ * bound cannot improve the incumbent within the inherited tolerances
+ * \f$ \varepsilon_a \f$ = dblAbsAcc and \f$ \varepsilon_r \f$ = dblRelAcc,
+ * i.e., when
+ *  \f[
+ *    D( \nu ) \leq \bar{z} + \max \{ \varepsilon_a \,,\, \varepsilon_r
+ *                                    \max \{ | \bar{z} | , 1 \} \}
+ *  \f]
+ * (the inequality reversed for minimization), as well as when its
+ * relaxation is empty. Note that the default dblAbsAcc = +INF is taken as
+ * "not active", i.e., as \f$ \varepsilon_a = 0 \f$: plugged in literally it
+ * would prune every node as soon as there is an incumbent.
+ *
+ * A node whose evaluation is inconclusive, i.e., whose relaxation returns
+ * kStopTime, kStopIter or kLowPrecision (say, a Lagrangian Dual not solved
+ * to the required accuracy whose solution gives nothing to branch upon), is
+ * set aside: it is neither branched upon nor fenced, the exploration goes on
+ * with the other nodes, and its bound enters that of the whole solve as the
+ * bound of an open node does. If, at the end, some node so set aside can
+ * still improve the incumbent, compute() returns kLowPrecision rather than
+ * kOK; a relaxation returning kError still stops the whole solve.
+ *
+ * \par The Solver of a node.
+ * A node is evaluated by a set of inner Solver, all described by the
+ * BlockSolverConfig [see strNameOfBlockSolverConfigurationFile]: one or more
+ * :RelaxationSolver \f$ \mathcal{R} \f$, each giving a bound
+ * \f$ D_R( \nu ) \f$ and possibly a solution feasible for the true problem
+ * of value \f$ \underline{z}_R \f$, and zero or more plain :ChangeSolver
+ * \f$ \mathcal{H} \f$, the primal heuristics, each giving only a feasible
+ * solution \f$ x_H \f$ and never a bound. The bound of the node is the
+ * tightest of those of the relaxations,
+ *  \f[
+ *    D( \nu ) = \min \{ D_R( \nu ) : R \in \mathcal{R} \}
+ *  \f]
+ * (the max for minimization), and the relaxation attaining it is the one
+ * that branches the node; the incumbent is updated with the best solution
+ * found by any Solver of the node,
+ *  \f[
+ *    \bar{z} \leftarrow \max \{ \bar{z} \,,\,
+ *                     \max \{ \underline{z}_R : R \in \mathcal{R} \} \,,\,
+ *                     \max \{ f( x_H ) : H \in \mathcal{H} \} \} \;.
+ *  \f]
+ * A heuristic therefore changes neither the partition nor the bounds, only
+ * \f$ \bar{z} \f$; yet, a good incumbent found early is what makes the
+ * pruning test effective, and it is often decisive in practice.
+ *
+ * \par Exploration strategies.
+ * If \f$ \mathcal{O} \f$ is the set of the open nodes (generated but not
+ * yet branched), a strategy [see intSolveMethod] is only the rule choosing
+ * the next node in \f$ \mathcal{O} \f$: the deepest one for depth-first, the
+ * shallowest one for breadth-first, the one with the best \f$ D( \nu ) \f$
+ * for best-first (diving to a leaf below it in BestFSDive), and the one with
+ * the best estimate of the value under it for best-estimate. Best-first
+ * explores the fewest nodes for a given relaxation, since no node with
+ * \f$ D( \nu ) \leq z^* \f$ is ever branched, but it stores the whole of
+ * \f$ \mathcal{O} \f$; depth-first only stores the current path, hence its
+ * memory is linear in the depth, which makes it the safer choice on deep
+ * trees and the one run by the workers of the parallel exploration.
+ *
+ * \par Parallel exploration.
+ * Two orthogonal kinds of parallelism are available. Across the tree [see
+ * intMaxThread and ParallelDFSSolve()], after an ordered ramp-up \f$ K \f$
+ * workers, each driving its own copy of the inner Solver (so that applying
+ * the Changes needs no synchronization), repeatedly claim the oldest open
+ * subtree and explore it depth-first, sharing only the incumbent and the
+ * pool of open subtrees, and a worker donates a branch of its subtree when
+ * the pool runs low; claiming in the order of discovery is what keeps the
+ * runs replicable, since a random distribution of the work is known to make
+ * them erratic on knapsack-like problems. Across the Solver of a node [see
+ * intThreadForDifferentSolvers], the compute() of the several relaxations
+ * and heuristics are run concurrently while the reduction of their results
+ * (incumbent, tightest bound, pruning) stays serial, and therefore the
+ * outcome is the same as that of the serial code. Of course, the first kind
+ * is subject to the usual anomalies of parallel Branch-and-Bound: a worker
+ * finding a good incumbent early may let the others prune subtrees that the
+ * sequential search would enter (and vice versa), hence speedups may be
+ * superlinear as well as below one.
+ *
+ * \par Tightening.
+ * Any tightening of the relaxation (preprocessing, reduced-cost fixing,
+ * cuts) is done by the RelaxationSolver on its own terms, which reads what
+ * is global to the search (the incumbent, the pool of the globally valid
+ * cuts) in a GlobalInformation [see str_GlobalCuts]; a tightening is valid
+ * if it does not remove any solution of \f$ X_\nu \f$ better than the
+ * incumbent, and one that is only locally valid is undone when the subtree
+ * is left. Reoptimization across compute() calls is described in
+ * intReoptimize.
+ *
+ * \par References.
+ * E. L. Lawler, D. E. Wood, "Branch-and-bound methods: a survey",
+ * Operations Research 14(4):699-719, 1966. \n
+ * D. R. Morrison, S. H. Jacobson, J. J. Sauppe, E. C. Sewell,
+ * "Branch-and-bound algorithms: a survey of recent advances in searching,
+ * branching, and pruning", Discrete Optimization 19:79-102, 2016. \n
+ * M. Fischetti, A. Lodi, "Heuristics in mixed integer programming", in
+ * Wiley Encyclopedia of Operations Research and Management Science, 2011. \n
+ * T. Berthold, "Primal heuristics for mixed integer programs", Diploma
+ * thesis, Technische Universitaet Berlin, 2006. \n
+ * B. Gendron, T. G. Crainic, "Parallel branch-and-bound algorithms: survey
+ * and synthesis", Operations Research 42(6):1042-1066, 1994. \n
+ * D. A. Bader, W. E. Hart, C. A. Phillips, "Parallel algorithm design for
+ * branch and bound", in H. J. Greenberg (ed.), Tutorials on Emerging
+ * Methodologies and Applications in Operations Research, Springer, 2005. \n
+ * B. Archibald, P. Maier, C. McCreesh, R. Stewart, P. Trinder, "Replicable
+ * parallel branch and bound search", Journal of Parallel and Distributed
+ * Computing 113:92-114, 2018. */
 
 class BranchAndXSolver : public Solver {
 
@@ -123,8 +283,8 @@ class BranchAndXSolver : public Solver {
    * at most once [see Node::is_evaluated()]. */
   intReoptimize ,                   /**< retain the tree to reoptimize:
    * with it any serial exploration keeps the tree and its fenced frontier
-   * alive across compute() calls, and a re-solve under class 1-3 changes
-   * [see RelaxationSolver::classify()] re-seeds the search from the
+   * alive across compute() calls, and a re-solve under changes that leave
+   * the tree valid [see keeps_tree()] re-seeds the search from the
    * re-evaluated frontier instead of re-deriving the whole tree [see
    * reseedFrontier()]; the strategy only decides the order in which the
    * frontier is re-explored, which is that of its own open set. The
@@ -162,7 +322,8 @@ class BranchAndXSolver : public Solver {
   DFS = 0 ,                         ///< depth-first search
   BFS = 1 ,                         ///< breadth-first search
   BestFS = 2 ,                      ///< best-first search
-  BestFSDive = 3                    ///< best-first search with depth-first dives
+  BestFSDive = 3 ,                  ///< best-first search with dives
+  BestEstimate = 4                  ///< best-estimate search
   };
 
 /*--------------------------------------------------------------------------*/
@@ -211,7 +372,8 @@ class BranchAndXSolver : public Solver {
                       maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
-                      configurationRS( nullptr ) , changes( 4 ) ,
+                      configurationRS( nullptr ) ,
+                      changes( Modification::eModAll ) ,
                       subOptimalNodes() , infeasibleNodes() ,
                       integerNodes() ,
                       f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) { }
@@ -250,7 +412,7 @@ class BranchAndXSolver : public Solver {
    dropInnerSolvers();
   Solver::set_Block( block );
   f_state = kUnEval;
-  changes = 4;
+  changes = Modification::eModAll;
   if( block ) {
    initializeGlobalInformation();
    if( configurationRS )
@@ -267,6 +429,13 @@ class BranchAndXSolver : public Solver {
  /** Set the int parameters specific of BranchAndXSolver:
   *
   * - intSolveMethod [BestFS]: how to explore the tree (see SolveMethod);
+  *   BestEstimate extracts first the node whose estimate of the best value
+  *   under it is the best, the estimate being the one that the
+  *   RelaxationSolver that branched gives of the child, if it derives from
+  *   BranchEstimator [see BranchingRule.h], and the bound of the parent
+  *   otherwise, and never better than the bound of the node; the nodes are
+  *   still pruned by their bounds, so that the estimates only change the
+  *   order of the exploration.
   *
   * - intBoundingProtocol [Eager]: when a node is evaluated (see
   *   BoundingProtocol); it changes nothing of what is explored, only when
@@ -294,7 +463,7 @@ class BranchAndXSolver : public Solver {
  void set_par( idx_type par , int value ) override {
   switch( par ) {
    case( intSolveMethod ):
-    if( ( value < DFS ) || ( value > BestFSDive ) )
+    if( ( value < DFS ) || ( value > BestEstimate ) )
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intSolveMethod" ) );
     solveType = static_cast< SolveMethod >( value );
@@ -388,7 +557,7 @@ class BranchAndXSolver : public Solver {
   configurationRS = cfg;
   if( f_Block && configurationRS ) {
    dropInnerSolvers();
-   changes = 4;
+   changes = Modification::eModAll;
    applyConfigurationToSolvers();
    }
   }
@@ -414,6 +583,16 @@ class BranchAndXSolver : public Solver {
 /*---------------------- METHODS FOR READING RESULTS -----------------------*/
 /*--------------------------------------------------------------------------*/
 
+ /// whether an incumbent solution is actually available
+ /** A solve stopped before finding an incumbent has no solution to write.
+  * bestSolution alone can still belong to an earlier solve, whose bound
+  * has been reset to no_incumbent() at the start of a new exploration. */
+
+ [[nodiscard]] bool has_var_solution( void ) override {
+  return( bestSolution && ( bestBound != no_incumbent() ) );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// write the best solution found into the Variable of the Block
 
  void get_var_solution( Configuration * solc = nullptr ) override {
@@ -446,6 +625,17 @@ class BranchAndXSolver : public Solver {
   * nodes left open and the incumbent) for a maximization one. */
 
  OFValue get_ub( void ) override;
+
+/*--------------------------------------------------------------------------*/
+ /// number of node evaluations started by the last compute(), root included
+ /** Counts each node once per evaluation, independently of the number of
+  * inner solvers; reoptimization counts the frontier evaluations of this
+  * solve. Nodes fenced without evaluation are excluded. Zero before the
+  * first compute(), or when an unchanged problem reuses its answer. */
+
+ [[nodiscard]] long get_evaluated_nodes( void ) const {
+  return( f_evaluated_nodes.load( std::memory_order_relaxed ) );
+  }
 
 /*--------------------------------------------------------------------------*/
 /*------------------- METHODS FOR HANDLING THE PARAMETERS ------------------*/
@@ -773,6 +963,15 @@ class BranchAndXSolver : public Solver {
  void discardRetainedTree( void );
 
 /*--------------------------------------------------------------------------*/
+ /// account for the nodes set aside unresolved in the global bound
+ /** Improves f_open_bound with the relaxation bounds of the nodes set aside
+  * unresolved in this solve [see v_unresolved], and returns true if some of
+  * them can still improve the incumbent, i.e., if the solve, all the rest
+  * being explored, is still not conclusive. */
+
+ bool add_unresolved_bounds( bool minimizing );
+
+/*--------------------------------------------------------------------------*/
  /// the depth-first subtree exploration of one worker
  /** The recursive core of one worker of ParallelDFSSolve(): a depth-first
   * exploration on the worker's own Solver set, with the shared
@@ -827,9 +1026,10 @@ class BranchAndXSolver : public Solver {
   * one retained by the previous solve is taken back (\p rootNode is set to
   * it) and its fenced frontier is re-evaluated under the new data, each node
   * being either re-fenced or re-opened into \p open; the interior of the
-  * tree is NOT re-derived. Class-specific saving: an objective-only change
-  * cannot un-fence an infeasible node [see RelaxationSolver::classify()], so
-  * that part of the frontier is left untouched.
+  * tree is NOT re-derived. When the changes cannot make the feasible
+  * region grow [see Modification::may_grow_region()], e.g., when only the
+  * Objective changes, no infeasible node can be un-fenced, and that part of
+  * the frontier is left untouched.
   *
   * The re-opened nodes are handed to \p open respecting its discipline (a
   * LIFO stack receives them in reverse), exactly as explore() does with the
@@ -860,12 +1060,32 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// process the outstanding Modification
- /** Processes the queued Modification and classifies the kind of change
-  * they amount to (see the changes field), in view of reoptimizing the
-  * tree rather than rebuilding it; the reoptimization itself is NOT
-  * implemented yet, any change currently triggers a solve from scratch. */
+ /** Processes the queued Modification and accumulates what they change
+  * [see Modification::changes()] in the changes field, which tells a
+  * re-solve whether the retained tree can be reused [see keeps_tree()] and
+  * which part of its frontier is to be re-evaluated [see
+  * reseedFrontier()]. */
 
  void process_outstanding_Modification( void );
+
+/*--------------------------------------------------------------------------*/
+ /// true if the retained tree is still valid under the given changes
+ /** True if a tree retained across compute() calls can be reused under the
+  * changes \p c, which are those of a single Modification [see
+  * process_outstanding_Modification()]. It cannot when the data of some
+  * Variable change, when Variable or Constraint are removed or when some
+  * Variable becomes continuous, since the branching Changes of the tree,
+  * which act on the Variable and on the Constraint, may then undo the
+  * change, act on something that is no longer there or no longer cover the
+  * region (x <= 0 and x >= 1 leave out ( 0 , 1 )). It can under anything
+  * else, which is a relaxation (added Variable, enlarged sides) or a
+  * restriction (added Constraint, Variable becoming integer, shrunk sides)
+  * of the problem that the re-evaluation of the fenced frontier takes care
+  * of [see reseedFrontier()]: the infeasible nodes are re-evaluated only
+  * when the region may grow. A physical Modification that does not say
+  * what it changes of the model counts as changing anything. */
+
+ static bool keeps_tree( Modification::ModConcern c );
 
 /*--------------------------------------------------------------------------*/
 /*---------------------------- PRIVATE FIELDS ------------------------------*/
@@ -919,6 +1139,9 @@ class BranchAndXSolver : public Solver {
  /// the root of the tree retained for reoptimization, nullptr if none
  ExploringNode * f_treeRoot;
 
+ /// node evaluations in the current compute(), also shared by DFS workers
+ std::atomic< long > f_evaluated_nodes{ 0 };
+
  /// residual node budget of the current solve (from intMaxNodes), consumed
  /// by the exploration
  int nodeBudget;
@@ -947,10 +1170,9 @@ class BranchAndXSolver : public Solver {
  /// the per-worker Solver sets [see createWorkerSolvers()]
  std::vector< WorkerSolvers > v_workerSolvers;
 
- /// classification of the outstanding changes, for future reoptimization:
- /// 0 = none, 1 = objective only, 2 = r.h.s. only, 3 = both objective and
- /// r.h.s., anything else = general change (solve from scratch)
- char changes;
+ /// what the outstanding Modification change [see Modification::changes()],
+ /// 0 if there are none
+ Modification::ModConcern changes;
 
  /// nodes pruned as sub-optimal, to be revisited on an objective change
  std::list< ExploringNode * > subOptimalNodes;
@@ -960,6 +1182,16 @@ class BranchAndXSolver : public Solver {
 
  /// nodes pruned as integer-feasible, to be revisited on reoptimization
  std::list< ExploringNode * > integerNodes;
+
+ /// the relaxation bounds of the nodes set aside unresolved in this solve
+ /** A node whose evaluation is inconclusive (its relaxation returns
+  * kStopTime, kStopIter or kLowPrecision) can be neither branched upon nor
+  * fenced: it is set aside, and its relaxation bound (that of its father,
+  * if its own evaluation has not improved it) is kept here, so that the
+  * bound of the whole solve accounts for the part of the region that it
+  * covers [see add_unresolved_bounds()]. Written under the incumbent mutex
+  * by the workers of the parallel exploration. */
+ std::vector< double > v_unresolved;
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 
@@ -990,9 +1222,10 @@ class Node {
   *  @param nodeName name of the node (debugging purposes only) */
 
  Node( Change * change , int nodeName = 0 )
-  : bound( - Inf< double >() ) , f_change( change ) ,
-    toFather( nullptr ) , branches() , f_infeasible( false ) ,
-    f_evaluated( false ) , name( nodeName ) {}
+  : bound( - Inf< double >() ) ,
+    estimate( std::numeric_limits< double >::quiet_NaN() ) ,
+    f_change( change ) , toFather( nullptr ) , branches() ,
+    f_infeasible( false ) , f_evaluated( false ) , name( nodeName ) {}
 
 /*--------------------------------------------------------------------------*/
  /// destructor: deletes the owned Changes
@@ -1011,6 +1244,24 @@ class Node {
 
  /// set the value of the relaxation bound
  void set_bound( double db ) { bound = db; }
+
+ /// return the estimate of the best value under the node, NaN if none
+ /** The estimate that the RelaxationSolver that branched the parent gave of
+  * this node [see BranchEstimator]. */
+ double get_estimate( void ) const { return( estimate ); }
+
+ /// set the estimate of the best value under the node
+ void set_estimate( double e ) { estimate = e; }
+
+ /// the key of the node in a best-estimate search
+ /** Its estimate, but never better than its bound (the bound itself if it
+  * has no estimate), in the sense \p minimizing. */
+ double estimate_key( bool minimizing ) const {
+  if( std::isnan( estimate ) )
+   return( bound );
+  return( minimizing ? std::max( estimate , bound )
+                     : std::min( estimate , bound ) );
+  }
 
  /// return the Change that leads to this node
  Change * get_f_change( void ) const { return( f_change ); }
@@ -1051,15 +1302,34 @@ class Node {
 
  /// have the given RelaxationSolver produce the branching Changes
  /** The Changes produced by a previous evaluation, those not yet handed to
-  * a child (whose entries are nullptr), are deleted. */
+  * a child (whose entries are nullptr), are deleted; the estimates of the
+  * children are taken too, if the RelaxationSolver gives them [see
+  * BranchEstimator], and kept only if there is one per Change. */
  void obtainBranchList( RelaxationSolver * solver ) {
   for( auto ch : branches )
    delete ch;
   branches = solver->branch();
+  estimates.clear();
+  if( auto be = dynamic_cast< BranchEstimator * >( solver ) ) {
+   estimates = be->branch_estimates();
+   if( estimates.size() != branches.size() )
+    estimates.clear();
+   }
   }
 
  /// return the Changes generating the children of this node
  std::vector< Change * > & getBranches( void ) { return( branches ); }
+
+ /// forget the estimates of the children, once they have been handed to
+ /// them or when the branching Changes no longer match them
+ void clear_estimates( void ) { estimates.clear(); }
+
+ /// the estimate of the child generated by the i-th branching Change, NaN
+ /// if none [see obtainBranchList()]
+ double child_estimate( std::size_t i ) const {
+  return( i < estimates.size() ? estimates[ i ]
+                               : std::numeric_limits< double >::quiet_NaN() );
+  }
 
 /*--------------------------------------------------------------------------*/
 /*--------------------- PROTECTED PART OF THE CLASS ------------------------*/
@@ -1069,12 +1339,17 @@ class Node {
 
  double bound;     ///< value of the relaxation bound at this node
 
+ double estimate;  ///< estimate of the best value under it, NaN if none
+
  Change * f_change;     ///< the Change to reach this node from the parent
 
  Change * toFather;     ///< the (undo) Change to return to the parent
 
  /// the Changes to reach each child from this node
  std::vector< Change * > branches;
+
+ /// the estimates of the children, one per Change of branches, or none
+ std::vector< double > estimates;
 
  bool f_infeasible;     ///< whether the node's relaxation has no solution
 
@@ -1153,8 +1428,8 @@ class ExploringNode : public Node {
  /// setter for the parent node
  void set_parent( ExploringNode * p ) { parent = p; }
 
- /// getter for the list of children nodes
- std::list< ExploringNode * > & get_children( void ) {
+ /// getter for the children nodes
+ std::vector< ExploringNode * > & get_children( void ) {
   return( f_children );
   }
 
@@ -1163,12 +1438,17 @@ class ExploringNode : public Node {
  /** Moves the given :ChangeSolver from \p sourceNode to \p destNode by
   * applying, along the path joining them, the undo Changes (climbing up
   * from the source to the common ancestor) and then, top-down, the node
-  * Changes (descending from the common ancestor to the destination). */
+  * Changes (descending from the common ancestor to the destination). The
+  * nodes to descend are collected bottom-up in a buffer of the thread, which
+  * is taken for the call, so that a move costs no allocation. */
 
  static void moveBetweenNodes( ExploringNode * sourceNode ,
                                ExploringNode * destNode ,
                                std::list< ChangeSolver * > * solvers ) {
-  std::list< ExploringNode * > toDescend;
+  thread_local std::vector< ExploringNode * > buffer;
+  std::vector< ExploringNode * > toDescend;
+  toDescend.swap( buffer );
+  toDescend.clear();
   while( sourceNode->level != destNode->level ) {
    if( sourceNode->level > destNode->level ) {
     for( const auto s : *solvers )
@@ -1176,7 +1456,7 @@ class ExploringNode : public Node {
     sourceNode = sourceNode->parent;
     }
    else {
-    toDescend.push_front( destNode );
+    toDescend.push_back( destNode );
     destNode = destNode->parent;
     }
    }
@@ -1184,14 +1464,15 @@ class ExploringNode : public Node {
    for( const auto s : *solvers )
     s->apply( sourceNode->toFather , false );
    sourceNode = sourceNode->parent;
-   toDescend.push_front( destNode );
+   toDescend.push_back( destNode );
    destNode = destNode->parent;
    }
   // descending, the first solver produces the undo Change of any node that
   // does not have one yet, which is how a node entered for the first time
   // gets it [see BranchAndXSolver::intBoundingProtocol: a node evaluated
   // lazily is created without the solvers ever descending into it]
-  for( auto node : toDescend ) {
+  for( auto it = toDescend.rbegin() ; it != toDescend.rend() ; ++it ) {
+   auto node = *it;
    bool modified = false;
    for( const auto s : *solvers ) {
     if( ( ! modified ) && ( ! node->toFather ) )
@@ -1201,6 +1482,7 @@ class ExploringNode : public Node {
     modified = true;
     }
    }
+  toDescend.swap( buffer );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -1216,8 +1498,9 @@ class ExploringNode : public Node {
   if( nodeToPrune->get_toFather() )
    for( const auto s : *solvers )
     s->apply( nodeToPrune->get_toFather() , false );
-  if( ! parentNode->get_children().empty() )
-   parentNode->get_children().remove( nodeToPrune );
+  auto & children = parentNode->get_children();
+  children.erase( std::remove( children.begin() , children.end() ,
+                               nodeToPrune ) , children.end() );
   auto & branches = parentNode->getBranches();
   branches.erase( std::remove( branches.begin() , branches.end() ,
                                nodeToPrune->get_f_change() ) ,
@@ -1234,7 +1517,7 @@ class ExploringNode : public Node {
 
  protected:
 
- std::list< ExploringNode * > f_children;  ///< list of the children nodes
+ std::vector< ExploringNode * > f_children;  ///< the children nodes
 
  int level;                                ///< level of the node in the tree
 
@@ -1289,5 +1572,5 @@ class OpenList {
 #endif  /* BranchAndXSolver.h included */
 
 /*--------------------------------------------------------------------------*/
-/*------------------- End File BranchAndXSolver.h ----------------------*/
+/*------------------- End File BranchAndXSolver.h --------------------------*/
 /*--------------------------------------------------------------------------*/

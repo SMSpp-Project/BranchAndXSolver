@@ -1,5 +1,11 @@
 # BranchAndXSolver
 
+[![Pipeline](https://gitlab.com/smspp/branchandxsolver/badges/develop/pipeline.svg)](https://gitlab.com/smspp/branchandxsolver/-/pipelines?ref=develop)
+[![Release](https://gitlab.com/smspp/branchandxsolver/-/badges/release.svg)](https://gitlab.com/smspp/branchandxsolver/-/releases)
+[![Documentation](https://img.shields.io/badge/docs-Doxygen-blue)](https://smspp.gitlab.io/smspp-project/)
+[![C++ Standard](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 `BranchAndXSolver` implements the Solver interface for a Relaxation-Agnostic
 Branch-and-X (RABaX) Solver within the SMS++ framework: a generic enumerative
 solver where "X" stands for Bound / Cut / Price. It is built on top of two
@@ -17,10 +23,12 @@ abstract Solver concepts that live in the SMS++ core (`Change.h` /
   generate the children of the current node, and separate() valid cuts.
 
 The module provides `BranchAndXSolver`, the enumerative :Solver itself:
-depth-first, breadth-first or best-first exploration, cut separation,
-reoptimization of the enumeration tree, parallel exploration, and an inner
-Solver provided either directly or through a BlockSolverConfig. See the class
-documentation for the full list of algorithmic parameters.
+depth-first, breadth-first, best-first or best-estimate exploration (the
+estimates of the children being given by the RelaxationSolver, say by its
+pseudocosts), cut separation, reoptimization of the enumeration tree,
+parallel exploration, and an inner Solver provided either directly or
+through a BlockSolverConfig. See the class documentation for the full list
+of algorithmic parameters.
 
 `GroupChange`, the Change grouping the per-node branching Changes, lives in
 the SMS++ core together with the `ChangeSolver` / `RelaxationSolver` concepts.
@@ -30,22 +38,10 @@ the SMS++ core together with the `ChangeSolver` / `RelaxationSolver` concepts.
 These instructions will let you build the `BranchAndXSolver` module on
 your system.
 
-The module also comes ready-made, in any of
-
-```sh
-sudo add-apt-repository ppa:smspp-project/smspp   # Ubuntu
-sudo apt install libsmspp-bnx-dev
-
-conda install -c conda-forge smspp-project        # Linux, macOS, Windows
-
-brew tap SMSpp-Project/smspp                      # macOS, Linux
-brew install smspp
-
-vcpkg install "smspp[core,bnx]"                   # from the sources
-```
-
-where apt and the port give the module alone, while conda and the tap carry
-the whole framework. What follows is about building it yourself.
+The module also comes ready-made: on Ubuntu as `libsmspp-bnx-dev`, in vcpkg as
+`smspp[core,bnx]`, and in the other channels that the [installation
+guide](https://gitlab.com/smspp/smspp-project/-/wikis/Installing-SMS++) of
+SMS++ lists. What follows is about building it yourself.
 
 ### Requirements
 

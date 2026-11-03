@@ -2,21 +2,21 @@
 ################################ makefile-c ##################################
 ##############################################################################
 #                                                                            #
-#   complete makefile of BranchAndXSolver                                #
+#   complete makefile of BranchAndXSolver                                    #
 #                                                                            #
 #   The makefile defines internally all external libraries (comprised the    #
-#   SMS++ one) required by BranchAndXSolver. Accordingly,                #
+#   SMS++ one) required by BranchAndXSolver. Accordingly,                    #
 #   Accordingly, all necessary OBJ, H, -I directives, external libraries +   #
 #   -L< libdirs > are added to the corresponding BnBS* macros.               #
 #                                                                            #
 #   Input:  $(CC)       = compiler command                                   #
 #           $(SW)       = compiler options                                   #
-#           $(BAXSLVSDR)  = the directory where BranchAndXSolver source is #
+#           $(BAXSLVSDR)  = the directory where BranchAndXSolver source is   #
 #                                                                            #
-#   Output: $(BAXSLVOBJ)  = the final object(s) / library                      #
-#           $(BAXSLVLIB)  = external libraries + -L< libdirs >                 #
-#           $(BAXSLVH)    = the .h files to include for BranchAndXSolver   #
-#           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )          #
+#   Output: $(BAXSLVOBJ)  = the final object(s) / library                    #
+#           $(BAXSLVLIB)  = external libraries + -L< libdirs >               #
+#           $(BAXSLVH)    = the .h files to include for BranchAndXSolver     #
+#           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )            #
 #                                                                            #
 #                              Filippo Magi                                  #
 #                              Donato Meoli                                  #

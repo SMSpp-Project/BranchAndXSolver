@@ -2,10 +2,10 @@
 ################################ makefile-s ##################################
 ##############################################################################
 #                                                                            #
-#   makefile of BranchAndXSolver and its dependencies, excluding SMS++   #
+#   makefile of BranchAndXSolver and its dependencies, excluding SMS++       #
 #                                                                            #
 #   The makefile defines internally all external libraries required by       #
-#   BranchAndXSolver, excluding the SMS++ core ones whose symbols are    #
+#   BranchAndXSolver, excluding the SMS++ core ones whose symbols are        #
 #   assumed to have been defined already (typically by including             #
 #   SMS++/lib/makefile). Accordingly, all necessary OBJ, H, -I directives,   #
 #   external libraries + -L< libdirs > are added to the corresponding BnBS*  #
@@ -15,12 +15,12 @@
 #           $(SW)       = compiler options                                   #
 #           $(SMS++INC) = the -I$( core SMS++ directory )                    #
 #           $(SMS++OBJ) = the core SMS++ library                             #
-#           $(BAXSLVSDR)  = the directory where BranchAndXSolver source is #
+#           $(BAXSLVSDR)  = the directory where BranchAndXSolver source is   #
 #                                                                            #
-#   Output: $(BAXSLVOBJ)  = the final object(s) / library                      #
-#           $(BAXSLVLIB)  = external libraries + -L< libdirs >                 #
-#           $(BAXSLVH)    = the .h files to include for BranchAndXSolver   #
-#           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )          #
+#   Output: $(BAXSLVOBJ)  = the final object(s) / library                    #
+#           $(BAXSLVLIB)  = external libraries + -L< libdirs >               #
+#           $(BAXSLVH)    = the .h files to include for BranchAndXSolver     #
+#           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )            #
 #                                                                            #
 #                              Filippo Magi                                  #
 #                              Donato Meoli                                  #
