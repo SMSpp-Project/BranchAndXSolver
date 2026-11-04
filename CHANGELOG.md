@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `BranchAndXSolver::concerned_by()` is what any of its inner Solver
+  reads (all the kinds before they are created), and `add_Modification()`
+  passes a Modification only to the inner Solver that read its kind, as the
+  Block does with the Solver registered to it
+
 ### Fixed
 
 - `BranchAndXSolver.h` compiles without warnings under `-Wall`: the

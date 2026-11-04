@@ -564,12 +564,35 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// the kinds of Modification the BranchAndXSolver reads
+ /** The inner Solver are not registered to the Block: they have the
+  * Modification from the BranchAndXSolver [see add_Modification()], which
+  * therefore reads what any of them reads [see Solver::concerned_by()], and
+  * all the kinds before they are created. What the tree needs to know of a
+  * change [see keeps_tree()] is what its RelaxationSolver read of it: a
+  * change that none of them reads does not change the bounds of the
+  * nodes. */
+
+ [[nodiscard]] Modification::ModConcern concerned_by( void ) const override {
+  if( v_created.empty() )
+   return( Modification::eModAnything );
+  Modification::ModConcern c = 0;
+  for( auto slvr : v_created )
+   c |= slvr->concerned_by();
+  return( c );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// receive a Modification and forward it to the (private) inner Solver
+ /** The Modification is passed to each of the inner Solver that reads its
+  * kind [see Modification::is_of_concern_to()], as the Block would do if they
+  * were registered to it. */
 
  void add_Modification( sp_Mod & mod ) override {
   Solver::add_Modification( mod );
   for( auto slvr : v_created )
-   slvr->add_Modification( mod );
+   if( mod->is_of_concern_to( slvr->concerned_by() ) )
+    slvr->add_Modification( mod );
   }
 
 /** @} ---------------------------------------------------------------------*/
