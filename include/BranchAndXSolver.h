@@ -369,14 +369,15 @@ class BranchAndXSolver : public Solver {
                       solveType( BestFS ) , maxThreadForSolvers( 1 ) ,
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
-                      maxNodes( INT_MAX ) , f_treeRoot( nullptr ) ,
+                      maxNodes( INT_MAX ) ,
+                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) ,
+                      f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) ,
                       changes( Modification::eModAll ) ,
                       subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() ,
-                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) { }
+                      integerNodes() { }
 
 /*--------------------------------------------------------------------------*/
  /// destructor

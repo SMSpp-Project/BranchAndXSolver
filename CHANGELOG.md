@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `BranchAndXSolver.h` compiles without warnings under `-Wall`: the
+  constructor initializes the members in the order they are declared
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
