@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `intReoptimize` 2: a re-solve bounds each node of the frontier of the
+  retained tree again by shifting its bound to the new data
+  (`RelaxationSolver::shifted_bound()`, with the certificates the nodes
+  keep), fences at once the nodes whose new bound cannot improve the
+  incumbent or that are proven empty, and evaluates the others at once or,
+  with the lazy protocol, when they are extracted; the nodes no
+  RelaxationSolver can bound are evaluated as with 1;
+  `get_frontier_counts()` and the summary line of the log tell how many
+  nodes of the frontier were evaluated, shifted and fenced unevaluated
+
 ### Changed
 
 - `BranchAndXSolver::concerned_by()` is what any of its inner Solver

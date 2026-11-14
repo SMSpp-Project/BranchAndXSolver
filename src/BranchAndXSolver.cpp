@@ -244,6 +244,17 @@ static void fence_by_cutoff( Node * currentNode , Solver * s ,
  }
 
 /*--------------------------------------------------------------------------*/
+/// store in \p certs, if any, the certificate of the i-th relaxation, which
+/// has just been computed at the node with return code \p z
+static void take_certificate( std::vector< BoundCertificate * > * certs ,
+                              std::size_t i , RelaxationSolver * rs , int z )
+{
+ if( certs && ( ( z == Solver::kOK ) || ( z == Solver::kInfeasible ) ||
+                ( z == Solver::kCutOff ) ) )
+  ( *certs )[ i ] = rs->get_bound_certificate();
+ }
+
+/*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
 /** Computes every RelaxationSolver at the current node, updating the node
  * relaxation bound, the branching solver, and, when a true solution improves
@@ -255,7 +266,10 @@ static void fence_by_cutoff( Node * currentNode , Solver * s ,
  * infeasible. With
  * \p nThreads > 1 (and no shared incumbent lock) the several relaxations are
  * computed concurrently, bit-identically to the serial reduction [see
- * computeAllParallel()].
+ * computeAllParallel()]. With \p certs, the certificate of the bound that
+ * each relaxation computed at the node gives [see
+ * RelaxationSolver::get_bound_certificate()] is stored in the position of
+ * the relaxation, nullptr for those not computed.
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeRelaxations(
@@ -266,8 +280,15 @@ static int computeRelaxations(
                   std::atomic< double > * incumbentCell ,
                   bool & toPrune , RelaxationSolver * & branchSolver ,
                   double relAcc = 0 , double absAcc = 0 ,
-                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
+                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr ,
+                  std::vector< BoundCertificate * > * certs = nullptr )
 {
+ if( certs ) {
+  for( auto c : *certs )
+   delete c;
+  certs->assign( f_RelaxationSolvers->size() , nullptr );
+  }
+
  // the incumbent is the cutoff of the relaxations [see dblUpCutOff in
  // Solver.h]: a relaxation proven beyond it says that the node cannot
  // improve on it, which for the search is as good as infeasible (and then,
@@ -289,7 +310,12 @@ static int computeRelaxations(
      ( ! incumbentMutex ) ) {
   const std::size_t n = f_RelaxationSolvers->size();
   std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
-  if( computeAllParallel( *f_RelaxationSolvers , zs , nThreads ) ) {
+  const bool empty = computeAllParallel( *f_RelaxationSolvers , zs ,
+                                         nThreads );
+  for( std::size_t i = 0 ; i < n ; ++i )
+   take_certificate( certs , i , ( *f_RelaxationSolvers )[ i ].first ,
+                     zs[ i ] );
+  if( empty ) {
    if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
     return( Solver::kInfeasible );       // the root is infeasible
    toPrune = true;
@@ -341,8 +367,10 @@ static int computeRelaxations(
   }
 
  // serial evaluation
- for( auto & [ rs , s ] : *f_RelaxationSolvers ) {
+ for( std::size_t i = 0 ; i < f_RelaxationSolvers->size() ; ++i ) {
+  auto & [ rs , s ] = ( *f_RelaxationSolvers )[ i ];
   auto z = s->compute();
+  take_certificate( certs , i , rs , z );
   if( z == Solver::kInfeasible ) {
    if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
     return( Solver::kInfeasible );       // the root is infeasible
@@ -560,7 +588,9 @@ static int initializeRoot(
  * concurrently (serial-tree explorations only); \p incumbentMutex !=
  * nullptr serializes the incumbent updates (parallel-tree exploration). Sets
  * \p toPrune / \p branchSolver, and marks the node infeasible [see
- * Node::set_infeasible()] when its relaxation has no solution.
+ * Node::set_infeasible()] when its relaxation has no solution. \p certs,
+ * if any, receives the certificates of the bounds of the relaxations [see
+ * computeRelaxations()].
  *  @return the sol_type [see Solver.h] of the evaluation */
 
 static int evaluateNode(
@@ -575,7 +605,8 @@ static int evaluateNode(
                   int nThreads ,
                   double relAcc , double absAcc , std::mutex & globalMutex ,
                   std::mutex * incumbentMutex = nullptr ,
-                  bool moveToNode = true )
+                  bool moveToNode = true ,
+                  std::vector< BoundCertificate * > * certs = nullptr )
 {
  if( moveToNode )                  // with the lazy protocol the solvers have
   moveSolverToSon( node , &solvers );  // already been moved to the node
@@ -595,7 +626,7 @@ static int evaluateNode(
  int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
                                bestSol , incumbentCell , toPrune ,
                                branchSolver , relAcc ,
-                               absAcc , nThreads , incumbentMutex );
+                               absAcc , nThreads , incumbentMutex , certs );
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
@@ -813,6 +844,7 @@ int BranchAndXSolver::compute( bool changedvars )
   return( kError );
  f_state = kStillRunning;
  f_evaluated_nodes.store( 0 , std::memory_order_relaxed );
+ f_frontier_counts = FrontierCounts();
  // no bound until an exploration says otherwise [see explore()]
  f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
                 ? Inf< double >() : - Inf< double >();
@@ -874,9 +906,17 @@ int BranchAndXSolver::compute( bool changedvars )
 
  // The summary also covers an eager root closed without entering explore(),
  // and the parallel search, whose worker nodes do not use the serial CSV log.
- if( f_log )
+ if( f_log ) {
   ( *f_log ) << "[BranchAndXSolver] nodes_evaluated="
-             << get_evaluated_nodes() << std::endl;
+             << get_evaluated_nodes();
+  if( reoptimize > 0 )      // what the re-seeding has done [see intReoptimize]
+   ( *f_log ) << " frontier=" << f_frontier_counts.frontier
+              << " frontier_evaluated=" << f_frontier_counts.evaluated
+              << " shifted=" << f_frontier_counts.shifted
+              << " shift_fenced=" << f_frontier_counts.shift_fenced
+              << " lazy_fenced=" << f_frontier_counts.lazy_fenced;
+  ( *f_log ) << std::endl;
+  }
 
  changes = 0;
  unlock();
@@ -942,10 +982,21 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
 {
  // the retained tree is taken back: compute() guarantees it is only reused
  // under changes that leave it valid [see keeps_tree()], so its interior is
- // NOT re-derived, only its fenced frontier is re-evaluated
+ // NOT re-derived, only its fenced frontier is bounded again
  rootNode = f_treeRoot;
  f_treeRoot = nullptr;              // ownership back to this solve
  currentNode = rootNode;
+
+ // the relaxations that can bound a node again without evaluating it [see
+ // RelaxationSolver::shifted_bound()]; asked before any compute(), as the
+ // protocol wants, and only with intReoptimize == 2
+ const std::size_t nR = f_RelaxationSolvers.size();
+ std::vector< char > canShift( nR , 0 );
+ bool anyShift = false;
+ if( reoptimize >= 2 )
+  for( std::size_t i = 0 ; i < nR ; ++i )
+   if( f_RelaxationSolvers[ i ].first->prepare_bound_shift() )
+    anyShift = canShift[ i ] = 1;
 
  std::list< ExploringNode * > frontier;
  frontier.swap( subOptimalNodes );
@@ -956,29 +1007,109 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   frontier.splice( frontier.end() , infeasibleNodes );
   infeasibleNodes.clear();
   }
+ f_frontier_counts.frontier = long( frontier.size() );
 
- // best (previous) bound first: the optimum almost surely lives in the first
- // few nodes, so the incumbent warms up immediately and the rest of the
- // frontier mostly just re-fences
+ // with intReoptimize == 2, each node of the frontier is first bounded
+ // again by shifting its bound: moving the :ChangeSolver to it costs no
+ // compute(); the tightest of the bounds of the relaxations is valid under
+ // the new data, each of them being so [see ChangeSolver.h], and the
+ // infinity that is not the "no information" one says that the node is
+ // empty; a node no relaxation can say anything about is marked so, and it
+ // is evaluated below
+ const double empty = minimizing ? Inf< double >() : - Inf< double >();
+ std::vector< ExploringNode * > shifted;    // the nodes bounded again
+ if( anyShift ) {
+  for( auto F : frontier ) {
+   ExploringNode::moveBetweenNodes( currentNode , F , solvers );
+   currentNode = F;
+   auto & certs = F->get_certificates();
+   double nb = std::numeric_limits< double >::quiet_NaN();
+   for( std::size_t i = 0 ; i < nR ; ++i ) {
+    if( ! canShift[ i ] )
+     continue;
+    BoundCertificate * cert = i < certs.size() ? certs[ i ] : nullptr;
+    const double b = f_RelaxationSolvers[ i ].first->shifted_bound(
+                                                      F->get_bound() , cert );
+    if( std::isnan( b ) ) {       // nothing known: the certificate is gone
+     if( cert ) {
+      delete cert;
+      certs[ i ] = nullptr;
+      }
+     continue;
+     }
+    if( std::isnan( nb ) || ( minimizing ? b > nb : b < nb ) )
+     nb = b;
+    }
+   if( std::isnan( nb ) )
+    continue;
+   F->set_bound( nb );
+   F->set_infeasible( nb == empty );
+   shifted.push_back( F );
+   }
+  f_frontier_counts.shifted = long( shifted.size() );
+  std::sort( shifted.begin() , shifted.end() );
+  }
+ auto is_shifted = [ & ]( ExploringNode * F ) {
+  return( std::binary_search( shifted.begin() , shifted.end() , F ) );
+  };
+
+ // best bound first (the previous one, or the shifted one when there is):
+ // the optimum almost surely lives in the first few nodes, so the incumbent
+ // warms up immediately and the rest of the frontier mostly just re-fences
  frontier.sort( [ minimizing ]( ExploringNode * a , ExploringNode * b ) {
   return( minimizing ? a->get_bound() < b->get_bound()
                      : a->get_bound() > b->get_bound() );
   } );
 
+ const bool collect = ( reoptimize >= 2 );   // keep the certificates
  int res = Solver::kOK;
  std::vector< ExploringNode * > reopened;  // pushed after the loop
  for( auto F : frontier ) {
+  const bool wasShifted = anyShift && is_shifted( F );
+  if( wasShifted ) {
+   // a node proven empty, or whose new bound cannot improve the incumbent,
+   // is fenced again with no evaluation; any other waits in the open set,
+   // carrying its new bound, to be evaluated when extracted, if the
+   // protocol is the lazy one
+   if( F->is_infeasible() ) {
+    infeasibleNodes.push_back( F );
+    ++f_frontier_counts.shift_fenced;
+    continue;
+    }
+   if( cannot_improve( F->get_bound() , f_incumbentCell->load() ,
+                       minimizing , relTol , absTol ) ) {
+    subOptimalNodes.push_back( F );
+    ++f_frontier_counts.shift_fenced;
+    continue;
+    }
+   if( boundingProtocol == Lazy ) {
+    F->set_evaluated( false );
+    reopened.push_back( F );
+    continue;
+    }
+   }
+
   ExploringNode::moveBetweenNodes( currentNode , F , solvers );
   currentNode = F;
+  // the bound of the previous solve is not valid under the new data, the
+  // shifted one is, and the evaluation can only improve it
+  const double inherited = F->get_bound();
   F->initializeBound( minimizing );
+  if( wasShifted )
+   F->set_bound( inherited );
   F->set_evaluated( true );
   bool toPrune = false;
   RelaxationSolver * nodeBranchSolver = nullptr;
   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+  ++f_frontier_counts.evaluated;
+  std::vector< BoundCertificate * > certs;
   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
                             bestSolution , f_incumbentCell , toPrune ,
                             nodeBranchSolver ,
-                            relTol , absTol , maxThreadForSolvers );
+                            relTol , absTol , maxThreadForSolvers , nullptr ,
+                            collect ? &certs : nullptr );
+  if( collect )
+   F->set_certificates( std::move( certs ) );
   if( ( res == Solver::kOK ) && ( ! toPrune ) )
    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
                            bestSolution , f_incumbentCell , toPrune ,
@@ -1041,6 +1172,10 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  ExploringNode * oldNode = nullptr;
  int iterations = 0;      // extractions from the open set, for the log
  std::vector< ExploringNode * > kept;  // surviving children of a node
+ // the certificates of the bounds are kept with the nodes when the tree is
+ // retained to be bounded again by shifting [see intReoptimize]
+ const bool collect = retain && ( reoptimize >= 2 );
+ std::vector< BoundCertificate * > certs;
 
  while( ( ! open.empty() ) && ( nodeBudget > 1 ) &&
         ( timeBudget > std::chrono::duration< double >(
@@ -1055,13 +1190,14 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   // with the lazy protocol the node is evaluated now, upon extraction,
   // rather than when it was created [see intBoundingProtocol]; a node is
   // evaluated at most once, whichever the protocol, and not at all if the
-  // bound it carries (that of its parent) can no longer improve the
-  // incumbent
+  // bound it carries (that of its parent, or the shifted one of a re-seeded
+  // node) can no longer improve the incumbent
   bool prunedHere = false;
   if( ( ! currentNode->is_evaluated() ) &&
       cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                       minimizing , relTol , absTol ) ) {
    prunedHere = true;
+   ++f_frontier_counts.lazy_fenced;
    logNode( f_log , iterations , currentNode , bestBound ,
 	    std::chrono::duration< double >(
 	     std::chrono::high_resolution_clock::now() - start ).count() ,
@@ -1075,7 +1211,9 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                        bestSolution , f_incumbentCell , prunedHere ,
                        branchSolver ,
                        maxThreadForSolvers , relTol , absTol , globalMutex ,
-                       nullptr , false );
+                       nullptr , false , collect ? &certs : nullptr );
+   if( collect )
+    currentNode->set_certificates( std::move( certs ) );
    if( inconclusive( res ) ) {     // set aside, as if fenced
     v_unresolved.push_back( currentNode->get_bound() );
     prunedHere = true;
@@ -1135,7 +1273,10 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , toPrune ,
                         branchSolver ,
-                        maxThreadForSolvers , relTol , absTol , globalMutex );
+                        maxThreadForSolvers , relTol , absTol , globalMutex ,
+                        nullptr , true , collect ? &certs : nullptr );
+    if( collect )
+     new_node->set_certificates( std::move( certs ) );
     if( inconclusive( res ) ) {    // set aside, as if fenced
      v_unresolved.push_back( new_node->get_bound() );
      toPrune = true;
@@ -1195,6 +1336,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
    branches.erase( std::remove( branches.begin() , branches.end() ,
                                 nullptr ) , branches.end() );
    currentNode->clear_estimates();   // they went with their children
+   if( ! currentNode->get_children().empty() )
+    currentNode->clear_certificates();  // no longer in the frontier
    if( currentNode->get_children().empty() ) {
     if( retain )                 // fathomed leaf: fenced frontier
      subOptimalNodes.push_back( currentNode );

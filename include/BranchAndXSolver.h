@@ -282,20 +282,46 @@ class BranchAndXSolver : public Solver {
    * discipline orders by [see intSolveMethod]. Either way a node is evaluated
    * at most once [see Node::is_evaluated()]. */
   intReoptimize ,                   /**< retain the tree to reoptimize:
-   * with it any serial exploration keeps the tree and its fenced frontier
-   * alive across compute() calls, and a re-solve under changes that leave
-   * the tree valid [see keeps_tree()] re-seeds the search from the
-   * re-evaluated frontier instead of re-deriving the whole tree [see
+   * with a value > 0 any serial exploration keeps the tree and its fenced
+   * frontier alive across compute() calls, and a re-solve under changes
+   * that leave the tree valid [see keeps_tree()] re-seeds the search from
+   * the frontier instead of re-deriving the whole tree [see
    * reseedFrontier()]; the strategy only decides the order in which the
    * frontier is re-explored, which is that of its own open set. The
    * parallel depth-first exploration [see ParallelDFSSolve()] does not
-   * retain anything, and always solves from scratch. Note
-   * that in a binary enumeration the fenced frontier is about as large as
-   * the interior, so this pays off when evaluating a node is expensive
+   * retain anything, and always solves from scratch.
+   *
+   * With 1 every node of the frontier is evaluated again under the new
+   * data. With 2 a node is first bounded again without being evaluated,
+   * by the RelaxationSolver that can do it [see
+   * RelaxationSolver::shifted_bound()]: the new bound of \f$ \nu \f$ is
+   * the tightest of those that they give, each being valid under the new
+   * data (by weak duality and by the coordinate-wise minimization of a
+   * linear function over the box of the node, see ChangeSolver.h), so that
+   * the node is fenced at once if the bound cannot improve the incumbent,
+   * fenced as infeasible if it is proven empty, and otherwise evaluated
+   * when the bounding protocol says [see intBoundingProtocol]: at once
+   * with the eager protocol, when it is extracted from the open set with
+   * the lazy one, where it waits carrying the new bound and where a better
+   * incumbent found in the meantime may fence it unevaluated. A node that
+   * no RelaxationSolver can bound is evaluated as with 1. The fenced nodes
+   * stay valid for the next change: at the end of a solve every node of
+   * the frontier has a bound, and the certificates kept with it [see
+   * ExploringNode::get_certificates()] a value, valid under the data of
+   * that solve, either because it has been evaluated under them or because
+   * it has been shifted to them. Since each node of the frontier is
+   * evaluated at most once, as with 1, and only if its new bound does not
+   * fence it, the evaluations of the frontier are never more than with 1;
+   * those of the rest of the exploration may differ either way, the
+   * incumbent being found in a different order.
+   *
+   * Note that in a binary enumeration the fenced frontier is about as large
+   * as the interior, so 1 pays off when evaluating a node is expensive
    * (say, LP-like relaxations) and/or few nodes re-open, while for very
-   * cheap relaxations re-evaluating the frontier may cost as much as
-   * solving from scratch; it is off by default, also because retaining
-   * the tree can use a lot of memory. */
+   * cheap relaxations evaluating the frontier again may cost as much as
+   * solving from scratch, which is what 2 avoids for the nodes it fences.
+   * It is off by default, also because retaining the tree can use a lot
+   * of memory. */
   intMaxNodes ,                     ///< max number of nodes to explore
   intLastBXSPar                     ///< first allowed new int parameter
   };
@@ -659,6 +685,28 @@ class BranchAndXSolver : public Solver {
 
  [[nodiscard]] long get_evaluated_nodes( void ) const {
   return( f_evaluated_nodes.load( std::memory_order_relaxed ) );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// what the last compute() has done of the frontier of the retained tree
+ /** The nodes of the frontier of the retained tree that the last compute()
+  * has re-seeded the search from [see intReoptimize]: how many were
+  * looked at, how many of them evaluated during the re-seeding, how many
+  * bounded again without being evaluated, how many of the latter fenced
+  * there, and how many nodes, of the frontier or not, the lazy protocol
+  * has fenced unevaluated when extracting them [see intBoundingProtocol].
+  * All zero when the last compute() has not re-seeded anything. */
+
+ struct FrontierCounts {
+  long frontier = 0;      ///< nodes of the frontier looked at
+  long evaluated = 0;     ///< of them, evaluated during the re-seeding
+  long shifted = 0;       ///< of them, bounded again without evaluation
+  long shift_fenced = 0;  ///< of the latter, fenced without evaluation
+  long lazy_fenced = 0;   ///< extracted unevaluated and fenced as such
+  };
+
+ [[nodiscard]] const FrontierCounts & get_frontier_counts( void ) const {
+  return( f_frontier_counts );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -1048,20 +1096,25 @@ class BranchAndXSolver : public Solver {
  /// re-seed the exploration from the frontier of the retained tree
  /** Reoptimization [see intReoptimize]: instead of building a new tree, the
   * one retained by the previous solve is taken back (\p rootNode is set to
-  * it) and its fenced frontier is re-evaluated under the new data, each node
-  * being either re-fenced or re-opened into \p open; the interior of the
-  * tree is NOT re-derived. When the changes cannot make the feasible
+  * it) and its fenced frontier is bounded again under the new data, each
+  * node being either re-fenced or re-opened into \p open; the interior of
+  * the tree is NOT re-derived. When the changes cannot make the feasible
   * region grow [see Modification::may_grow_region()], e.g., when only the
   * Objective changes, no infeasible node can be un-fenced, and that part of
-  * the frontier is left untouched.
+  * the frontier is left untouched. A node is bounded again by evaluating
+  * it or, with intReoptimize == 2, by shifting its bound [see
+  * RelaxationSolver::shifted_bound()], in which case it is evaluated only
+  * if the new bound does not fence it, at once or when it is extracted
+  * according to the bounding protocol [see intBoundingProtocol].
   *
   * The re-opened nodes are handed to \p open respecting its discipline (a
   * LIFO stack receives them in reverse), exactly as explore() does with the
   * children of a node: the frontier is sorted by the relaxation bound of the
-  * previous solve, so that whatever the strategy the most promising nodes
-  * are looked at first and the incumbent warms up immediately. This is why
-  * the mechanism is independent of the exploration strategy: the order in
-  * which the frontier is re-explored is entirely a matter of \p open.
+  * previous solve (by the shifted one, for the nodes that have it), so that
+  * whatever the strategy the most promising nodes are looked at first and
+  * the incumbent warms up immediately. This is why the mechanism is
+  * independent of the exploration strategy: the order in which the frontier
+  * is re-explored is entirely a matter of \p open.
   *
   * \p currentNode is left where the :ChangeSolver actually sit, which on
   * success is the last re-evaluated node and on failure is \p rootNode.
@@ -1165,6 +1218,10 @@ class BranchAndXSolver : public Solver {
 
  /// node evaluations in the current compute(), also shared by DFS workers
  std::atomic< long > f_evaluated_nodes{ 0 };
+
+ /// what the current compute() does of the frontier [see
+ /// get_frontier_counts()]
+ FrontierCounts f_frontier_counts;
 
  /// residual node budget of the current solve (from intMaxNodes), consumed
  /// by the exploration
@@ -1439,7 +1496,9 @@ class ExploringNode : public Node {
   : Node( change , nodeName ) , f_children() , level( depth ) ,
     parent( parent ) {}
 
- ~ExploringNode() override = default;   ///< destructor
+ /// destructor: deletes the owned certificates
+
+ ~ExploringNode() override { clear_certificates(); }
 
 /*--------------------------------------------------------------------------*/
 
@@ -1455,6 +1514,29 @@ class ExploringNode : public Node {
  /// getter for the children nodes
  std::vector< ExploringNode * > & get_children( void ) {
   return( f_children );
+  }
+
+ /// the certificates of the bound of the node, one per RelaxationSolver
+ /** The certificates [see RelaxationSolver::get_bound_certificate()] that
+  * the RelaxationSolver have given of the bound of the node, in their
+  * order, nullptr for those that have given none; empty if none has been
+  * asked. They are owned by the node, and only kept for the nodes of the
+  * frontier of a retained tree [see BranchAndXSolver::intReoptimize]. */
+ std::vector< BoundCertificate * > & get_certificates( void ) {
+  return( f_certs );
+  }
+
+ /// replace the certificates of the bound of the node
+ void set_certificates( std::vector< BoundCertificate * > && certs ) {
+  clear_certificates();
+  f_certs = std::move( certs );
+  }
+
+ /// delete the certificates of the bound of the node
+ void clear_certificates( void ) {
+  for( auto c : f_certs )
+   delete c;
+  f_certs.clear();
   }
 
 /*--------------------------------------------------------------------------*/
@@ -1542,6 +1624,9 @@ class ExploringNode : public Node {
  protected:
 
  std::vector< ExploringNode * > f_children;  ///< the children nodes
+
+ /// the certificates of the bound, see get_certificates()
+ std::vector< BoundCertificate * > f_certs;
 
  int level;                                ///< level of the node in the tree
 
