@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `BranchAndXSolver.h` compiles without warnings under `-Wall`: the
   constructor initializes the members in the order they are declared
 
+- `reseedFrontier()` marks as evaluated the nodes of the frontier it
+  evaluates, which `explore()` evaluated a second time when extracting them
+
+- the lazy bounding protocol fences, without evaluating it, a node extracted
+  with a bound that can no longer improve the incumbent, as its
+  documentation says, rather than evaluating it first
+
+- `explore()` compiles without the `-Wenum-compare` warning of its return
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
