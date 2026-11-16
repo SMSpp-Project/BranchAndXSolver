@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
+### Changed
+
+- `BranchAndXSolver::concerned_by()` is what any of its inner Solver
+  reads (all the kinds before they are created), and `add_Modification()`
+  passes a Modification only to the inner Solver that read its kind, as the
+  Block does with the Solver registered to it
+
+### Fixed
+
+- the installed module `smspp.branchandxsolver` could not be imported, since
+  its package gave the interface of the module the target of the library by
+  its name in the build tree, which an installed package does not have
+
+- `BranchAndXSolver.h` compiles without warnings under `-Wall`: the
+  constructor initializes the members in the order they are declared
+
+- `reseedFrontier()` marks as evaluated the nodes of the frontier it
+  evaluates, which `explore()` evaluated a second time when extracting them
+
+- the lazy bounding protocol fences, without evaluating it, a node extracted
+  with a bound that can no longer improve the incumbent, as its
+  documentation says, rather than evaluating it first
+
+- `explore()` compiles without the `-Wenum-compare` warning of its return
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
@@ -239,7 +266,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RPATH relative to itself, so that an installed tree keeps working wherever
   it is moved
 
-[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.3.0...develop
+[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.4.0...develop
+[0.4.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.3.0...0.4.0
 [0.3.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...0.3.0
 [0.2.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/branchandxsolver/-/tags/0.1.0

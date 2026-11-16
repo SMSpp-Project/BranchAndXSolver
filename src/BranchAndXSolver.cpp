@@ -971,6 +971,7 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   ExploringNode::moveBetweenNodes( currentNode , F , solvers );
   currentNode = F;
   F->initializeBound( minimizing );
+  F->set_evaluated( true );
   bool toPrune = false;
   RelaxationSolver * nodeBranchSolver = nullptr;
   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
@@ -1053,9 +1054,20 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 
   // with the lazy protocol the node is evaluated now, upon extraction,
   // rather than when it was created [see intBoundingProtocol]; a node is
-  // evaluated at most once, whichever the protocol
+  // evaluated at most once, whichever the protocol, and not at all if the
+  // bound it carries (that of its parent) can no longer improve the
+  // incumbent
   bool prunedHere = false;
-  if( ! currentNode->is_evaluated() ) {
+  if( ( ! currentNode->is_evaluated() ) &&
+      cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
+                      minimizing , relTol , absTol ) ) {
+   prunedHere = true;
+   logNode( f_log , iterations , currentNode , bestBound ,
+	    std::chrono::duration< double >(
+	     std::chrono::high_resolution_clock::now() - start ).count() ,
+	    0 , true );
+   }
+  else if( ! currentNode->is_evaluated() ) {
    auto evalStart = std::chrono::high_resolution_clock::now();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
@@ -1270,7 +1282,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   add_unresolved_bounds( minimizing );
   return( nodeBudget <= 1 ? Solver::kStopIter : Solver::kStopTime );
   }
- return( add_unresolved_bounds( minimizing ) ? Solver::kLowPrecision : kOK );
+ return( add_unresolved_bounds( minimizing ) ? int( Solver::kLowPrecision )
+                                             : int( kOK ) );
 
  }  // end( BranchAndXSolver::explore )
 
