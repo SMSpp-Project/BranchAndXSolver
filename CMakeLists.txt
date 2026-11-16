@@ -15,7 +15,7 @@
 #                         Dipartimento di Informatica                         #
 #                             Universita' di Pisa                             #
 # --------------------------------------------------------------------------- #
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.24)
 cmake_policy(VERSION 3.15)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeriveVersion.cmake)
 smspp_derive_version(SMSPP_MODULE_VERSION)
@@ -64,19 +64,9 @@ configure_file(cmake/${modName}Config.h.in ${modName}Config.h)
 # ----- RPATH --------------------------------------------------------------- #
 # The installed libraries and executables look for the libraries of the same
 # installation relative to their own location, so that the installed tree can
-# be moved as a whole; the directories of the external libraries are kept.
+# be moved as a whole [see SMSppModule.cmake of SMS++].
 include(GNUInstallDirs)
-if (NOT CMAKE_INSTALL_RPATH)
-    if (APPLE)
-        set(rpathOrigin "@loader_path")
-    else ()
-        set(rpathOrigin "$ORIGIN")
-    endif ()
-    file(RELATIVE_PATH binToLib ${CMAKE_INSTALL_FULL_BINDIR}
-            ${CMAKE_INSTALL_FULL_LIBDIR})
-    set(CMAKE_INSTALL_RPATH "${rpathOrigin}" "${rpathOrigin}/${binToLib}")
-endif ()
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+smspp_install_rpath()
 
 # ----- Library ------------------------------------------------------------- #
 # With the BUILD_SHARED_LIBS variable we can specify if the library will
@@ -98,29 +88,9 @@ set_target_properties(${modName} PROPERTIES
 
 # The classes of the module register themselves in the factory from a static
 # initialiser, and a linker that drops what looks unused takes the
-# registration away with it: the target tells whoever links it to keep the
-# symbol that forces the module in, or the library as a whole where naming
-# the symbol is not enough.
-if (BUILD_SHARED_LIBS)
-    if (MSVC)
-        target_link_options(${modName} INTERFACE
-                "/INCLUDE:SMSpp_force_load_${modName}")
-    elseif (UNIX AND (NOT APPLE))
-        # the ELF linker decides by the symbols a regular object asks for, so
-        # naming the symbol is not enough and the library has to be kept
-        target_link_options(${modName} INTERFACE "LINKER:--no-as-needed")
-    elseif (APPLE)
-        # ld64 keeps a dylib that provides a symbol to the link, one asked
-        # for by -u included, even under -dead_strip_dylibs
-        target_link_options(${modName} INTERFACE
-                "LINKER:-u,_SMSpp_force_load_${modName}")
-    elseif (MINGW)
-        # the PE linker imports a DLL for the symbols asked for, -u
-        # included
-        target_link_options(${modName} INTERFACE
-                "LINKER:-u,SMSpp_force_load_${modName}")
-    endif ()
-endif ()
+# registration away with it: whoever links the target calls the function
+# that forces the module in [see SMSppModule.cmake of SMS++].
+smspp_keep_module(${modName})
 
 # When adding source files with target_sources(), PRIVATE means that the files
 # should only be added to this library, whereas PUBLIC means they should be
