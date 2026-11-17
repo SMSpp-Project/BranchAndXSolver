@@ -155,6 +155,21 @@ static void logHeader( std::ostream * log )
  }
 
 /*--------------------------------------------------------------------------*/
+/// the status of a node after its evaluation [see BranchAndXSolver::NodeStep]
+/** \p closed if it is not branched upon, \p unresolved if its evaluation is
+ * inconclusive, \p found if the incumbent has improved in its evaluation. */
+
+static int node_status( bool closed , bool unresolved , bool found )
+{
+ using NS = BranchAndXSolver::NodeStep;
+ if( unresolved )
+  return( NS::eUnresolved );
+ if( ! closed )
+  return( NS::eOpen );
+ return( found ? NS::eInteger : NS::ePruned );
+ }
+
+/*--------------------------------------------------------------------------*/
 /// initialize the common per-solve variables
 /** @param solvers list to be filled with all the :ChangeSolver to drive
  *  @param f_RelaxationSolvers the relaxation solvers to insert in solvers
@@ -804,6 +819,25 @@ Solver::OFValue BranchAndXSolver::get_ub( void )
 /*--------------------- METHODS FOR SOLVING THE MODEL ----------------------*/
 /*--------------------------------------------------------------------------*/
 
+void BranchAndXSolver::node_step( ExploringNode * node , int status )
+{
+ if( v_events[ eEveryNode ].empty() )
+  return;
+ const auto father = node->get_parent();
+ f_node_step.id = node->get_name();
+ f_node_step.parent = father ? father->get_name() : -1;
+ f_node_step.depth = node->get_level();
+ f_node_step.bound = node->get_bound();
+ f_node_step.incumbent = f_incumbentCell->load();
+ f_node_step.status = node->is_infeasible() ? int( NodeStep::eFathomed )
+					    : status;
+ f_node_step.change = node->get_f_change();
+ for( auto & ev : v_events[ eEveryNode ] )
+  ev();
+ }
+
+/*--------------------------------------------------------------------------*/
+
 int BranchAndXSolver::compute( bool changedvars )
 {
  lock();
@@ -1066,9 +1100,11 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	    std::chrono::duration< double >(
 	     std::chrono::high_resolution_clock::now() - start ).count() ,
 	    0 , true );
+   node_step( currentNode , NodeStep::ePruned );
    }
   else if( ! currentNode->is_evaluated() ) {
    auto evalStart = std::chrono::high_resolution_clock::now();
+   const double before = f_incumbentCell->load();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
                        &f_HeuristicSolvers , minimizing , bestBound ,
@@ -1076,7 +1112,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                        branchSolver ,
                        maxThreadForSolvers , relTol , absTol , globalMutex ,
                        nullptr , false );
-   if( inconclusive( res ) ) {     // set aside, as if fenced
+   const bool unresolved = inconclusive( res );
+   if( unresolved ) {              // set aside, as if fenced
     v_unresolved.push_back( currentNode->get_bound() );
     prunedHere = true;
     res = Solver::kOK;
@@ -1097,12 +1134,19 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	    prunedHere || cannot_improve( currentNode->get_bound() ,
 					  f_incumbentCell->load() , minimizing , relTol ,
 					  absTol ) );
+   node_step( currentNode , node_status( prunedHere ||
+			      cannot_improve( currentNode->get_bound() ,
+					      f_incumbentCell->load() ,
+					      minimizing , relTol , absTol ) ,
+					 unresolved ,
+					 f_incumbentCell->load() != before ) );
    }
 
   // branching and evaluation of the new children
   if( ( ! prunedHere ) &&
       ( ! cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                           minimizing , relTol , absTol ) ) ) {
+   node_step( currentNode , NodeStep::eBranched );
    auto & branches = currentNode->getBranches();
    kept.clear();         // survivors, pushed after the loop
    for( std::size_t i = 0 ; i < branches.size() ; ++i ) {
@@ -1130,13 +1174,15 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      }
     bool toPrune = false;
     auto evalStart = std::chrono::high_resolution_clock::now();
+    const double before = f_incumbentCell->load();
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , toPrune ,
                         branchSolver ,
                         maxThreadForSolvers , relTol , absTol , globalMutex );
-    if( inconclusive( res ) ) {    // set aside, as if fenced
+    const bool unresolved = inconclusive( res );
+    if( unresolved ) {             // set aside, as if fenced
      v_unresolved.push_back( new_node->get_bound() );
      toPrune = true;
      res = Solver::kOK;
@@ -1155,6 +1201,12 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	     toPrune || cannot_improve( new_node->get_bound() ,
 					f_incumbentCell->load() , minimizing , relTol ,
 					absTol ) );
+    node_step( new_node , node_status( toPrune ||
+			    cannot_improve( new_node->get_bound() ,
+					    f_incumbentCell->load() ,
+					    minimizing , relTol , absTol ) ,
+				       unresolved ,
+				       f_incumbentCell->load() != before ) );
     // keep the node only if its relaxation bound can improve the incumbent
     if( ( ! toPrune ) &&
         ( ! cannot_improve( new_node->get_bound() , f_incumbentCell->load() ,
@@ -1351,10 +1403,20 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    }
   else {
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+   const double before = f_incumbentCell->load();
    res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                          rootNode , minimizing , bestBound , bestSolution ,
                          f_incumbentCell , branchSolver , globalMutex ,
                          relTol , absTol );
+   if( res == Solver::kInfeasible )
+    node_step( rootNode , NodeStep::eFathomed );
+   else
+    if( res == Solver::kOK )
+     node_step( rootNode , node_status(
+		 cannot_improve( rootNode->get_bound() ,
+				 f_incumbentCell->load() , minimizing ,
+				 relTol , absTol ) , false ,
+		 f_incumbentCell->load() != before ) );
    }
   if( res == Solver::kOK )
    open.push( rootNode );

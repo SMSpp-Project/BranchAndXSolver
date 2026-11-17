@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- the new event `eEveryNode` of `BranchAndXSolver` is called by the serial
+  exploration at each node evaluated, branched, or closed when extracted, and
+  `get_node_step()` gives its id, father, depth, relaxation bound, the
+  incumbent, the `Change` that makes it from its father and its status
+  (open, branched, pruned by the bound, fathomed by an empty relaxation,
+  closed by an incumbent of its own, set aside), so that the tree can be
+  followed node by node; nothing is done when no handler is set
+
 ### Changed
 
 - the library is kept in whoever links it by a source that calls its

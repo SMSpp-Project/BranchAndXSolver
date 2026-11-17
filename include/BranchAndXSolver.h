@@ -377,7 +377,9 @@ class BranchAndXSolver : public Solver {
                       configurationRS( nullptr ) ,
                       changes( Modification::eModAll ) ,
                       subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() { }
+                      integerNodes() {
+  v_events.resize( e_last_event_type_BXS );
+  }
 
 /*--------------------------------------------------------------------------*/
  /// destructor
@@ -662,6 +664,57 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// the events of BranchAndXSolver, on top of those of ThinComputeInterface
+
+ enum event_type_BXS {
+  eEveryNode = e_last_event_type ,  ///< a node is evaluated or closed
+                                    /**< Called by the serial exploration
+   * each time a node has been evaluated, each time one is branched upon,
+   * and each time one is closed when extracted without being evaluated, so
+   * that a node may be given more than once, get_node_step() describing the
+   * node while the handler runs; the parallel depth-first exploration
+   * calls no handler. What the handler returns is not read. */
+  e_last_event_type_BXS             ///< first new event of derived classes
+  };
+
+/*--------------------------------------------------------------------------*/
+ /// the events supported: those of ThinComputeInterface and eEveryNode
+
+ [[nodiscard]] EventID max_event_number( void ) const override {
+  return( e_last_event_type_BXS );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// a node of the tree, as given to the handlers of eEveryNode
+
+ struct NodeStep {
+  /// what is of the node after its evaluation
+  enum node_status {
+   eOpen = 0 ,    ///< it can improve the incumbent: it waits to be branched
+   eBranched ,    ///< it is extracted and branched upon, its children next
+   ePruned ,      ///< its bound cannot improve the incumbent
+   eFathomed ,    ///< its relaxation is empty
+   eInteger ,     ///< closed by the incumbent its own evaluation found
+   eUnresolved    ///< its evaluation is inconclusive: it is set aside
+   };
+  int id = 0;                    ///< the node, 0 for the root
+  int parent = -1;               ///< its father, -1 for the root
+  int depth = 0;                 ///< its depth, 0 for the root
+  double bound = 0;              ///< its relaxation bound
+  double incumbent = 0;          ///< the incumbent after its evaluation
+  int status = eOpen;            ///< see node_status
+  const Change * change = nullptr;  ///< what makes it from its father,
+                                    ///< nullptr for the root
+  };
+
+/*--------------------------------------------------------------------------*/
+ /// the node being given to the handlers of eEveryNode
+
+ [[nodiscard]] const NodeStep & get_node_step( void ) const {
+  return( f_node_step );
+  }
+
+/*--------------------------------------------------------------------------*/
 /*------------------- METHODS FOR HANDLING THE PARAMETERS ------------------*/
 /*--------------------------------------------------------------------------*/
 /** @name Handling the parameters of the BranchAndXSolver
@@ -810,6 +863,8 @@ class BranchAndXSolver : public Solver {
 
  Solution * bestSolution; ///< the best solution found, valued bestBound
 
+ NodeStep f_node_step;    ///< the node given to eEveryNode
+
 /*--------------------------------------------------------------------------*/
 /*----------------------- PRIVATE PART OF THE CLASS ------------------------*/
 /*--------------------------------------------------------------------------*/
@@ -818,6 +873,14 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
 /*--------------------------- PRIVATE METHODS ------------------------------*/
+/*--------------------------------------------------------------------------*/
+
+ /// gives the node to the handlers of eEveryNode, if there are any
+ /** \p status is NodeStep::node_status, but eFathomed when the node is
+  * infeasible whatever is given. */
+
+ void node_step( ExploringNode * node , int status );
+
 /*--------------------------------------------------------------------------*/
 
  /// create the inner Solver out of configurationRS
