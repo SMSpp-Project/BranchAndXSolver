@@ -55,4 +55,8 @@ BAXSLVH   := $(BAXSLVH) $(SMS++H)
 # external libraries for BranchAndXSolver
 BAXSLVLIB = $(SMS++LIB) $(libPBeFSLIB)
 
+# the objects as the shared libraries of the module and of those whose
+# objects it takes [see SMS++/lib/makefile-shared]
+$(eval $(call SMSppSOlib,BAXSLV))
+
 ############################ End of makefile #################################

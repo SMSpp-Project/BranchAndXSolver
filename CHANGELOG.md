@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- the makefiles give the shared library of the module by default, a DLL on
+  Windows, as CMake does, and its objects with `SMSppSTATIC` [see
+  `lib/makefile-shared` of SMS++]
+
+- the library is kept in whoever links it by a source that calls its
+  `SMSpp_force_load_` function, the tests and the tools take the static
+  libraries whole by the `WHOLE_ARCHIVE` feature of CMake and copy the DLLs
+  next to them only where there are any, and the installed run-time path is
+  the one of `smspp_install_rpath()`, with no test on the system or on the
+  compiler [see `SMSppModule.cmake` of SMS++]; CMake 3.24 or later is needed
+
+## [0.4.0] - 2026-11-16
+
+### Changed
+
+- `BranchAndXSolver::concerned_by()` is what any of its inner Solver
+  reads (all the kinds before they are created), and `add_Modification()`
+  passes a Modification only to the inner Solver that read its kind, as the
+  Block does with the Solver registered to it
+
+### Fixed
+
+- the installed module `smspp.branchandxsolver` could not be imported, since
+  its package gave the interface of the module the target of the library by
+  its name in the build tree, which an installed package does not have
+
+- `BranchAndXSolver.h` compiles without warnings under `-Wall`: the
+  constructor initializes the members in the order they are declared
+
+- `reseedFrontier()` marks as evaluated the nodes of the frontier it
+  evaluates, which `explore()` evaluated a second time when extracting them
+
+- the lazy bounding protocol fences, without evaluating it, a node extracted
+  with a bound that can no longer improve the incumbent, as its
+  documentation says, rather than evaluating it first
+
+- `explore()` compiles without the `-Wenum-compare` warning of its return
+
+## [0.3.0] - 2026-11-03
+
 ### Added
 
 - the makefiles build the C++20 module `smspp.branchandxsolver` when
@@ -39,7 +81,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built with the CMake option `SMSpp_BUILD_MODULE`, as the target
   `SMS++::BranchAndXSolver_module`
 
+- the documentation of the class gives the formulation of the search: the
+  tree and the algebra of the undo Changes, the move along the common
+  ancestor, the pruning test with its tolerances, the bound and the
+  incumbent of the Solver of a node, the exploration strategies, the two
+  kinds of parallelism and the tightening, with the references
+
 ### Changed
+
+- the README leaves the channels that distribute SMS++ to the
+  installation guide of the wiki (Installing-SMS++), keeping the names
+  of the packages of the module
+
+- a node whose relaxation returns `kStopTime`, `kStopIter` or
+  `kLowPrecision` (e.g., a Lagrangian Dual not solved to the required
+  accuracy whose solution gives nothing to branch upon) no longer stops the
+  whole exploration: it is set aside, neither branched upon nor fenced, the
+  other nodes are explored, and its relaxation bound enters the bound of the
+  solve as that of an open node; `compute()` returns `kLowPrecision` if some
+  node so set aside can still improve the incumbent, while a relaxation
+  returning `kError` still stops the solve
 
 - the pipeline builds the module also with its makefiles, after CMake, and
   runs on a change of the makefiles too [see `ci/makefile` of the umbrella]
@@ -73,6 +134,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the Objective alone changes)
 
 ### Fixed
+
+- on Windows, the executables that copy their DLLs next to themselves
+  are linked one at a time (a job pool of Ninja), since two copies of the
+  same DLL into one directory collided (e.g., with the clang++ of MSYS2)
+
+- with the compilers of MinGW (MSYS2) the target asks whoever links it
+  for the symbol that forces the module in, as with MSVC and on macOS:
+  the linker imports a DLL only for the symbols asked for, so that a
+  program that used none had the module left out and its classes
+  missing from the factory
 
 - the makefiles of the tests and of the tools build also with g++: they
   take the option that stops at the first error and the one of the
@@ -220,6 +291,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RPATH relative to itself, so that an installed tree keeps working wherever
   it is moved
 
-[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...develop
+[Unreleased]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.4.0...develop
+[0.4.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.3.0...0.4.0
+[0.3.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.2.0...0.3.0
 [0.2.0]: https://gitlab.com/smspp/branchandxsolver/-/compare/0.1.0...0.2.0
 [0.1.0]: https://gitlab.com/smspp/branchandxsolver/-/tags/0.1.0

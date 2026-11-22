@@ -12,35 +12,15 @@
 
 # The classes of the modules register themselves in the factories from
 # static objects, which nothing here names: a shared library is kept by
-# what its module asks of the linker [see the CMakeLists.txt of the
-# module], while an archive has to be taken whole.
-if (NOT BUILD_SHARED_LIBS)
-    if (MSVC)
-        add_link_options("/WHOLEARCHIVE" "/FORCE:MULTIPLE")
-    else () # Unix
-        if (APPLE)
-            add_link_options("-Wl,-all_load")
-        else ()
-            add_link_options("-Wl,--whole-archive,--allow-multiple-definition")
-        endif ()
-    endif ()
-endif ()
+# what its module asks of the linker, while an archive has to be taken
+# whole [see SMSppModule.cmake of SMS++].
+smspp_keep_modules()
 
 # ----- BranchAndXSolver_unit_test ------------------------------------------ #
 add_executable(${modName}_unit_test test.cpp)
 target_link_libraries(${modName}_unit_test PRIVATE SMS++::BranchAndXSolver)
 
-if (WIN32 AND BUILD_SHARED_LIBS AND NOT DEFINED ENV{CONDA_BUILD})
-    # On Windows with shared libraries enabled copies all runtime DLL
-    # dependencies next to the executable in the build directory
-    # (POST_BUILD), using CMake's TARGET_RUNTIME_DLLS generator expression
-    add_custom_command(TARGET ${modName}_unit_test POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:${modName}_unit_test>
-            $<TARGET_FILE_DIR:${modName}_unit_test>
-            COMMAND_EXPAND_LISTS
-            COMMENT "Copying runtime DLLs next to ${modName}_unit_test.exe")
-endif ()
+smspp_copy_runtime(${modName}_unit_test)
 
 # The tester builds its instances in memory, and reads the BlockSolverConfig
 # of the inner Solver out of this directory.

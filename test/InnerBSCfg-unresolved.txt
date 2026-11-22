@@ -1,0 +1,30 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - -  InnerBSCfg-unresolved.txt  - - - - - - - - - - - - -
+#
+# BlockSolverConfig of the inner Solver of the BranchAndXSolver in test.cpp:
+# the BoxUnresolved, i.e., the BoxRelaxation of InnerBSCfg.txt that at
+# every third compute() but the first says kLowPrecision, leaving a node
+# that can be neither branched upon nor fenced. No ComputeConfig: the
+# Solver keeps its defaults.
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+BlockSolverConfig     # exact type of the Configuration object
+
+1  # the BlockSolverConfig is a "differential" one: values are being set
+
+1  # number of (the names of) Solver in this BlockSolverConfig
+# now all the names of the Solver - - - - - - - - - - - - - - - - - - - - - -
+BoxUnresolved     # name of 1st Solver
+
+0  # number of ComputeConfig in this BlockSolverConfig
+
+# now all the ComputeConfig
+# [none]
+
+# end of BlockSolverConfig- - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - -  END InnerBSCfg-unresolved.txt  - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

@@ -89,12 +89,165 @@ namespace SMSpp_di_unipi_it
 /*---------------------- CLASS BranchAndXSolver ----------------------------*/
 /*--------------------------------------------------------------------------*/
 /// a generic Branch-and-Bound Solver driven by ChangeSolver
-/** The BranchAndXSolver explores the enumeration tree whose nodes are
- * identified by the Change leading to them from their parent; moving the
- * attached :ChangeSolver between two nodes amounts to applying the Changes
- * (or the undo Changes) found along the joining path. RelaxationSolver(s)
- * provide the relaxation bound, possibly true solutions, and the branching
- * Changes; plain ChangeSolver(s) act as primal heuristics. */
+/** The BranchAndXSolver solves the problem
+ *  \f[
+ *    z^* = \max \{ f(x) : x \in X \}
+ *  \f]
+ * encoded by its Block (minimization being the mirror image, handled by the
+ * sense of the Objective) by recursively partitioning \f$ X \f$ and bounding
+ * each part through a relaxation \f$ \hat{X} \supseteq X \f$ over which
+ * maximizing \f$ f \f$ is "easy", the relaxation being solved by the
+ * attached :RelaxationSolver [see ChangeSolver.h]. In the following
+ * \f$ \bar{z} \f$ is the value of the best feasible solution found so far
+ * (the incumbent), and, for a node \f$ \nu \f$ of the enumeration tree,
+ * \f$ X_\nu \subseteq X \f$ is the subproblem it represents and
+ * \f$ D( \nu ) \geq \max \{ f(x) : x \in X_\nu \} \f$ the (dual) bound
+ * given by its relaxation.
+ *
+ * \par The enumeration tree.
+ * A node \f$ \nu \f$ is identified by the Change \f$ c_\nu \f$ that
+ * generates it from its father \f$ p( \nu ) \f$, and it owns \f$ c_\nu \f$,
+ * the undo \f$ c_\nu^{-1} \f$ that goes back to the father, and its bound;
+ * hence \f$ X_\nu \f$ is the result of applying to \f$ X \f$ the Changes
+ * along the path from the root, i.e.,
+ *  \f[
+ *    X_\nu = ( c_\nu \circ c_{p( \nu )} \circ \dots \circ c_{r'} ) X
+ *  \f]
+ * where \f$ r' \f$ is the child of the root on that path. A GroupChange
+ * \f$ g = \langle c_1 , \dots , c_k \rangle \f$ is applied as the single
+ * Change \f$ c_k \circ \dots \circ c_1 \f$, and its undo is the composition
+ * of the undos in reverse order,
+ *  \f[
+ *    g^{-1} = c_1^{-1} \circ \dots \circ c_k^{-1} \;,
+ *  \f]
+ * which is what makes a branching decision touching several things at once
+ * a Change like any other, and the round trip down and up a subtree exact.
+ * Since the Changes of the children of a node partition its subproblem
+ * (the RelaxationSolver must ensure that \f$ X_\nu = \bigcup_i
+ * X_{\nu c_i} \f$ for those returned by branch()), the leaves of any cut
+ * through the tree partition \f$ X \f$, and no feasible solution is lost.
+ *
+ * \par Moving along the tree.
+ * One :ChangeSolver visits many nodes without being rebuilt: it is moved
+ * from a node \f$ s \f$ to a node \f$ t \f$ along the unique path through
+ * their lowest common ancestor \f$ a \f$, applying the undos from
+ * \f$ s \f$ up to \f$ a \f$ and then the Changes from \f$ a \f$ down to
+ * \f$ t \f$. A :ChangeSolver may intercept the Changes it understands and
+ * apply them to its own internal state rather than to the Block, which is
+ * where the efficiency of the enumeration (possibly) comes from, since
+ * moving along the tree then never locks nor reads the Block. The
+ * depth-first exploration needs no explicit links (the recursion is the
+ * path to the root), while the others keep the father of each node, so as
+ * to jump between any two open nodes.
+ *
+ * \par Bounding and pruning.
+ * Since \f$ X_\nu \subseteq \hat{X}_\nu \f$, no solution in \f$ X_\nu \f$
+ * is better than \f$ D( \nu ) \f$; hence, \f$ \nu \f$ is pruned when its
+ * bound cannot improve the incumbent within the inherited tolerances
+ * \f$ \varepsilon_a \f$ = dblAbsAcc and \f$ \varepsilon_r \f$ = dblRelAcc,
+ * i.e., when
+ *  \f[
+ *    D( \nu ) \leq \bar{z} + \max \{ \varepsilon_a \,,\, \varepsilon_r
+ *                                    \max \{ | \bar{z} | , 1 \} \}
+ *  \f]
+ * (the inequality reversed for minimization), as well as when its
+ * relaxation is empty. Note that the default dblAbsAcc = +INF is taken as
+ * "not active", i.e., as \f$ \varepsilon_a = 0 \f$: plugged in literally it
+ * would prune every node as soon as there is an incumbent.
+ *
+ * A node whose evaluation is inconclusive, i.e., whose relaxation returns
+ * kStopTime, kStopIter or kLowPrecision (say, a Lagrangian Dual not solved
+ * to the required accuracy whose solution gives nothing to branch upon), is
+ * set aside: it is neither branched upon nor fenced, the exploration goes on
+ * with the other nodes, and its bound enters that of the whole solve as the
+ * bound of an open node does. If, at the end, some node so set aside can
+ * still improve the incumbent, compute() returns kLowPrecision rather than
+ * kOK; a relaxation returning kError still stops the whole solve.
+ *
+ * \par The Solver of a node.
+ * A node is evaluated by a set of inner Solver, all described by the
+ * BlockSolverConfig [see strNameOfBlockSolverConfigurationFile]: one or more
+ * :RelaxationSolver \f$ \mathcal{R} \f$, each giving a bound
+ * \f$ D_R( \nu ) \f$ and possibly a solution feasible for the true problem
+ * of value \f$ \underline{z}_R \f$, and zero or more plain :ChangeSolver
+ * \f$ \mathcal{H} \f$, the primal heuristics, each giving only a feasible
+ * solution \f$ x_H \f$ and never a bound. The bound of the node is the
+ * tightest of those of the relaxations,
+ *  \f[
+ *    D( \nu ) = \min \{ D_R( \nu ) : R \in \mathcal{R} \}
+ *  \f]
+ * (the max for minimization), and the relaxation attaining it is the one
+ * that branches the node; the incumbent is updated with the best solution
+ * found by any Solver of the node,
+ *  \f[
+ *    \bar{z} \leftarrow \max \{ \bar{z} \,,\,
+ *                     \max \{ \underline{z}_R : R \in \mathcal{R} \} \,,\,
+ *                     \max \{ f( x_H ) : H \in \mathcal{H} \} \} \;.
+ *  \f]
+ * A heuristic therefore changes neither the partition nor the bounds, only
+ * \f$ \bar{z} \f$; yet, a good incumbent found early is what makes the
+ * pruning test effective, and it is often decisive in practice.
+ *
+ * \par Exploration strategies.
+ * If \f$ \mathcal{O} \f$ is the set of the open nodes (generated but not
+ * yet branched), a strategy [see intSolveMethod] is only the rule choosing
+ * the next node in \f$ \mathcal{O} \f$: the deepest one for depth-first, the
+ * shallowest one for breadth-first, the one with the best \f$ D( \nu ) \f$
+ * for best-first (diving to a leaf below it in BestFSDive), and the one with
+ * the best estimate of the value under it for best-estimate. Best-first
+ * explores the fewest nodes for a given relaxation, since no node with
+ * \f$ D( \nu ) \leq z^* \f$ is ever branched, but it stores the whole of
+ * \f$ \mathcal{O} \f$; depth-first only stores the current path, hence its
+ * memory is linear in the depth, which makes it the safer choice on deep
+ * trees and the one run by the workers of the parallel exploration.
+ *
+ * \par Parallel exploration.
+ * Two orthogonal kinds of parallelism are available. Across the tree [see
+ * intMaxThread and ParallelDFSSolve()], after an ordered ramp-up \f$ K \f$
+ * workers, each driving its own copy of the inner Solver (so that applying
+ * the Changes needs no synchronization), repeatedly claim the oldest open
+ * subtree and explore it depth-first, sharing only the incumbent and the
+ * pool of open subtrees, and a worker donates a branch of its subtree when
+ * the pool runs low; claiming in the order of discovery is what keeps the
+ * runs replicable, since a random distribution of the work is known to make
+ * them erratic on knapsack-like problems. Across the Solver of a node [see
+ * intThreadForDifferentSolvers], the compute() of the several relaxations
+ * and heuristics are run concurrently while the reduction of their results
+ * (incumbent, tightest bound, pruning) stays serial, and therefore the
+ * outcome is the same as that of the serial code. Of course, the first kind
+ * is subject to the usual anomalies of parallel Branch-and-Bound: a worker
+ * finding a good incumbent early may let the others prune subtrees that the
+ * sequential search would enter (and vice versa), hence speedups may be
+ * superlinear as well as below one.
+ *
+ * \par Tightening.
+ * Any tightening of the relaxation (preprocessing, reduced-cost fixing,
+ * cuts) is done by the RelaxationSolver on its own terms, which reads what
+ * is global to the search (the incumbent, the pool of the globally valid
+ * cuts) in a GlobalInformation [see str_GlobalCuts]; a tightening is valid
+ * if it does not remove any solution of \f$ X_\nu \f$ better than the
+ * incumbent, and one that is only locally valid is undone when the subtree
+ * is left. Reoptimization across compute() calls is described in
+ * intReoptimize.
+ *
+ * \par References.
+ * E. L. Lawler, D. E. Wood, "Branch-and-bound methods: a survey",
+ * Operations Research 14(4):699-719, 1966. \n
+ * D. R. Morrison, S. H. Jacobson, J. J. Sauppe, E. C. Sewell,
+ * "Branch-and-bound algorithms: a survey of recent advances in searching,
+ * branching, and pruning", Discrete Optimization 19:79-102, 2016. \n
+ * M. Fischetti, A. Lodi, "Heuristics in mixed integer programming", in
+ * Wiley Encyclopedia of Operations Research and Management Science, 2011. \n
+ * T. Berthold, "Primal heuristics for mixed integer programs", Diploma
+ * thesis, Technische Universitaet Berlin, 2006. \n
+ * B. Gendron, T. G. Crainic, "Parallel branch-and-bound algorithms: survey
+ * and synthesis", Operations Research 42(6):1042-1066, 1994. \n
+ * D. A. Bader, W. E. Hart, C. A. Phillips, "Parallel algorithm design for
+ * branch and bound", in H. J. Greenberg (ed.), Tutorials on Emerging
+ * Methodologies and Applications in Operations Research, Springer, 2005. \n
+ * B. Archibald, P. Maier, C. McCreesh, R. Stewart, P. Trinder, "Replicable
+ * parallel branch and bound search", Journal of Parallel and Distributed
+ * Computing 113:92-114, 2018. */
 
 class BranchAndXSolver : public Solver {
 
@@ -227,14 +380,14 @@ class BranchAndXSolver : public Solver {
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
                       maxNodes( INT_MAX ) , treeExplorer( OwnExplorer ) ,
+                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) ,
                       f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) ,
                       changes( Modification::eModAll ) ,
                       subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() ,
-                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) { }
+                      integerNodes() { }
 
 /*--------------------------------------------------------------------------*/
  /// destructor
@@ -445,12 +598,35 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// the kinds of Modification the BranchAndXSolver reads
+ /** The inner Solver are not registered to the Block: they have the
+  * Modification from the BranchAndXSolver [see add_Modification()], which
+  * therefore reads what any of them reads [see Solver::concerned_by()], and
+  * all the kinds before they are created. What the tree needs to know of a
+  * change [see keeps_tree()] is what its RelaxationSolver read of it: a
+  * change that none of them reads does not change the bounds of the
+  * nodes. */
+
+ [[nodiscard]] Modification::ModConcern concerned_by( void ) const override {
+  if( v_created.empty() )
+   return( Modification::eModAnything );
+  Modification::ModConcern c = 0;
+  for( auto slvr : v_created )
+   c |= slvr->concerned_by();
+  return( c );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// receive a Modification and forward it to the (private) inner Solver
+ /** The Modification is passed to each of the inner Solver that reads its
+  * kind [see Modification::is_of_concern_to()], as the Block would do if they
+  * were registered to it. */
 
  void add_Modification( sp_Mod & mod ) override {
   Solver::add_Modification( mod );
   for( auto slvr : v_created )
-   slvr->add_Modification( mod );
+   if( mod->is_of_concern_to( slvr->concerned_by() ) )
+    slvr->add_Modification( mod );
   }
 
 /** @} ---------------------------------------------------------------------*/
@@ -465,6 +641,16 @@ class BranchAndXSolver : public Solver {
 /*---------------------- METHODS FOR READING RESULTS -----------------------*/
 /*--------------------------------------------------------------------------*/
 
+ /// whether an incumbent solution is actually available
+ /** A solve stopped before finding an incumbent has no solution to write.
+  * bestSolution alone can still belong to an earlier solve, whose bound
+  * has been reset to no_incumbent() at the start of a new exploration. */
+
+ [[nodiscard]] bool has_var_solution( void ) override {
+  return( bestSolution && ( bestBound != no_incumbent() ) );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// write the best solution found into the Variable of the Block
 
  void get_var_solution( Configuration * solc = nullptr ) override {
@@ -497,6 +683,17 @@ class BranchAndXSolver : public Solver {
   * nodes left open and the incumbent) for a maximization one. */
 
  OFValue get_ub( void ) override;
+
+/*--------------------------------------------------------------------------*/
+ /// number of node evaluations started by the last compute(), root included
+ /** Counts each node once per evaluation, independently of the number of
+  * inner solvers; reoptimization counts the frontier evaluations of this
+  * solve. Nodes fenced without evaluation are excluded. Zero before the
+  * first compute(), or when an unchanged problem reuses its answer. */
+
+ [[nodiscard]] long get_evaluated_nodes( void ) const {
+  return( f_evaluated_nodes.load( std::memory_order_relaxed ) );
+  }
 
 /*--------------------------------------------------------------------------*/
 /*------------------- METHODS FOR HANDLING THE PARAMETERS ------------------*/
@@ -871,6 +1068,15 @@ class BranchAndXSolver : public Solver {
  void discardRetainedTree( void );
 
 /*--------------------------------------------------------------------------*/
+ /// account for the nodes set aside unresolved in the global bound
+ /** Improves f_open_bound with the relaxation bounds of the nodes set aside
+  * unresolved in this solve [see v_unresolved], and returns true if some of
+  * them can still improve the incumbent, i.e., if the solve, all the rest
+  * being explored, is still not conclusive. */
+
+ bool add_unresolved_bounds( bool minimizing );
+
+/*--------------------------------------------------------------------------*/
  /// the depth-first subtree exploration of one worker
  /** The recursive core of one worker of ParallelDFSSolve(): a depth-first
   * exploration on the worker's own Solver set, with the shared
@@ -1041,6 +1247,9 @@ class BranchAndXSolver : public Solver {
  /// the root of the tree retained for reoptimization, nullptr if none
  ExploringNode * f_treeRoot;
 
+ /// node evaluations in the current compute(), also shared by DFS workers
+ std::atomic< long > f_evaluated_nodes{ 0 };
+
  /// residual node budget of the current solve (from intMaxNodes), consumed
  /// by the exploration
  int nodeBudget;
@@ -1084,6 +1293,16 @@ class BranchAndXSolver : public Solver {
 
  /// nodes pruned as integer-feasible, to be revisited on reoptimization
  std::list< ExploringNode * > integerNodes;
+
+ /// the relaxation bounds of the nodes set aside unresolved in this solve
+ /** A node whose evaluation is inconclusive (its relaxation returns
+  * kStopTime, kStopIter or kLowPrecision) can be neither branched upon nor
+  * fenced: it is set aside, and its relaxation bound (that of its father,
+  * if its own evaluation has not improved it) is kept here, so that the
+  * bound of the whole solve accounts for the part of the region that it
+  * covers [see add_unresolved_bounds()]. Written under the incumbent mutex
+  * by the workers of the parallel exploration. */
+ std::vector< double > v_unresolved;
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 

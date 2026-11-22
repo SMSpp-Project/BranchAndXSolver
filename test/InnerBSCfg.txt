@@ -21,8 +21,7 @@ BoxRelaxation     # name of 1st Solver
 
 # now all the ComputeConfig
 # [none]
-
-# end of BlockSolverConfig- - - - - - - - - - - - - - - - - - - - - - - - - -
+# end of BlockSolverConfig - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # - - - - - - - - - - - - -  END InnerBSCfg.txt - - - - - - - - - - - - - - -
