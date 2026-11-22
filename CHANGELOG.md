@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the makefiles give the shared library of the module by default on Linux
+  and on macOS, as CMake does, and its objects with `SMSppSTATIC` [see
+  `lib/makefile-shared` of SMS++]
+
 - the library is kept in whoever links it by a source that calls its
   `SMSpp_force_load_` function, the tests and the tools take the static
   libraries whole by the `WHOLE_ARCHIVE` feature of CMake and copy the DLLs
