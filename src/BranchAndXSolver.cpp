@@ -90,13 +90,15 @@ static bool improves( double value , double best , bool minimizing )
 /** True for the return codes with which a relaxation says that it has
  * neither solved nor failed (stopped by a budget of its own, or unable to
  * reach the required accuracy): the relaxation bound that the node has is
- * still valid, but the node can be neither branched upon nor fenced, and it
- * is set aside [see BranchAndXSolver::v_unresolved]. */
+ * still valid. Results in [kOK, kError) may drive branching when the needed
+ * values are available; other partial results remain unresolved when their
+ * bounds cannot prune the node [see
+ * BranchAndXSolver::v_unresolved]. */
 
 static bool inconclusive( int res )
 {
- return( ( res == Solver::kStopTime ) || ( res == Solver::kStopIter ) ||
-         ( res == Solver::kLowPrecision ) );
+ return( ( res > Solver::kOK && res < Solver::kError ) ||
+	  res == Solver::kLowPrecision );
  }
 
 /// the Solution corresponding to the current solution of \p slvr
@@ -224,24 +226,7 @@ static void moveSolverToFather( Node * currentNode ,
 // parallel evaluation path of computeRelaxations() / computeHeuristic()
 template< typename SolverPtr >
 static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
-                                std::vector< int > & zs , int maxThreads );
-
-/*--------------------------------------------------------------------------*/
-/// fence the current node whose relaxation stopped at the cutoff
-/** The relaxation \p s has returned kCutOff, i.e., it has proven its bound
- * beyond the cutoff it was given, the incumbent [see computeRelaxations()]:
- * the node is fenced by bound, with the bound the relaxation reports, if
- * better than the one it has. */
-
-static void fence_by_cutoff( Node * currentNode , Solver * s ,
-                             const bool minimizing , bool & toPrune )
-{
- const double bound = minimizing ? s->get_lb() : s->get_ub();
- if( minimizing ? bound > currentNode->get_bound()
-                : bound < currentNode->get_bound() )
-  currentNode->set_bound( bound );
- toPrune = true;
- }
+				std::vector< int > & zs , int maxThreads );
 
 /*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
@@ -251,7 +236,7 @@ static void fence_by_cutoff( Node * currentNode , Solver * s ,
  * discarded. The incumbent is given to every relaxation as its cutoff
  * (dblUpCutOff when minimizing, dblLwCutOff when maximizing), so that one
  * proven beyond it stops there: returning kCutOff, and the node is fenced by
- * bound [see fence_by_cutoff()], or kInfeasible, and the node is fenced as
+ * bound when its certificate proves the cutoff, or kInfeasible, and the node is fenced as
  * infeasible. With
  * \p nThreads > 1 (and no shared incumbent lock) the several relaxations are
  * computed concurrently, bit-identically to the serial reduction [see
@@ -268,131 +253,115 @@ static int computeRelaxations(
                   double relAcc = 0 , double absAcc = 0 ,
                   int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
- // the incumbent is the cutoff of the relaxations [see dblUpCutOff in
- // Solver.h]: a relaxation proven beyond it says that the node cannot
- // improve on it, which for the search is as good as infeasible (and then,
- // at the root, it proves the incumbent optimal rather than the problem
- // infeasible)
+ // Branching information belongs to this evaluation, never to its parent
+ // or to a previously visited sibling.
+ branchSolver = nullptr;
  const double incumbent = incumbentCell->load();
- const bool has_incumbent = minimizing ? incumbent < Inf< double >()
-                                       : incumbent > - Inf< double >();
+ const bool has_incumbent = std::isfinite( incumbent );
  for( auto & pr : *f_RelaxationSolvers )
   pr.second->set_par( minimizing ? Solver::dblUpCutOff : Solver::dblLwCutOff ,
                       incumbent );
 
- // parallel evaluation of the (several) relaxations of this node: only when
- // more than one thread is asked, there are at least two solvers, and no
- // shared incumbent lock is in force (a parallel-tree worker evaluates its
- // per-node solvers serially); the reduction is bit-identical to the serial
- // path below
- if( ( nThreads > 1 ) && ( f_RelaxationSolvers->size() > 1 ) &&
-     ( ! incumbentMutex ) ) {
-  const std::size_t n = f_RelaxationSolvers->size();
-  std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
-  if( computeAllParallel( *f_RelaxationSolvers , zs , nThreads ) ) {
-   if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
-    return( Solver::kInfeasible );       // the root is infeasible
-   toPrune = true;
+ // Use the same validation and reduction for serial and parallel execution.
+ // Never publish a solution until its certificate has been checked and the
+ // Solution object has been constructed successfully.
+ const auto reduce = [ & ]( RelaxationSolver * rs , Solver * s ,
+			    int status ) -> int {
+  if( status == Solver::kInfeasible ) {
    currentNode->set_infeasible( true );
-   // an infeasible node has the worst conceivable bound: this is what tells
-   // it apart, in the log and in the fenced frontier, from one fenced by
-   // bound, which carries the finite bound that fenced it
-   currentNode->set_bound( minimizing ? Inf< double >()
-                                           : - Inf< double >() );
-   return( Solver::kOK );
-   }
-  for( std::size_t i = 0 ; i < n ; ++i ) {
-   auto & [ rs , s ] = (*f_RelaxationSolvers)[ i ];
-   if( zs[ i ] == Solver::kCutOff ) {  // beyond the incumbent [see above]
-    fence_by_cutoff( currentNode , s , minimizing , toPrune );
-    return( Solver::kOK );
-    }
-   if( zs[ i ] != ThinComputeInterface::kOK )
-    return( zs[ i ] );
-   if( rs->has_true_var_solution() ) {
-    double primal_bound = minimizing ? rs->get_true_ub() : rs->get_true_lb();
-    if( improves( primal_bound , incumbentCell->load() , minimizing ) ) {
-     bestBound = primal_bound;
-     incumbentCell->store( bestBound );
-     delete bestSol;
-     bestSol = rs->get_true_solution();
-     }
-    }
-   // the bound is recorded before the fate of the node is decided, so that
-   // a node fenced by bound carries the bound that fenced it rather than the
-   // one it was initialized with
-   // the node may already have the (inherited) bound of its parent: the
-   // bound is improved only if this one is better, while the branching is
-   // done by the relaxation with the best bound, or by the first one
-   auto relaxBound = minimizing ? s->get_lb() : s->get_ub();
-   const bool better = minimizing ? relaxBound > currentNode->get_bound()
-                                  : relaxBound < currentNode->get_bound();
-   if( better )
-    currentNode->set_bound( relaxBound );
-   if( better || ( ! branchSolver ) )
-    branchSolver = rs;
-   if( cannot_improve( relaxBound , incumbentCell->load() , minimizing ,
-                       relAcc , absAcc ) ) {
-    toPrune = true;
-    return( Solver::kOK );
-    }
-   }
-  return( Solver::kOK );
-  }
-
- // serial evaluation
- for( auto & [ rs , s ] : *f_RelaxationSolvers ) {
-  auto z = s->compute();
-  if( z == Solver::kInfeasible ) {
-   if( ( ! currentNode->get_toFather() ) && ( ! has_incumbent ) )
-    return( Solver::kInfeasible );       // the root is infeasible
+   currentNode->set_bound( minimizing ? Inf< double >() : -Inf< double >() );
    toPrune = true;
-   currentNode->set_infeasible( true );
-   currentNode->set_bound( minimizing ? Inf< double >()
-                                           : - Inf< double >() );
-   break;
+   return( ! currentNode->get_toFather() && ! has_incumbent
+	      ? Solver::kInfeasible
+	      : Solver::kOK );
    }
-  if( z == Solver::kCutOff ) {  // beyond the incumbent [see above]
-   fence_by_cutoff( currentNode , s , minimizing , toPrune );
-   return( Solver::kOK );
-   }
-  if( z != ThinComputeInterface::kOK )
-   return( z );
+  if( status != Solver::kOK && ! inconclusive( status ) )
+   return( status );
 
-  // see if the primal bound improves thanks to a true solution
-  if( rs->has_true_var_solution() ) {
-   double primal_bound = minimizing ? rs->get_true_ub() : rs->get_true_lb();
-   if( improves( primal_bound , incumbentCell->load() , minimizing ) ) {
-    // in the parallel exploration the incumbent is shared between the
-    // workers: re-check the improvement under the mutex
+  const double bound = minimizing ? s->get_lb() : s->get_ub();
+  if( std::isnan( bound ) )
+   return( Solver::kError );
+  const bool has_solution = rs->has_true_var_solution();
+  const double primal =
+    has_solution ? ( minimizing ? rs->get_true_ub() : rs->get_true_lb() ) : 0;
+  if( has_solution ) {
+   if( ! std::isfinite( primal ) )
+    return( Solver::kError );
+   const long double tolerance = std::max(
+     static_cast< long double >( std::isfinite( absAcc ) ? absAcc : 0.0 ) ,
+     static_cast< long double >( relAcc ) *
+       std::max( 1.0L , std::abs( static_cast< long double >( primal ) ) ) );
+   if( minimizing ? static_cast< long double >( bound ) > primal + tolerance
+		  : static_cast< long double >( bound ) < primal - tolerance )
+    return( Solver::kError );
+
+   if( improves( primal , incumbentCell->load() , minimizing ) ) {
     std::unique_lock< std::mutex > guard;
     if( incumbentMutex )
      guard = std::unique_lock< std::mutex >( *incumbentMutex );
-    if( improves( primal_bound , incumbentCell->load() , minimizing ) ) {
-     bestBound = primal_bound;
-     incumbentCell->store( bestBound );
+    if( improves( primal , incumbentCell->load() , minimizing ) ) {
+     std::unique_ptr< Solution > candidate( rs->get_true_solution() );
+     if( ! candidate )
+      return( Solver::kError );
      delete bestSol;
-     bestSol = rs->get_true_solution();
+     bestSol = candidate.release();
+     bestBound = primal;
+     incumbentCell->store( primal );
      }
     }
    }
 
-  // update the relaxation bound of the node and select the branching solver;
-  // the bound is recorded before the fate of the node is decided [see above]
-  auto relaxBound = minimizing ? s->get_lb() : s->get_ub();
-  const bool better = minimizing ? relaxBound > currentNode->get_bound()
-                                 : relaxBound < currentNode->get_bound();
+  const bool better = minimizing ? bound > currentNode->get_bound()
+				 : bound < currentNode->get_bound();
   if( better )
-   currentNode->set_bound( relaxBound );
-  if( better || ( ! branchSolver ) )  // see above
+   currentNode->set_bound( bound );
+  // Accept successful and recoverable statuses. A partial result still needs
+  // a finite bound and a solution before it can provide branching information.
+  const bool can_branch = status >= Solver::kOK && status < Solver::kError;
+  const bool ready_to_branch =
+    can_branch &&
+    ( status == Solver::kOK ||
+      ( std::isfinite( currentNode->get_bound() ) && s->has_var_solution() ) );
+  if( ready_to_branch && ( better || ! branchSolver ) )
    branchSolver = rs;
-  if( cannot_improve( relaxBound , incumbentCell->load() , minimizing ,
-                      relAcc , absAcc ) ) {
+  if( cannot_improve( currentNode->get_bound() , incumbentCell->load() ,
+		      minimizing , relAcc , absAcc ) ) {
    toPrune = true;
    return( Solver::kOK );
    }
+  if( ready_to_branch )
+   return( Solver::kOK );
+  // Keep an uncertified result unresolved unless its bound prunes the node.
+  return( status == Solver::kCutOff ? int( Solver::kLowPrecision ) : status );
+  };
+
+ int partial_status = Solver::kOK;
+ if( nThreads > 1 && f_RelaxationSolvers->size() > 1 && ! incumbentMutex ) {
+  const auto n = f_RelaxationSolvers->size();
+  std::vector< int > statuses( n , INT_MIN );
+  if( computeAllParallel( *f_RelaxationSolvers , statuses , nThreads ) )
+   return( reduce( nullptr , nullptr , Solver::kInfeasible ) );
+  for( std::size_t i = 0 ; i < n ; ++i ) {
+   auto & [ rs , s ] = ( *f_RelaxationSolvers )[ i ];
+   const int status = reduce( rs , s , statuses[ i ] );
+   if( toPrune || ( status != Solver::kOK && ! inconclusive( status ) ) )
+    return( status );
+   if( partial_status == Solver::kOK && status != Solver::kOK )
+    partial_status = status;
+   }
   }
- return( Solver::kOK );
+ else {
+  for( auto & [ rs , s ] : *f_RelaxationSolvers ) {
+   const int computed = s->compute();
+   const int status = reduce( rs , s , computed );
+   if( toPrune || ( status != Solver::kOK && ! inconclusive( status ) ) )
+    return( status );
+   if( partial_status == Solver::kOK && status != Solver::kOK )
+    partial_status = status;
+   }
+  }
+ // One usable relaxation suffices; bounds from the others remain valid.
+ return( branchSolver ? int( Solver::kOK ) : partial_status );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -403,12 +372,11 @@ static int computeRelaxations(
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeHeuristic(
-                  std::vector< std::pair< ChangeSolver * ,
-                               Solver * > > * f_HeuristicSolvers ,
-                  Node * currentNode , const bool minimizing ,
-                  double & bestBound , Solution * & bestSol ,
-                  std::atomic< double > * incumbentCell , bool & toPrune ,
-                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
+  std::vector< std::pair< ChangeSolver * , Solver * > > * f_HeuristicSolvers ,
+  Node * currentNode , const bool minimizing , double & bestBound ,
+  Solution *& bestSol , std::atomic< double > * incumbentCell ,
+  bool & toPrune ,
+  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
  // parallel evaluation of the (several) heuristics of this node, bit-identical
  // to the serial path below [see computeRelaxations()]
@@ -488,7 +456,7 @@ static int computeHeuristic(
 
 template< typename SolverPtr >
 static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
-                                std::vector< int > & zs , int maxThreads )
+				std::vector< int > & zs , int maxThreads )
 {
  const int n = int( slvrs.size() );
  const int K = std::max( 1 , std::min( maxThreads , n ) );
@@ -535,14 +503,15 @@ static int initializeRoot(
  rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
-                               bestBound , bestSol , incumbentCell ,
-                               toPrune , branchSolver , relAcc , absAcc ,
-                               1 , &globalMutex );
+			       bestBound , bestSol , incumbentCell , toPrune ,
+			       branchSolver , relAcc , absAcc , 1 ,
+			       &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  res = computeHeuristic( f_HeuristicSolvers , rootNode , minimizing ,
-                         bestBound , bestSol , incumbentCell , toPrune , 1 ,
-                         &globalMutex );
+			 bestBound ,
+			 bestSol , incumbentCell , toPrune , 1 ,
+			 &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  rootNode->obtainBranchList( branchSolver );
@@ -593,15 +562,16 @@ static int evaluateNode(
  // evaluates its per-node solvers serially, otherwise nThreads > 1 runs them
  // in parallel
  int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
-                               bestSol , incumbentCell , toPrune ,
-                               branchSolver , relAcc ,
-                               absAcc , nThreads , incumbentMutex );
+			       bestSol , incumbentCell , toPrune ,
+			       branchSolver ,
+			       relAcc , absAcc , nThreads , incumbentMutex );
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
  return( computeHeuristic( heuristic , node , minimizing , bestBound ,
-                           bestSol , incumbentCell , toPrune , nThreads ,
-                           incumbentMutex ) );
+			   bestSol ,
+			    incumbentCell , toPrune , nThreads ,
+			    incumbentMutex ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -782,7 +752,7 @@ Solver::OFValue BranchAndXSolver::get_lb( void )
   return( bestBound );                 // the incumbent is a lower bound
  // the whole tree explored, which a proof of infeasibility also requires,
  // proves the incumbent; otherwise the nodes left open bound it
- if( ( f_state == kOK ) || ( f_state == kInfeasible ) )
+ if( f_state == kInfeasible )
   return( bestBound );
  return( std::min( f_open_bound , bestBound ) );
  }
@@ -795,7 +765,7 @@ Solver::OFValue BranchAndXSolver::get_ub( void )
   return( bestBound );                 // the incumbent is an upper bound
  // the whole tree explored, which a proof of infeasibility also requires,
  // proves the incumbent; otherwise the nodes left open bound it
- if( ( f_state == kOK ) || ( f_state == kInfeasible ) )
+ if( f_state == kInfeasible )
   return( bestBound );
  return( std::max( f_open_bound , bestBound ) );
  }
@@ -806,17 +776,25 @@ Solver::OFValue BranchAndXSolver::get_ub( void )
 
 int BranchAndXSolver::compute( bool changedvars )
 {
- lock();
+ // Release the Solver on every exit, including errors and exceptions.
+ std::lock_guard< BranchAndXSolver > lockGuard( *this );
  process_outstanding_Modification();
  int old_state = f_state;
+ const double old_open_bound = f_open_bound;
  if( f_state == kStillRunning )
   return( kError );
  f_state = kStillRunning;
  f_evaluated_nodes.store( 0 , std::memory_order_relaxed );
  // no bound until an exploration says otherwise [see explore()]
  f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
-                ? Inf< double >() : - Inf< double >();
+		  ? Inf< double >()
+		  : -Inf< double >();
+ f_fenced_bound.store( f_Block->get_objective_sense() == Objective::eMax
+			 ? -Inf< double >()
+			 : Inf< double >() ,
+		       std::memory_order_relaxed );
  v_unresolved.clear();
+ f_unresolved_status = Solver::kLowPrecision;
  std::mutex globalMutex;
 
  // per-solve budgets and tolerances from the inherited standard parameters
@@ -838,10 +816,12 @@ int BranchAndXSolver::compute( bool changedvars )
 
  // nothing changed since the last solve, which has ended: its answer
  // stands; one stopped by a budget goes on instead [see Solver::kStopTime]
- if( ( changes == 0 ) && ( ( old_state == kOK ) ||
-                           ( old_state == kInfeasible ) ||
-                           ( old_state == kUnbounded ) ) )
+ if( ( changes == 0 ) &&
+     ( ( old_state == kOK ) || ( old_state == kInfeasible ) ||
+       ( old_state == kUnbounded ) ) ) {
   f_state = old_state;
+  f_open_bound = old_open_bound;
+  }
  else {
   // the outstanding changes say what the Modification have changed [see
   // process_outstanding_Modification()], where one that the tree does not
@@ -862,9 +842,25 @@ int BranchAndXSolver::compute( bool changedvars )
   // one exploration, parameterized by the open set that the strategy asks
   // for [see treeSolve()]; the only separate one is the parallel depth-first,
   // which runs its own workers [see ParallelDFSSolve()]
-  f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
-                                            get_int_par( intMaxThread ) )
-                        : treeSolve( globalMutex );
+  {
+   // Publish the result on success, or kError if exploration throws.
+   // The exception propagates; lockGuard releases the Solver afterwards.
+   struct SolveStateGuard
+   {
+    int & state;
+    int result = Solver::kError;
+    ~SolveStateGuard() { state = result; }
+    } stateGuard{ f_state };
+   stateGuard.result =
+     parallelDFS ? ParallelDFSSolve( globalMutex ,
+				     get_int_par( intMaxThread ) )
+		 : treeSolve( globalMutex );
+   }
+
+  const bool minimizing = f_Block->get_objective_sense() != Objective::eMax;
+  const double fenced = f_fenced_bound.load( std::memory_order_relaxed );
+  f_open_bound = minimizing ? std::min( f_open_bound , fenced )
+			    : std::max( f_open_bound , fenced );
 
   // an exploration that has been completed without ever finding a feasible
   // solution proves that there is none
@@ -879,7 +875,6 @@ int BranchAndXSolver::compute( bool changedvars )
              << get_evaluated_nodes() << std::endl;
 
  changes = 0;
- unlock();
  return( f_state );
 
  }  // end( BranchAndXSolver::compute )
@@ -944,7 +939,8 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
  // under changes that leave it valid [see keeps_tree()], so its interior is
  // NOT re-derived, only its fenced frontier is re-evaluated
  rootNode = f_treeRoot;
- f_treeRoot = nullptr;              // ownership back to this solve
+ rootNode->initializeBound( minimizing );
+ f_treeRoot = nullptr;  // ownership back to this solve
  currentNode = rootNode;
 
  std::list< ExploringNode * > frontier;
@@ -976,15 +972,15 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   RelaxationSolver * nodeBranchSolver = nullptr;
   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
-                            bestSolution , f_incumbentCell , toPrune ,
-                            nodeBranchSolver ,
-                            relTol , absTol , maxThreadForSolvers );
+			    bestSolution , f_incumbentCell , toPrune ,
+			    nodeBranchSolver , relTol , absTol ,
+			    maxThreadForSolvers );
   if( ( res == Solver::kOK ) && ( ! toPrune ) )
    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
-                           bestSolution , f_incumbentCell , toPrune ,
-                           maxThreadForSolvers );
-  if( inconclusive( res ) ) {    // set aside, still in the frontier
-   v_unresolved.push_back( F->get_bound() );
+			   bestSolution , f_incumbentCell , toPrune ,
+			   maxThreadForSolvers );
+  if( inconclusive( res ) ) {  // set aside, still in the frontier
+   record_unresolved( F->get_bound() , res );
    subOptimalNodes.push_back( F );
    res = Solver::kOK;
    continue;
@@ -1000,10 +996,13 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
     F->obtainBranchList( nodeBranchSolver );
    reopened.push_back( F );
    }
-  else if( F->is_infeasible() )      // fenced again, by reason
-   infeasibleNodes.push_back( F );
-  else
-   subOptimalNodes.push_back( F );
+  else {
+   record_fenced( F->get_bound() , minimizing );
+   if( F->is_infeasible() )
+    infeasibleNodes.push_back( F );
+   else
+    subOptimalNodes.push_back( F );
+   }
   }
 
  if( res != Solver::kOK ) {          // leave the solvers at the root
@@ -1062,26 +1061,36 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
       cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                       minimizing , relTol , absTol ) ) {
    prunedHere = true;
-   logNode( f_log , iterations , currentNode , bestBound ,
-	    std::chrono::duration< double >(
-	     std::chrono::high_resolution_clock::now() - start ).count() ,
-	    0 , true );
+   // No evaluation took place: do not add a row to the evaluation log.
    }
   else if( ! currentNode->is_evaluated() ) {
    auto evalStart = std::chrono::high_resolution_clock::now();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
-                       &f_HeuristicSolvers , minimizing , bestBound ,
-                       bestSolution , f_incumbentCell , prunedHere ,
-                       branchSolver ,
-                       maxThreadForSolvers , relTol , absTol , globalMutex ,
-                       nullptr , false );
-   if( inconclusive( res ) ) {     // set aside, as if fenced
-    v_unresolved.push_back( currentNode->get_bound() );
+		       &f_HeuristicSolvers , minimizing , bestBound ,
+		       bestSolution , f_incumbentCell , prunedHere ,
+		       branchSolver ,
+		       maxThreadForSolvers , relTol , absTol , globalMutex ,
+		       nullptr , false );
+   if( inconclusive( res ) ) {  // set aside, as if fenced
+    record_unresolved( currentNode->get_bound() , res );
     prunedHere = true;
     res = Solver::kOK;
     }
-   if( res != Solver::kOK ) {       // an infeasible root ends up here
+   if( res == Solver::kInfeasible )
+    currentNode->set_infeasible( true );
+   logNode( f_log , iterations , currentNode , bestBound ,
+	    std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - start )
+	      .count() ,
+	    std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - evalStart )
+	      .count() ,
+	    prunedHere || cannot_improve( currentNode->get_bound() ,
+					  f_incumbentCell->load() ,
+					  minimizing ,
+					  relTol , absTol ) );
+   if( res != Solver::kOK ) {  // an infeasible root ends up here
     // leave the solvers at the root, the Changes of the node undone
     ExploringNode::moveBetweenNodes( currentNode , rootNode , solvers );
     discardTree( rootNode , open , solvers , currentNode );
@@ -1089,14 +1098,6 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     }
    if( ! prunedHere )
     currentNode->obtainBranchList( branchSolver );
-   logNode( f_log , iterations , currentNode , bestBound ,
-	    std::chrono::duration< double >(
-	     std::chrono::high_resolution_clock::now() - start ).count() ,
-	    std::chrono::duration< double >(
-	     std::chrono::high_resolution_clock::now() - evalStart ).count() ,
-	    prunedHere || cannot_improve( currentNode->get_bound() ,
-					  f_incumbentCell->load() , minimizing , relTol ,
-					  absTol ) );
    }
 
   // branching and evaluation of the new children
@@ -1132,20 +1133,14 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     auto evalStart = std::chrono::high_resolution_clock::now();
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
-                        &f_HeuristicSolvers , minimizing , bestBound ,
-                        bestSolution , f_incumbentCell , toPrune ,
-                        branchSolver ,
-                        maxThreadForSolvers , relTol , absTol , globalMutex );
-    if( inconclusive( res ) ) {    // set aside, as if fenced
-     v_unresolved.push_back( new_node->get_bound() );
+			&f_HeuristicSolvers , minimizing , bestBound ,
+			bestSolution , f_incumbentCell , toPrune ,
+			branchSolver ,
+			maxThreadForSolvers , relTol , absTol , globalMutex );
+    if( inconclusive( res ) ) {  // set aside, as if fenced
+     record_unresolved( new_node->get_bound() , res );
      toPrune = true;
      res = Solver::kOK;
-     }
-    if( res != Solver::kOK ) {
-     // leave the solvers at the root, the Changes of the child undone
-     ExploringNode::moveBetweenNodes( new_node , rootNode , solvers );
-     discardTree( rootNode , open , solvers , currentNode );
-     return( res );
      }
     logNode( f_log , iterations , new_node , bestBound ,
 	     std::chrono::duration< double >(
@@ -1155,6 +1150,16 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 	     toPrune || cannot_improve( new_node->get_bound() ,
 					f_incumbentCell->load() , minimizing , relTol ,
 					absTol ) );
+    if( res != Solver::kOK ) {
+     // leave the solvers at the root, the Changes of the child undone
+     ExploringNode::moveBetweenNodes( new_node , rootNode , solvers );
+     // This child is not linked into the tree yet. Transfer the Change
+     // out of its parent's branch list before destroying the failed child.
+     branches[ i ] = nullptr;
+     delete new_node;
+     discardTree( rootNode , open , solvers , currentNode );
+     return( res );
+     }
     // keep the node only if its relaxation bound can improve the incumbent
     if( ( ! toPrune ) &&
         ( ! cannot_improve( new_node->get_bound() , f_incumbentCell->load() ,
@@ -1168,7 +1173,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      moveSolverToFather( new_node , solvers );
      kept.push_back( new_node );  // pushed to the open set after the loop
      }
-    else {                       // fenced or pruned child
+    else {  // fenced or pruned child
+     record_fenced( new_node->get_bound() , minimizing );
      moveSolverToFather( new_node , solvers );
      *( std::find( branches.begin() , branches.end() ,
                    new_node->get_f_change() ) ) = nullptr;
@@ -1210,6 +1216,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     }
    }
   else {
+   record_fenced( currentNode->get_bound() , minimizing );
    // fenced at pop: it belongs to the fenced frontier, the root included -
    // a retained tree whose root is fathomed would otherwise have an empty
    // frontier, and the next re-solve would have nothing to re-explore
@@ -1282,8 +1289,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   add_unresolved_bounds( minimizing );
   return( nodeBudget <= 1 ? Solver::kStopIter : Solver::kStopTime );
   }
- return( add_unresolved_bounds( minimizing ) ? int( Solver::kLowPrecision )
-                                             : int( kOK ) );
+ return( add_unresolved_bounds( minimizing ) ? int( f_unresolved_status )
+					      : int( kOK ) );
 
  }  // end( BranchAndXSolver::explore )
 
@@ -1350,11 +1357,26 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    res = Solver::kOK;
    }
   else {
+   const auto evalStart = std::chrono::high_resolution_clock::now();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                         rootNode , minimizing , bestBound , bestSolution ,
-                         f_incumbentCell , branchSolver , globalMutex ,
-                         relTol , absTol );
+			 rootNode ,
+			 minimizing , bestBound , bestSolution ,
+			 f_incumbentCell ,
+			 branchSolver , globalMutex , relTol , absTol );
+   // Eager roots are already evaluated when explore() sees them, including
+   // roots that close the entire solve: record them here exactly once.
+   if( res == Solver::kInfeasible )
+    rootNode->set_infeasible( true );
+   logNode( f_log , 0 , rootNode , bestBound ,
+	    std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - start )
+	      .count() ,
+	    std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - evalStart )
+	      .count() ,
+	    cannot_improve( rootNode->get_bound() , f_incumbentCell->load() ,
+			    minimizing , relTol , absTol ) );
    }
   if( res == Solver::kOK )
    open.push( rootNode );
@@ -1362,7 +1384,14 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
   }
 
  if( res != Solver::kOK ) {
-  discardTree( rootNode , open , solvers );
+  if( inconclusive( res ) && retain ) {
+   f_open_bound = rootNode->get_bound();
+   f_treeRoot = rootNode;
+   subOptimalNodes.push_back( rootNode );
+   delete solvers;
+   }
+  else
+   discardTree( rootNode , open , solvers , currentNode );
   return( res );
   }
 
@@ -1402,34 +1431,53 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  // globalMutex argument is unused here
  f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
  int res = evaluateNode( currentNode , solvers , &relaxation , &heuristic ,
-                         minimizing , bestBound , bestSolution ,
-                         f_incumbentCell , toPrune ,
-                         branchSolver , 1 ,
-                         relTol , absTol , incumbentMutex , &incumbentMutex );
- if( inconclusive( res ) ) {       // set aside, as if fenced
+			 minimizing , bestBound , bestSolution ,
+			 f_incumbentCell ,
+			 toPrune , branchSolver , 1 , relTol , absTol ,
+			 incumbentMutex , &incumbentMutex );
+ if( inconclusive( res ) ) {  // set aside, as if fenced
   {
    std::lock_guard< std::mutex > guard( incumbentMutex );
-   v_unresolved.push_back( currentNode->get_bound() );
+   record_unresolved( currentNode->get_bound() , res );
    }
   moveSolverToFather( currentNode , &solvers );
   return( Solver::kOK );
   }
- if( res != ThinComputeInterface::kOK )
+ // whatever the outcome, the Solver go back to the father, so that a stopped
+ // worker leaves them at the root of the subtree it has claimed
+ if( res != ThinComputeInterface::kOK ) {
+  moveSolverToFather( currentNode , &solvers );
   return( res );
+  }
 
+ if( toPrune ||
+     cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
+		     minimizing , relTol , absTol ) )
+  record_fenced( currentNode->get_bound() , minimizing );
  if( ( ! toPrune ) &&
      ( ! cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                          minimizing , relTol , absTol ) ) ) {
   auto branches = branchSolver->branch();
-  for( auto br : branches ) {
+  struct UnusedBranches
+  {
+   std::vector< Change * > & branches;
+   ~UnusedBranches() {
+    for( auto change : branches )
+     delete change;
+    }
+   } cleanup{ branches };
+  for( auto & br : branches ) {
    // the node lives as long as its exploration, i.e., in this frame
    DFSNode new_node( br , ++nameCounter );
+   br = nullptr;  // the stack node owns this Change; the guard owns the rest
    new_node.set_bound( currentNode->get_bound() );  // inherited
    int RV = workerDFS( & new_node , solvers , relaxation , heuristic ,
                        minimizing , incumbentMutex , nodeBdg , deadline ,
                        nameCounter );
-   if( RV != Solver::kOK )
+   if( RV != Solver::kOK ) {
+    moveSolverToFather( currentNode , &solvers );
     return( RV );
+    }
    }
   }
 
@@ -1452,11 +1500,12 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
  // an infinite time budget must not be duration_cast (it overflows into a
  // deadline in the past): it simply means no deadline at all
- const auto deadline = timeBudget == Inf< double >() ?
-  std::chrono::steady_clock::time_point::max() :
-  std::chrono::steady_clock::now() +
-   std::chrono::duration_cast< std::chrono::steady_clock::duration >(
-                              std::chrono::duration< double >( timeBudget ) );
+ const auto deadline =
+   timeBudget == Inf< double >()
+     ? std::chrono::steady_clock::time_point::max()
+     : std::chrono::steady_clock::now() +
+	 std::chrono::duration_cast< std::chrono::steady_clock::duration >(
+	   std::chrono::duration< double >( timeBudget ) );
  std::atomic< int > nodeBdg( nodeBudget );
 
  // ramp-up- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1469,11 +1518,13 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
  f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
- int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-                           rootNode , minimizing , bestBound , bestSolution ,
-                           f_incumbentCell , branchSolver , globalMutex ,
-                           relTol , absTol );
+ int res = initializeRoot(
+   &f_RelaxationSolvers , &f_HeuristicSolvers , rootNode , minimizing ,
+   bestBound ,
+   bestSolution , f_incumbentCell , branchSolver , globalMutex , relTol ,
+   absTol );
  if( res != Solver::kOK ) {
+  f_open_bound = rootNode->get_bound();
   delete rootNode;
   return( res );
   }
@@ -1492,24 +1543,26 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
   if( currentNode->get_parent() )
    ExploringNode::moveBetweenNodes( oldNode , currentNode , &solvers );
 
+  if( cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
+		      minimizing , relTol , absTol ) )
+   record_fenced( currentNode->get_bound() , minimizing );
   if( ! cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                         minimizing , relTol , absTol ) ) {
    auto & branches = currentNode->getBranches();
-   for( Change * br : branches ) {
-    auto new_node = new ExploringNode( br , currentNode ,
-                                       currentNode->get_level() + 1 ,
-                                       ++nameCounter );
+   for( Change *& br : branches ) {
+    auto new_node = new ExploringNode(
+      br , currentNode , currentNode->get_level() + 1 , ++nameCounter );
+    br = nullptr;  // transfer ownership before any error/stop can destroy it
     new_node->set_bound( currentNode->get_bound() );  // inherited
     bool toPrune = false;
     RelaxationSolver * nodeBranchSolver = nullptr;
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , solvers , &f_RelaxationSolvers ,
-                        &f_HeuristicSolvers , minimizing , bestBound ,
-                        bestSolution , f_incumbentCell , toPrune ,
-                        nodeBranchSolver ,
-                        1 , relTol , absTol , globalMutex );
-    if( inconclusive( res ) ) {    // set aside, as if fenced
-     v_unresolved.push_back( new_node->get_bound() );
+			&f_HeuristicSolvers , minimizing , bestBound ,
+			bestSolution , f_incumbentCell , toPrune ,
+			nodeBranchSolver , 1 , relTol , absTol , globalMutex );
+    if( inconclusive( res ) ) {  // set aside, as if fenced
+     record_unresolved( new_node->get_bound() , res );
      toPrune = true;
      res = Solver::kOK;
      }
@@ -1521,8 +1574,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     // either way the ownership of br leaves the branches of currentNode
     // (the kept child owns it as its f_change, the discarded one died
     // with it): null the entry so that ~Node does not double-delete it
-    *( std::find( branches.begin() , branches.end() ,
-                  new_node->get_f_change() ) ) = nullptr;
+
     if( ( ! toPrune ) &&
         ( ! cannot_improve( new_node->get_bound() , f_incumbentCell->load() ,
                             minimizing , relTol , absTol ) ) ) {
@@ -1531,7 +1583,8 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
      currentNode->get_children().push_back( new_node );
      moveSolverToFather( new_node , &solvers );
      }
-    else {                       // fenced or pruned: discard the child
+    else {  // fenced or pruned: discard the child
+     record_fenced( new_node->get_bound() , minimizing );
      moveSolverToFather( new_node , &solvers );
      delete new_node;
      }
@@ -1596,6 +1649,10 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
       s->apply( *it , false );
 
     // explore the subtree depth-first, unless meanwhile fenced
+    if( cannot_improve( node->get_bound() , f_incumbentCell->load() ,
+			minimizing ,
+			relTol , absTol ) )
+     record_fenced( node->get_bound() , minimizing );
     if( ! cannot_improve( node->get_bound() , f_incumbentCell->load() ,
                           minimizing , relTol , absTol ) ) {
      bool first = true;
@@ -1622,22 +1679,23 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        RelaxationSolver * nodeBranchSolver = nullptr;
        f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
        int RV = computeRelaxations( &ws.relaxation , new_node , minimizing ,
-                                    bestBound , bestSolution ,
-                                    f_incumbentCell , toPrune ,
-                                    nodeBranchSolver , relTol , absTol ,
-                                    1 , &incumbentMutex );
+				    bestBound , bestSolution ,
+				    f_incumbentCell ,
+				    toPrune , nodeBranchSolver , relTol ,
+				    absTol ,
+				    1 , &incumbentMutex );
        if( RV == Solver::kOK && ! toPrune )
-        RV = computeHeuristic( &ws.heuristic , new_node , minimizing ,
-                               bestBound , bestSolution ,
-                               f_incumbentCell , toPrune ,
-                               1 , &incumbentMutex );
+	RV = computeHeuristic( &ws.heuristic , new_node , minimizing ,
+			       bestBound ,
+			       bestSolution , f_incumbentCell , toPrune , 1 ,
+			       &incumbentMutex );
        if( inconclusive( RV ) ) {  // set aside, as if fenced
-        {
-         std::lock_guard< std::mutex > guard( incumbentMutex );
-         v_unresolved.push_back( new_node->get_bound() );
-         }
-        toPrune = true;
-        RV = Solver::kOK;
+	{
+	 std::lock_guard< std::mutex > guard( incumbentMutex );
+	 record_unresolved( new_node->get_bound() , RV );
+	 }
+	toPrune = true;
+	RV = Solver::kOK;
         }
        // the branches are asked while the Solver are still at the child,
        // whose relaxation they come out of, as everywhere else [see
@@ -1665,8 +1723,10 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
          }
         poolChanged.notify_one();
         }
-       else                      // pruned or fenced: nothing to donate
-        delete new_node;
+       else {  // pruned or fenced: nothing to donate
+	record_fenced( new_node->get_bound() , minimizing );
+	delete new_node;
+        }
        continue;
        }
 
@@ -1711,6 +1771,12 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
 
 
+ // The root region covers every unfinished worker/subtree, including work
+ // interrupted before its local bound could be reduced. Preserve it before
+ // destroying the temporary parallel tree.
+ if( result.load() != Solver::kOK || nodeBdg <= 0 )
+  f_open_bound = rootNode->get_bound();
+
  // cleanup of the ramp-up tree- - - - - - - - - - - - - - - - - - - - - - - -
  std::function< void( ExploringNode * ) > deleteTree =
   [ & ]( ExploringNode * node ) {
@@ -1728,7 +1794,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  if( result.load() == Solver::kOK ) {
   f_open_bound = minimizing ? Inf< double >() : - Inf< double >();
   if( add_unresolved_bounds( minimizing ) )
-   return( Solver::kLowPrecision );
+   return( f_unresolved_status );
   }
  return( result.load() );
 

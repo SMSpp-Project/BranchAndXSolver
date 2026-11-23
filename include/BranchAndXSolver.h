@@ -155,14 +155,17 @@ namespace SMSpp_di_unipi_it
  * "not active", i.e., as \f$ \varepsilon_a = 0 \f$: plugged in literally it
  * would prune every node as soon as there is an incumbent.
  *
- * A node whose evaluation is inconclusive, i.e., whose relaxation returns
- * kStopTime, kStopIter or kLowPrecision (say, a Lagrangian Dual not solved
- * to the required accuracy whose solution gives nothing to branch upon), is
- * set aside: it is neither branched upon nor fenced, the exploration goes on
+ * A relaxation returning a status in [kOK, kError) is eligible for branching.
+ * After an early stop it must also provide a finite bound and a solution.
+ * kLowPrecision lies outside that interval: its valid bounds and true feasible
+ * solutions can still be used, but do not authorize branching by themselves.
+ * Only a node without usable branching information that cannot
+ * be fenced by its bound is set aside: the exploration goes on
  * with the other nodes, and its bound enters that of the whole solve as the
  * bound of an open node does. If, at the end, some node so set aside can
- * still improve the incumbent, compute() returns kLowPrecision rather than
- * kOK; a relaxation returning kError still stops the whole solve.
+ * still improve the incumbent, compute() reports the status of the first
+ * unresolved node, without priority among the partial statuses; a relaxation
+ * returning kError still stops the whole solve.
  *
  * \par The Solver of a node.
  * A node is evaluated by a set of inner Solver, all described by the
@@ -907,14 +910,14 @@ class BranchAndXSolver : public Solver {
   v_workerSolvers.resize( K );
   for( Index w = 0 ; w < K ; ++w ) {
    auto & ws = v_workerSolvers[ w ];
-   if( ! ws.relaxation.empty() )    // already created (re-solve)
+   if( ! ws.relaxation.empty() )  // already created (re-solve)
     continue;
    for( Index i = 0 ; i < configurationRS->num_ComputeConfig() ; ++i ) {
     auto slvr = Solver::new_Solver( configurationRS->get_SolverName( i ) );
     if( auto cfg = configurationRS->get_SolverConfig( i ) )
      slvr->set_ComputeConfig( cfg );
     slvr->set_Block( f_Block );
-    v_created.push_back( slvr );    // owned like the serial ones
+    v_created.push_back( slvr );  // owned like the serial ones
     // the traits are discovered on the Solver by cross-cast [see
     // ChangeSolver.h] and kept alongside the Solver personality
     if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
@@ -1208,14 +1211,28 @@ class BranchAndXSolver : public Solver {
  std::list< ExploringNode * > integerNodes;
 
  /// the relaxation bounds of the nodes set aside unresolved in this solve
- /** A node whose evaluation is inconclusive (its relaxation returns
-  * kStopTime, kStopIter or kLowPrecision) can be neither branched upon nor
-  * fenced: it is set aside, and its relaxation bound (that of its father,
+ /** A node whose interrupted relaxation provides no usable branching
+  * solution and cannot be fenced is set aside. Its bound (that of its father,
   * if its own evaluation has not improved it) is kept here, so that the
   * bound of the whole solve accounts for the part of the region that it
   * covers [see add_unresolved_bounds()]. Written under the incumbent mutex
   * by the workers of the parallel exploration. */
  std::vector< double > v_unresolved;
+ std::atomic< double > f_fenced_bound{ 0 };
+ void record_fenced( double bound , bool minimizing ) {
+  double previous = f_fenced_bound.load( std::memory_order_relaxed );
+  while( ( minimizing ? bound < previous : bound > previous ) &&
+	 ! f_fenced_bound.compare_exchange_weak(
+	   previous , bound , std::memory_order_relaxed ) ) {
+   }
+  }
+ int f_unresolved_status = Solver::kLowPrecision;
+ void record_unresolved( double bound , int status ) {
+  // Report the first unresolved node; there is no priority among statuses.
+  if( v_unresolved.empty() )
+   f_unresolved_status = status;
+  v_unresolved.push_back( bound );
+  }
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 
