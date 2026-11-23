@@ -876,7 +876,9 @@ void test_tree_explorer( void )
   };
  const std::string explorers[] = { "sequential" , "shared" , "distributed" ,
                                    "deterministic" , "selfsplit" ,
-                                   "stealing" };
+                                   "stealing" , "multiqueue" ,
+                                   "depthbounded" , "budget" ,
+                                   "stackstealing" , "ordered" };
 
  bool refused = false;
  auto none = new_bnx();

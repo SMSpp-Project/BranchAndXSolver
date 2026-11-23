@@ -800,6 +800,58 @@ struct BXLink {
  };
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
+/// a node of the tree as PBeFS handles it: a BXLink whose copy is a node of
+/// its own, with the Change, the parent and the solution of the original,
+/// so that evaluating and branching a copy (as the dive of the SelfSplit
+/// does) leaves the original as it was; moves keep the BXLink
+
+struct BXNode {
+
+ std::shared_ptr< BXLink > p;                   ///< the node
+
+ BXNode( void ) = default;
+
+ BXNode( std::shared_ptr< BXLink > l ) noexcept : p( std::move( l ) ) {}
+
+ BXNode( const BXNode & n ) : p( copy( n.p ) ) {}
+
+ BXNode( BXNode && ) noexcept = default;
+
+ BXNode & operator=( const BXNode & n ) {
+  if( this != & n )
+   p = copy( n.p );
+  return( *this );
+  }
+
+ BXNode & operator=( BXNode && ) noexcept = default;
+
+ BXLink * operator->( void ) const noexcept { return( p.get() ); }
+
+ private:
+
+ static std::shared_ptr< BXLink > copy(
+                                     const std::shared_ptr< BXLink > & l ) {
+  if( ! l )
+   return( nullptr );
+  auto c = std::make_shared< BXLink >();
+  c->change = l->change;
+  c->parent = l->parent;
+  c->depth = l->depth;
+  c->bound = l->bound;
+  c->estimate = l->estimate;
+  c->evaluated = l->evaluated;
+  c->pruned = l->pruned;
+  c->branches = l->branches;
+  c->estimates = l->estimates;
+  c->found = l->found;
+  if( l->solution )
+   c->solution.reset( l->solution->clone() );
+  return( c );
+  }
+
+ };  // end( struct( BXNode ) )
+
+/*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 /// what the workers share: the data of the BranchAndXSolver
 
 struct BXContext {
@@ -868,9 +920,9 @@ class BXWorker {
 
  /// the evaluation of the node n, done now unless already done, whose
  /// feasible value is the one found by the node
- PB::Evaluation evaluate( std::shared_ptr< BXLink > & n ) {
+ PB::Evaluation evaluate( BXNode & n ) {
   if( ! n->evaluated )
-   evaluate_here( n );
+   evaluate_here( n.p );
   PB::Evaluation e;
   e.bound = f_c.sign() * n->bound;
   e.infeasible = n->pruned && std::isnan( n->found );
@@ -883,12 +935,12 @@ class BXWorker {
  /// protocol (and then given only if they survive), the first branch
  /// given last when the open set is a stack
  template< class F >
- void branch( const std::shared_ptr< BXLink > & n , F && f ) {
+ void branch( const BXNode & n , F && f ) {
   std::vector< std::shared_ptr< BXLink > > kids;
   for( std::size_t i = 0 ; i < n->branches.size() ; ++i ) {
    auto k = std::make_shared< BXLink >();
    k->change = n->branches[ i ];
-   k->parent = n;
+   k->parent = n.p;
    k->depth = n->depth + 1;
    k->bound = n->bound;                 // inherited
    if( i < n->estimates.size() )
@@ -906,7 +958,7 @@ class BXWorker {
    std::reverse( kids.begin() , kids.end() );
   for( auto & k : kids ) {
    const double b = f_c.sign() * k->bound;
-   f( std::move( k ) , b );
+   f( BXNode( std::move( k ) ) , b );
    }
   }
 
@@ -1016,7 +1068,7 @@ class BXWorker {
 
 struct BXTree {
 
- using node_type = std::shared_ptr< BXLink >;
+ using node_type = BXNode;
  static constexpr PB::Sense sense = PB::Sense::minimize;
 
  BXContext & c;                                 ///< the shared data
