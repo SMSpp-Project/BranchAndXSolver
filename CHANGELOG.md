@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- a relaxation that returns kCutOff fences the node only when there is an
+  incumbent, the cutoff that the relaxations are given: with none it comes
+  from a cutoff of their own, which proves nothing, and the node keeps its
+  bound and is set aside, where it fenced the root and the search ended
+  claiming its bound as the optimum with no solution
 - the workers of the parallel exploration no longer share the Block: their
   inner Solver were all attached to it, and a relaxation that applies the
   branching to the Block (say, `LagrangianDualRelaxationSolver` fixing the
