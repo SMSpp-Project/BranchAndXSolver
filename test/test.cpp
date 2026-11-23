@@ -937,6 +937,18 @@ void test_tree_explorer( void )
    destroy( inst );
    }
 
+ // the SelfSplit with the incumbent shared by the workers
+ for( bool max : { false , true } ) {
+  auto inst = make( max ? 11 : 7 , max );
+  auto bnx = new_bnx();
+  pbefs( bnx , "selfsplit" );
+  set_int( bnx , "intPBeFSSplitShared" , 1 );
+  inst.block->register_Solver( bnx );
+  solve_and_check( bnx , inst , label( "selfsplit" ) + "shared incumbent" +
+                   ( max ? ", max" : ", min" ) );
+  destroy( inst );
+  }
+
  // an empty box, and a box with no integer point whose relaxation is not
  // empty, as in test_infeasible(): an infeasible node is no infeasible root
  for( const auto & t : explorers )

@@ -303,6 +303,7 @@ class BranchAndXSolver : public Solver {
   intTreeExplorer ,                 ///< who explores the tree
   intPBeFSSpawnDepth ,              ///< the spawn depth of PBeFS
   intPBeFSBudget ,                  ///< the spawn budget of PBeFS
+  intPBeFSSplitShared ,             ///< the SelfSplit of PBeFS shares
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -488,6 +489,11 @@ class BranchAndXSolver : public Solver {
   *   PBeFS after which the children left on its stack become tasks; <= 0
   *   means the default of PBeFS.
   *
+  * - intPBeFSSplitShared [0]: if not 0, the workers of the scheme selfsplit
+  *   of PBeFS share their incumbent, which prunes more but makes the nodes
+  *   evaluated depend on the timing; with 0 each worker prunes only by its
+  *   own incumbent, and the nodes evaluated depend only on the workers.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -534,6 +540,9 @@ class BranchAndXSolver : public Solver {
     break;
    case( intPBeFSBudget ):
     pbefsBudget = std::max( 0 , value );
+    break;
+   case( intPBeFSSplitShared ):
+    pbefsSplitShared = ( value != 0 );
     break;
    default:
     Solver::set_par( par , value );
@@ -746,6 +755,7 @@ class BranchAndXSolver : public Solver {
    case( intTreeExplorer ):              return( int( OwnExplorer ) );
    case( intPBeFSSpawnDepth ):           return( 0 );
    case( intPBeFSBudget ):               return( 0 );
+   case( intPBeFSSplitShared ):          return( 0 );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -776,6 +786,7 @@ class BranchAndXSolver : public Solver {
    case( intTreeExplorer ):              return( int( treeExplorer ) );
    case( intPBeFSSpawnDepth ):           return( pbefsSpawnDepth );
    case( intPBeFSBudget ):               return( pbefsBudget );
+   case( intPBeFSSplitShared ):          return( pbefsSplitShared ? 1 : 0 );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -818,6 +829,8 @@ class BranchAndXSolver : public Solver {
    return( intPBeFSSpawnDepth );
   if( name == "intPBeFSBudget" )
    return( intPBeFSBudget );
+  if( name == "intPBeFSSplitShared" )
+   return( intPBeFSSplitShared );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -840,7 +853,8 @@ class BranchAndXSolver : public Solver {
                                       "intReoptimize" , "intMaxNodes" ,
                                       "intTreeExplorer" ,
                                       "intPBeFSSpawnDepth" ,
-                                      "intPBeFSBudget" };
+                                      "intPBeFSBudget" ,
+                                      "intPBeFSSplitShared" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -1369,6 +1383,8 @@ class BranchAndXSolver : public Solver {
  int pbefsSpawnDepth = 0;  ///< see intPBeFSSpawnDepth
 
  int pbefsBudget = 0;      ///< see intPBeFSBudget
+
+ bool pbefsSplitShared = false;  ///< see intPBeFSSplitShared
 
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
 

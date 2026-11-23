@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after which the scheme `budget` spawns tasks, whose defaults (those of
   PBeFS) leave most of the workers idle on more than 4 of them
 
+- the parameter `intPBeFSSplitShared`, by which the workers of the scheme
+  `selfsplit` of PBeFS share their incumbent
+
 ### Changed
 
 - the makefiles give the shared library of the module by default, a DLL on

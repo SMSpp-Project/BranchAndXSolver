@@ -2246,6 +2246,7 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   o.spawn_depth = unsigned( pbefsSpawnDepth );
  if( pbefsBudget > 0 )
   o.budget = std::uint64_t( pbefsBudget );
+ o.split_shared = pbefsSplitShared;
 
  const BXTree t{ c };
  const auto s = PB::parallel_branch_and_bound( t ,
