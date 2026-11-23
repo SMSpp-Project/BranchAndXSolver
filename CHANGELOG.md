@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inner Solver, a Block that gives no copy is refused with an exception, and
   a worker that stops leaves its Solver at the root of its subtree
 
+- `dblMaxTime` bounds the whole solve: it was only checked between the nodes,
+  and a long `compute()` of an inner Solver ran past it; each one now has the
+  `dblMaxTime` of its own or the time left, whichever is smaller, a node that
+  it leaves unsolved is set aside with the bound the Solver gives, and the
+  solve ends with `kStopTime`
+
 ## [0.4.0] - 2026-11-16
 
 ### Changed

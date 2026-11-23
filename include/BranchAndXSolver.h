@@ -504,7 +504,10 @@ class BranchAndXSolver : public Solver {
  /** The base Solver classes do not store the double parameters, so the
   * inherited ones that BranchAndXSolver uses are stored here:
   *
-  * - dblMaxTime [+INF]: the time budget of a solve, in seconds;
+  * - dblMaxTime [+INF]: the time budget of a solve, in seconds; each
+  *   compute() of an inner Solver has the dblMaxTime of its own or the time
+  *   left, whichever is smaller, and a node that it leaves unsolved is set
+  *   aside with the bound it has [see v_unresolved];
   *
   * - dblRelAcc [1e-6] / dblAbsAcc [+INF, i.e., not active]: the relative and
   *   absolute tolerances of the pruning, a node being pruned when its
@@ -1044,6 +1047,13 @@ class BranchAndXSolver : public Solver {
  void discardRetainedTree( void );
 
 /*--------------------------------------------------------------------------*/
+ /// whether the time budget of the current solve is over
+
+ [[nodiscard]] bool out_of_time( void ) const {
+  return( std::chrono::steady_clock::now() >= f_deadline );
+  }
+
+/*--------------------------------------------------------------------------*/
  /// account for the nodes set aside unresolved in the global bound
  /** Improves f_open_bound with the relaxation bounds of the nodes set aside
   * unresolved in this solve [see v_unresolved], and returns true if some of
@@ -1230,6 +1240,10 @@ class BranchAndXSolver : public Solver {
  /// residual time budget of the current solve (from the inherited
  /// dblMaxTime), consumed by the exploration
  double timeBudget;
+
+ /// the time by which the current solve has to end, max() if none
+ std::chrono::steady_clock::time_point f_deadline =
+  std::chrono::steady_clock::time_point::max();
 
  double relTol;   ///< the inherited dblRelAcc, cached at compute() start
 
