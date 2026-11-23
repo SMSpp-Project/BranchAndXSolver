@@ -283,13 +283,22 @@ static void improve_bound( Node * currentNode , Solver * s ,
 /** The relaxation \p s has returned kCutOff, i.e., it has proven its bound
  * beyond the cutoff it was given, the incumbent [see computeRelaxations()]:
  * the node is fenced by bound, with the bound the relaxation reports, if
- * better than the one it has. */
+ * better than the one it has. With no incumbent the cutoff given is
+ * infinite, and so a kCutOff comes from a cutoff the relaxation has from
+ * elsewhere, which proves nothing about the incumbent: the node keeps the
+ * bound and is not fenced, kLowPrecision saying that it is neither solved
+ * nor fenced [see inconclusive()].
+ *  @return kOK if the node is fenced, kLowPrecision otherwise */
 
-static void fence_by_cutoff( Node * currentNode , Solver * s ,
-                             const bool minimizing , bool & toPrune )
+static int fence_by_cutoff( Node * currentNode , Solver * s ,
+                            const bool minimizing , const bool has_incumbent ,
+                            bool & toPrune )
 {
  improve_bound( currentNode , s , minimizing );
+ if( ! has_incumbent )
+  return( Solver::kLowPrecision );
  toPrune = true;
+ return( Solver::kOK );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -355,10 +364,9 @@ static int computeRelaxations(
    }
   for( std::size_t i = 0 ; i < n ; ++i ) {
    auto & [ rs , s ] = (*f_RelaxationSolvers)[ i ];
-   if( zs[ i ] == Solver::kCutOff ) {  // beyond the incumbent [see above]
-    fence_by_cutoff( currentNode , s , minimizing , toPrune );
-    return( Solver::kOK );
-    }
+   if( zs[ i ] == Solver::kCutOff )  // beyond the incumbent [see above]
+    return( fence_by_cutoff( currentNode , s , minimizing , has_incumbent ,
+                             toPrune ) );
    if( zs[ i ] != ThinComputeInterface::kOK ) {
     if( ran[ i ] && inconclusive( zs[ i ] ) )
      improve_bound( currentNode , s , minimizing );
@@ -408,10 +416,9 @@ static int computeRelaxations(
                                            : - Inf< double >() );
    break;
    }
-  if( z == Solver::kCutOff ) {  // beyond the incumbent [see above]
-   fence_by_cutoff( currentNode , s , minimizing , toPrune );
-   return( Solver::kOK );
-   }
+  if( z == Solver::kCutOff )  // beyond the incumbent [see above]
+   return( fence_by_cutoff( currentNode , s , minimizing , has_incumbent ,
+                            toPrune ) );
   if( z != ThinComputeInterface::kOK ) {
    if( ran && inconclusive( z ) )
     improve_bound( currentNode , s , minimizing );
