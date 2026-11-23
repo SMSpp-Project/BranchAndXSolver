@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- the parameters `intPBeFSSpawnDepth` and `intPBeFSBudget`, the spawn depth
+  of the schemes `depthbounded` and `ordered` of PBeFS and the backtracks
+  after which the scheme `budget` spawns tasks, whose defaults (those of
+  PBeFS) leave most of the workers idle on more than 4 of them
+
 ### Changed
 
 - the makefiles give the shared library of the module by default, a DLL on

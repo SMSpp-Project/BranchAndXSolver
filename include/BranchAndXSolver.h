@@ -301,6 +301,8 @@ class BranchAndXSolver : public Solver {
    * the tree can use a lot of memory. */
   intMaxNodes ,                     ///< max number of nodes to explore
   intTreeExplorer ,                 ///< who explores the tree
+  intPBeFSSpawnDepth ,              ///< the spawn depth of PBeFS
+  intPBeFSBudget ,                  ///< the spawn budget of PBeFS
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -476,6 +478,16 @@ class BranchAndXSolver : public Solver {
   *   protocol, the tolerances and the budgets are the same, and the tree
   *   is never retained [see intReoptimize].
   *
+  * - intPBeFSSpawnDepth [0]: the spawn depth of the schemes of PBeFS that
+  *   make tasks of the nodes above a depth (depthbounded) or at a depth
+  *   (ordered); a binary tree has at most \f$ 2^d \f$ nodes of depth
+  *   \f$ d \f$, so that it has to grow with the workers; <= 0 means the
+  *   default of PBeFS.
+  *
+  * - intPBeFSBudget [0]: the backtracks of a worker of the scheme budget of
+  *   PBeFS after which the children left on its stack become tasks; <= 0
+  *   means the default of PBeFS.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -516,6 +528,12 @@ class BranchAndXSolver : public Solver {
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "invalid intTreeExplorer" ) );
     treeExplorer = static_cast< TreeExplorer >( value );
+    break;
+   case( intPBeFSSpawnDepth ):
+    pbefsSpawnDepth = std::max( 0 , value );
+    break;
+   case( intPBeFSBudget ):
+    pbefsBudget = std::max( 0 , value );
     break;
    default:
     Solver::set_par( par , value );
@@ -726,6 +744,8 @@ class BranchAndXSolver : public Solver {
    case( intReoptimize ):                return( 0 );
    case( intMaxNodes ):                  return( INT_MAX );
    case( intTreeExplorer ):              return( int( OwnExplorer ) );
+   case( intPBeFSSpawnDepth ):           return( 0 );
+   case( intPBeFSBudget ):               return( 0 );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -754,6 +774,8 @@ class BranchAndXSolver : public Solver {
    case( intReoptimize ):                return( reoptimize );
    case( intMaxNodes ):                  return( maxNodes );
    case( intTreeExplorer ):              return( int( treeExplorer ) );
+   case( intPBeFSSpawnDepth ):           return( pbefsSpawnDepth );
+   case( intPBeFSBudget ):               return( pbefsBudget );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -792,6 +814,10 @@ class BranchAndXSolver : public Solver {
    return( intMaxNodes );
   if( name == "intTreeExplorer" )
    return( intTreeExplorer );
+  if( name == "intPBeFSSpawnDepth" )
+   return( intPBeFSSpawnDepth );
+  if( name == "intPBeFSBudget" )
+   return( intPBeFSBudget );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -812,7 +838,9 @@ class BranchAndXSolver : public Solver {
                                       "intThreadForDifferentSolvers" ,
                                       "intBoundingProtocol" ,
                                       "intReoptimize" , "intMaxNodes" ,
-                                      "intTreeExplorer" };
+                                      "intTreeExplorer" ,
+                                      "intPBeFSSpawnDepth" ,
+                                      "intPBeFSBudget" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -1337,6 +1365,10 @@ class BranchAndXSolver : public Solver {
 
  std::string pbefsScheme = "shared";  ///< the scheme of PBeFS (see
                                       ///< strPBeFSScheme)
+
+ int pbefsSpawnDepth = 0;  ///< see intPBeFSSpawnDepth
+
+ int pbefsBudget = 0;      ///< see intPBeFSBudget
 
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
 

@@ -922,6 +922,21 @@ void test_tree_explorer( void )
    destroy( inst );
    }
 
+ // the spawn depth and the budget of the skeletons, deeper and smaller
+ // than those of PBeFS
+ for( const std::string t : { "depthbounded" , "budget" , "ordered" } )
+  for( bool max : { false , true } ) {
+   auto inst = make( max ? 11 : 7 , max );
+   auto bnx = new_bnx();
+   pbefs( bnx , t );
+   set_int( bnx , "intPBeFSSpawnDepth" , 5 );
+   set_int( bnx , "intPBeFSBudget" , 3 );
+   inst.block->register_Solver( bnx );
+   solve_and_check( bnx , inst , label( t ) + "spawn depth 5, budget 3" +
+                    ( max ? ", max" : ", min" ) );
+   destroy( inst );
+   }
+
  // an empty box, and a box with no integer point whose relaxation is not
  // empty, as in test_infeasible(): an infeasible node is no infeasible root
  for( const auto & t : explorers )
