@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one of `smspp_install_rpath()`, with no test on the system or on the
   compiler [see `SMSppModule.cmake` of SMS++]; CMake 3.24 or later is needed
 
+### Fixed
+
+- the workers of the parallel exploration no longer share the Block: their
+  inner Solver were all attached to it, and a relaxation that applies the
+  branching to the Block (say, `LagrangianDualRelaxationSolver` fixing the
+  variables of its sub-Blocks) made each worker see the fixings of the
+  others; the first worker now drives the inner Solver of the Block, each of
+  the others an identical copy of the Block (`get_R3_Block()`) with its own
+  inner Solver, a Block that gives no copy is refused with an exception, and
+  a worker that stops leaves its Solver at the root of its subtree
+
 ## [0.4.0] - 2026-11-16
 
 ### Changed

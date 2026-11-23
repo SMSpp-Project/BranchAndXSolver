@@ -59,9 +59,9 @@ The cases are:
   and reoptimizing the retained tree (`intReoptimize`), and a `compute()` with
   nothing changed.
 
-The relaxation applies the branching to the `Block` rather than to its own
-state, so the parallel depth-first exploration (`intMaxThread` > 1), whose
-workers move their own inner `Solver` independently, is not exercised.
+The `AbstractBlock` of the cases gives no copy of itself, which each worker
+of the parallel depth-first exploration (`intMaxThread` > 1) but the first
+needs: that exploration is only checked to be refused with an exception.
 
 The exit code is 0 when every check passes, printing `All tests passed!!`, and
 1 otherwise. The `makefile` builds the executable including the

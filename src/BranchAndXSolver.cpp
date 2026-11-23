@@ -862,9 +862,18 @@ int BranchAndXSolver::compute( bool changedvars )
   // one exploration, parameterized by the open set that the strategy asks
   // for [see treeSolve()]; the only separate one is the parallel depth-first,
   // which runs its own workers [see ParallelDFSSolve()]
-  f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
-                                            get_int_par( intMaxThread ) )
-                        : treeSolve( globalMutex );
+  // an exception (say, a Block that the parallel exploration cannot copy)
+  // leaves the Solver unlocked, and in error
+  try {
+   f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
+                                             get_int_par( intMaxThread ) )
+                         : treeSolve( globalMutex );
+   }
+  catch( ... ) {
+   f_state = kError;
+   unlock();
+   throw;
+   }
 
   // an exploration that has been completed without ever finding a feasible
   // solution proves that there is none
@@ -1414,22 +1423,30 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
   moveSolverToFather( currentNode , &solvers );
   return( Solver::kOK );
   }
- if( res != ThinComputeInterface::kOK )
+ // whatever the outcome, the Solver go back to the father, so that a stopped
+ // worker leaves them at the root of the subtree it has claimed
+ if( res != ThinComputeInterface::kOK ) {
+  moveSolverToFather( currentNode , &solvers );
   return( res );
+  }
 
  if( ( ! toPrune ) &&
      ( ! cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                          minimizing , relTol , absTol ) ) ) {
   auto branches = branchSolver->branch();
-  for( auto br : branches ) {
+  for( std::size_t i = 0 ; i < branches.size() ; ++i ) {
    // the node lives as long as its exploration, i.e., in this frame
-   DFSNode new_node( br , ++nameCounter );
+   DFSNode new_node( branches[ i ] , ++nameCounter );
    new_node.set_bound( currentNode->get_bound() );  // inherited
    int RV = workerDFS( & new_node , solvers , relaxation , heuristic ,
                        minimizing , incumbentMutex , nodeBdg , deadline ,
                        nameCounter );
-   if( RV != Solver::kOK )
+   if( RV != Solver::kOK ) {      // the branches not explored are deleted
+    while( ++i < branches.size() )
+     delete branches[ i ];
+    moveSolverToFather( currentNode , &solvers );
     return( RV );
+    }
    }
   }
 
@@ -1442,6 +1459,11 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
 
 int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 {
+ // the copies of the Block and their Solver last as long as this solve
+ struct DropWorkers {
+  BranchAndXSolver * bxs;
+  ~DropWorkers() { bxs->dropWorkerSolvers(); }
+  } dropWorkers{ this };
  createWorkerSolvers( K );
 
  // the serial Solver set drives the ramp-up
