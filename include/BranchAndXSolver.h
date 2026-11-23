@@ -562,7 +562,15 @@ class BranchAndXSolver : public Solver {
   * - dblRelAcc [1e-6] / dblAbsAcc [+INF, i.e., not active]: the relative and
   *   absolute tolerances of the pruning, a node being pruned when its
   *   relaxation bound cannot improve the incumbent by more than the largest
-  *   of the two (the relative one taken w.r.t. max( | incumbent | , 1 )). */
+  *   of the two (the relative one taken w.r.t. max( | incumbent | , 1 )).
+  *
+  * - dblUpCutOff [+INF] when minimizing, dblLwCutOff [-INF] when
+  *   maximizing: a value that no solution of interest is worse than, which
+  *   the exploration starts from as the incumbent, so that a node is pruned
+  *   against it until a better solution is found; if none is, compute()
+  *   returns kCutOff with no solution, and get_lb() (get_ub() when
+  *   maximizing) gives the cutoff. A change of it discards the tree retained
+  *   for reoptimization, which may have been pruned against the old one. */
 
  void set_par( idx_type par , double value ) override {
   switch( par ) {
@@ -574,6 +582,16 @@ class BranchAndXSolver : public Solver {
     break;
    case( dblAbsAcc ):
     absAcc = value;
+    break;
+   case( dblUpCutOff ):
+    if( value != upCutOff )
+     changes = Modification::eModAll;
+    upCutOff = value;
+    break;
+   case( dblLwCutOff ):
+    if( value != lwCutOff )
+     changes = Modification::eModAll;
+    lwCutOff = value;
     break;
    default:
     Solver::set_par( par , value );
@@ -796,6 +814,8 @@ class BranchAndXSolver : public Solver {
    case( dblMaxTime ): return( maxTime );
    case( dblRelAcc ):  return( relAcc );
    case( dblAbsAcc ):  return( absAcc );
+   case( dblUpCutOff ): return( upCutOff );
+   case( dblLwCutOff ): return( lwCutOff );
    }
   return( Solver::get_dbl_par( par ) );
   }
@@ -990,6 +1010,14 @@ class BranchAndXSolver : public Solver {
   * for finiteness. */
 
  [[nodiscard]] double no_incumbent( void ) const;
+
+/*--------------------------------------------------------------------------*/
+ /// the value that the exploration starts from as the incumbent
+ /** dblUpCutOff for a minimization problem, dblLwCutOff for a maximization
+  * one [see set_par( double )]: no_incumbent() when it is left at its
+  * default. */
+
+ [[nodiscard]] double start_incumbent( void ) const;
 
 /*--------------------------------------------------------------------------*/
  /// create the per-worker private Solver sets for the parallel exploration
@@ -1330,6 +1358,12 @@ class BranchAndXSolver : public Solver {
 
  /// the inherited dblAbsAcc [see set_par( double )]
  double absAcc = Inf< double >();
+
+ /// the inherited dblUpCutOff [see set_par( double )]
+ double upCutOff = Inf< double >();
+
+ /// the inherited dblLwCutOff [see set_par( double )]
+ double lwCutOff = - Inf< double >();
 
  /// the global information shared with the relaxations
  /** The GlobalInformation handed to every relaxation: the reserved hot

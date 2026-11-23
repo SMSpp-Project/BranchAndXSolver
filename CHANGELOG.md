@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the parameter `intPBeFSSplitShared`, by which the workers of the scheme
   `selfsplit` of PBeFS share their incumbent
 
+- `dblUpCutOff` (`dblLwCutOff` when maximizing) is the incumbent that the
+  exploration starts from, so that the nodes are pruned against it, and a
+  solve with no solution better than it ends in `kCutOff`
+
 ### Changed
 
 - the makefiles give the shared library of the module by default, a DLL on

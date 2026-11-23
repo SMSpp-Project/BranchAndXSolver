@@ -1126,6 +1126,68 @@ void test_infeasible( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/// a cutoff (dblUpCutOff when minimizing, dblLwCutOff when maximizing) is the
+/// incumbent that the exploration starts from: one worse than the optimum
+/// leaves it found, with no more nodes than without it, one better than the
+/// optimum ends in kCutOff with no solution and the cutoff as the bound, and
+/// back to no cutoff the same Solver finds the optimum again; by the own
+/// exploration and by that of PBeFS
+
+void test_cutoff( void )
+{
+ std::cout << "cutoff" << std::endl;
+ for( bool pb : { false , true } )
+  for( bool max : { false , true } ) {
+   const std::string name = std::string( pb ? "PBeFS" : "own" ) +
+                            ( max ? ", max" : ", min" );
+   const std::string par = max ? "dblLwCutOff" : "dblUpCutOff";
+   const double none = max ? - INF : INF;
+   auto inst = make( max ? 11 : 7 , max );
+   const double opt = closed_form( inst.data , inst.max );
+   auto bnx = new_bnx();
+   // the own exploration retains its tree, which a change of the cutoff
+   // has to discard
+   if( pb )
+    set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFS );
+   else
+    set_int( bnx , "intReoptimize" , 1 );
+   inst.block->register_Solver( bnx );
+   auto bx = static_cast< BranchAndXSolver * >( bnx );
+
+   solve_and_check( bnx , inst , name + ", no cutoff" );
+   const auto nodes = bx->get_evaluated_nodes();
+
+   bnx->set_par( bnx->dbl_par_str2idx( par ) , max ? opt - 1 : opt + 1 );
+   solve_and_check( bnx , inst , name + ", cutoff worse than optimum" );
+   check( bx->get_evaluated_nodes() <= nodes ,
+          name + ": more nodes with the cutoff than without" );
+
+   const double cut = max ? opt + 1 : opt - 1;
+   bnx->set_par( bnx->dbl_par_str2idx( par ) , cut );
+   int status = Solver::kError;
+   try {
+    status = bnx->compute();
+    }
+   catch( std::exception & e ) {
+    check( false , name + ": compute() threw " + e.what() );
+    }
+   const double bound = max ? bnx->get_ub() : bnx->get_lb();
+   std::cout << std::left << std::setw( 40 )
+             << name + ", cutoff better than optimum" << std::right
+             << " status " << status << " bound " << bound << std::endl;
+   check( status == Solver::kCutOff , name + ": status " +
+          std::to_string( status ) + ", not kCutOff" );
+   check( bnx->get_var_value() == none , name + ": a solution beyond the "
+          "cutoff" );
+   check( bound == cut , name + ": the bound is not the cutoff" );
+
+   bnx->set_par( bnx->dbl_par_str2idx( par ) , none );
+   solve_and_check( bnx , inst , name + ", cutoff removed" );
+   destroy( inst );
+   }
+ }
+
+/*--------------------------------------------------------------------------*/
 /// a root whose relaxation is already integer: solved at the root, which
 /// a budget of a single node is enough for
 
@@ -1437,9 +1499,9 @@ int main( void )
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
   test_tree_explorer , test_best_estimate , test_unresolved , test_heuristic ,
-  test_infeasible , test_integral_root , test_limits , test_parallel_no_copy ,
-  test_parameters , test_detach_reattach , test_objective_change ,
-  test_integrality_change };
+  test_infeasible , test_cutoff , test_integral_root , test_limits ,
+  test_parallel_no_copy , test_parameters , test_detach_reattach ,
+  test_objective_change , test_integrality_change };
 
  for( auto c : cases ) {
   try {

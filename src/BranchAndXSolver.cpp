@@ -1201,6 +1201,14 @@ double BranchAndXSolver::no_incumbent( void ) const
  }
 
 /*--------------------------------------------------------------------------*/
+
+double BranchAndXSolver::start_incumbent( void ) const
+{
+ return( f_Block->get_objective_sense() == Objective::eMax ? lwCutOff
+                                                           : upCutOff );
+ }
+
+/*--------------------------------------------------------------------------*/
 /*---------------------- METHODS FOR READING RESULTS -----------------------*/
 /*--------------------------------------------------------------------------*/
 
@@ -1301,7 +1309,9 @@ int BranchAndXSolver::compute( bool changedvars )
 
   bestBound = no_incumbent();
   // no incumbent yet [see no_incumbent() and GlobalInformation::str_Incumbent]
-  f_incumbentCell->store( bestBound );
+  // but the cutoff, if any, which the nodes are pruned against as if it were
+  // one [see start_incumbent()]
+  f_incumbentCell->store( start_incumbent() );
   // one exploration, parameterized by the open set that the strategy asks
   // for [see treeSolve()]; the only separate one is the parallel depth-first,
   // which runs its own workers [see ParallelDFSSolve()]
@@ -1322,9 +1332,16 @@ int BranchAndXSolver::compute( bool changedvars )
    }
 
   // an exploration that has been completed without ever finding a feasible
-  // solution proves that there is none
-  if( ( f_state == kOK ) && ( bestBound == no_incumbent() ) )
-   f_state = kInfeasible;
+  // solution proves that there is none, or, with a cutoff, none better than
+  // it, which the bound on the side of the nodes then says [see get_lb()]
+  if( ( f_state == kOK ) && ( bestBound == no_incumbent() ) ) {
+   if( start_incumbent() == no_incumbent() )
+    f_state = kInfeasible;
+   else {
+    f_state = kCutOff;
+    f_open_bound = start_incumbent();
+    }
+   }
   }
 
  // The summary also covers an eager root closed without entering explore(),
@@ -2247,6 +2264,8 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
  if( pbefsBudget > 0 )
   o.budget = std::uint64_t( pbefsBudget );
  o.split_shared = pbefsSplitShared;
+ if( start_incumbent() != no_incumbent() )
+  o.incumbent = c.sign() * start_incumbent();
 
  const BXTree t{ c };
  const auto s = PB::parallel_branch_and_bound( t ,
