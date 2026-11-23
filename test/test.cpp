@@ -1159,6 +1159,28 @@ void test_limits( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/// a parallel exploration of a Block that gives no copy of itself
+
+void test_parallel_no_copy( void )
+{
+ std::cout << "parallel exploration without a copy of the Block" << std::endl;
+ auto inst = make( 7 , false );
+ auto bnx = new_bnx();
+ set_int( bnx , "intSolveMethod" , BranchAndXSolver::DFS );
+ set_int( bnx , "intMaxThread" , 2 );
+ inst.block->register_Solver( bnx );
+ bool refused = false;
+ try {
+  bnx->compute();
+  }
+ catch( std::invalid_argument & ) {
+  refused = true;
+  }
+ check( refused , "a parallel exploration with no copy of the Block" );
+ destroy( inst );
+ }
+
+/*--------------------------------------------------------------------------*/
 /// the parameters: names, defaults, ComputeConfig, invalid values
 
 void test_parameters( void )
@@ -1388,9 +1410,9 @@ int main( void )
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
   test_tree_explorer , test_best_estimate , test_unresolved , test_heuristic ,
-  test_infeasible ,
-  test_integral_root , test_limits , test_parameters , test_detach_reattach ,
-  test_objective_change , test_integrality_change };
+  test_infeasible , test_integral_root , test_limits , test_parallel_no_copy ,
+  test_parameters , test_detach_reattach , test_objective_change ,
+  test_integrality_change };
 
  for( auto c : cases ) {
   try {

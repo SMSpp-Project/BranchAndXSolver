@@ -60,6 +60,7 @@
 #include <cmath>
 #include <limits>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <vector>
@@ -204,11 +205,13 @@ namespace SMSpp_di_unipi_it
  * \par Parallel exploration.
  * Two orthogonal kinds of parallelism are available. Across the tree [see
  * intMaxThread and ParallelDFSSolve()], after an ordered ramp-up \f$ K \f$
- * workers, each driving its own copy of the inner Solver (so that applying
- * the Changes needs no synchronization), repeatedly claim the oldest open
- * subtree and explore it depth-first, sharing only the incumbent and the
- * pool of open subtrees, and a worker donates a branch of its subtree when
- * the pool runs low; claiming in the order of discovery is what keeps the
+ * workers, each driving its own copy of the inner Solver attached to its own
+ * copy of the Block (so that applying the Changes needs no synchronization,
+ * which requires the Block to give an identical copy of itself, see
+ * Block::get_R3_Block()), repeatedly claim the oldest open subtree and
+ * explore it depth-first, sharing only the incumbent and the pool of open
+ * subtrees, and a worker donates a branch of its subtree when the pool runs
+ * low; claiming in the order of discovery is what keeps the
  * runs replicable, since a random distribution of the work is known to make
  * them erratic on knapsack-like problems. Across the Solver of a node [see
  * intThreadForDifferentSolvers], the compute() of the several relaxations
@@ -393,6 +396,7 @@ class BranchAndXSolver : public Solver {
  /// destructor
 
  ~BranchAndXSolver() override {
+  dropWorkerSolvers();
   discardRetainedTree();
   delete bestSolution;
   delete configurationRS;
@@ -523,7 +527,10 @@ class BranchAndXSolver : public Solver {
  /** The base Solver classes do not store the double parameters, so the
   * inherited ones that BranchAndXSolver uses are stored here:
   *
-  * - dblMaxTime [+INF]: the time budget of a solve, in seconds;
+  * - dblMaxTime [+INF]: the time budget of a solve, in seconds; each
+  *   compute() of an inner Solver has the dblMaxTime of its own or the time
+  *   left, whichever is smaller, and a node that it leaves unsolved is set
+  *   aside with the bound it has [see v_unresolved];
   *
   * - dblRelAcc [1e-6] / dblAbsAcc [+INF, i.e., not active]: the relative and
   *   absolute tolerances of the pruning, a node being pruned when its
@@ -916,6 +923,7 @@ class BranchAndXSolver : public Solver {
   * GlobalInformation [see str_GlobalCuts]. */
 
  void dropInnerSolvers( void ) {
+  dropWorkerSolvers();
   discardRetainedTree();
   delete bestSolution;
   bestSolution = nullptr;
@@ -927,7 +935,6 @@ class BranchAndXSolver : public Solver {
   v_created.clear();
   f_RelaxationSolvers.clear();
   f_HeuristicSolvers.clear();
-  v_workerSolvers.clear();
   f_globalInfo.remove_from_Universe( str_GlobalCuts );
   }
 
@@ -944,28 +951,40 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// create the per-worker private Solver sets for the parallel exploration
- /** Creates \p K additional sets of inner Solver out of configurationRS,
-  * one per worker of the parallel exploration (see v_workerSolvers): each
-  * worker drives its own clones, so that the (cheap, internal) application
-  * of the branching Changes never needs synchronization; the incumbent and
-  * the pool of open subtrees are the only shared state. The clones are
-  * attached to the Block (set_Block, no registration) and owned. */
+ /** Creates the \p K Solver sets of the workers of the parallel exploration
+  * (see v_workerSolvers), so that each worker applies the branching Changes
+  * to nothing but its own Solver and its own Block, and the incumbent and
+  * the pool of open subtrees are the only shared state. The first worker
+  * drives the inner Solver of f_Block; each of the others gets an identical
+  * copy of f_Block [see copy_of_Block()] and a set of inner Solver created
+  * out of configurationRS and registered to it, so that they have the
+  * Modification of the copy as those of f_Block have the ones of f_Block
+  * [see add_Modification()]. The Changes are applied to any of them, since
+  * they identify what they change by its AbstractPath relative to the
+  * Block. The copies and their Solver are owned, and they live until
+  * dropWorkerSolvers(), as they do not receive the Modification of
+  * f_Block. */
 
  void createWorkerSolvers( Index K ) {
   if( ! ( configurationRS && f_Block ) )
    throw( std::logic_error( "BranchAndXSolver::createWorkerSolvers: "
           "configurationRS or f_Block not set" ) );
+  dropWorkerSolvers();
   v_workerSolvers.resize( K );
-  for( Index w = 0 ; w < K ; ++w ) {
+  if( ! K )
+   return;
+  v_workerSolvers[ 0 ].relaxation = f_RelaxationSolvers;
+  v_workerSolvers[ 0 ].heuristic = f_HeuristicSolvers;
+  for( Index w = 1 ; w < K ; ++w ) {
    auto & ws = v_workerSolvers[ w ];
-   if( ! ws.relaxation.empty() )    // already created (re-solve)
-    continue;
+   ws.block = copy_of_Block();
    for( Index i = 0 ; i < configurationRS->num_ComputeConfig() ; ++i ) {
-    auto slvr = Solver::new_Solver( configurationRS->get_SolverName( i ) );
+    const auto name = configurationRS->get_SolverName( i );
+    std::unique_ptr< Solver > s( Solver::new_Solver( name ) );
     if( auto cfg = configurationRS->get_SolverConfig( i ) )
-     slvr->set_ComputeConfig( cfg );
-    slvr->set_Block( f_Block );
-    v_created.push_back( slvr );    // owned like the serial ones
+     s->set_ComputeConfig( cfg );
+    auto slvr = s.release();
+    ws.block->register_Solver( slvr );
     // the traits are discovered on the Solver by cross-cast [see
     // ChangeSolver.h] and kept alongside the Solver personality
     if( auto rs = dynamic_cast< RelaxationSolver * >( slvr ) ) {
@@ -980,6 +999,47 @@ class BranchAndXSolver : public Solver {
             "describe :ChangeSolver" ) );
     }
    }
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// delete the per-worker Solver sets, and the copies of the Block
+ /** The Solver of the first worker are those of f_Block, and they stay. */
+
+ void dropWorkerSolvers( void ) {
+  for( auto & ws : v_workerSolvers )
+   if( ws.block ) {
+    ws.block->unregister_Solvers( true );
+    delete ws.block;
+    }
+  v_workerSolvers.clear();
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// an identical copy of f_Block, for a worker of the parallel exploration
+ /** The copy is the R3 Block that f_Block gives with no Configuration [see
+  * Block::get_R3_Block()], with the weights of its Objective and of its
+  * Variable; a Block that gives none cannot be explored in parallel, and
+  * this throws. */
+
+ [[nodiscard]] Block * copy_of_Block( void ) const {
+  static const std::string _prfx = "BranchAndXSolver::copy_of_Block: ";
+  static const std::string why = ", and every worker of the parallel "
+   "exploration but the first needs one";
+  Block * copy;
+  try {
+   copy = f_Block->get_R3_Block( nullptr );
+   }
+  catch( const std::exception & e ) {
+   throw( std::invalid_argument( _prfx + "the Block cannot be copied ("
+                                 + e.what() + ")" + why ) );
+   }
+  if( ! copy )
+   throw( std::invalid_argument( _prfx + "the Block gives no copy of "
+                                 "itself [see Block::get_R3_Block()]" +
+                                 why ) );
+  copy->set_objective_weight( f_Block->get_objective_weight() , eNoMod );
+  copy->set_variable_weight( f_Block->get_variable_weight() , eNoMod );
+  return( copy );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -1066,6 +1126,13 @@ class BranchAndXSolver : public Solver {
  /// delete the tree retained for reoptimization (if any) and its frontier
 
  void discardRetainedTree( void );
+
+/*--------------------------------------------------------------------------*/
+ /// whether the time budget of the current solve is over
+
+ [[nodiscard]] bool out_of_time( void ) const {
+  return( std::chrono::steady_clock::now() >= f_deadline );
+  }
 
 /*--------------------------------------------------------------------------*/
  /// account for the nodes set aside unresolved in the global bound
@@ -1258,6 +1325,10 @@ class BranchAndXSolver : public Solver {
  /// dblMaxTime), consumed by the exploration
  double timeBudget;
 
+ /// the time by which the current solve has to end, max() if none
+ std::chrono::steady_clock::time_point f_deadline =
+  std::chrono::steady_clock::time_point::max();
+
  double relTol;   ///< the inherited dblRelAcc, cached at compute() start
 
  double absTol;   ///< the inherited dblAbsAcc, cached at compute() start
@@ -1273,9 +1344,13 @@ class BranchAndXSolver : public Solver {
  std::vector< Solver * > v_created;
 
  /// the private Solver set of one worker of the parallel exploration
+ /** The Block the Solver are registered to, a copy of f_Block, is owned
+  * together with them; none for the first worker, which drives the inner
+  * Solver of f_Block [see createWorkerSolvers()]. */
  struct WorkerSolvers {
   std::vector< std::pair< RelaxationSolver * , Solver * > > relaxation;
   std::vector< std::pair< ChangeSolver * , Solver * > > heuristic;
+  Block * block = nullptr;           ///< the copy of f_Block, owned
   };
 
  /// the per-worker Solver sets [see createWorkerSolvers()]
