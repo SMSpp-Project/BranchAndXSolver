@@ -33,10 +33,8 @@
  *   rounding in the box of the child, and BoxWrongEstimate, which swaps the
  *   estimates of the two children and at times gives none;
  *
- * - BoxUnresolved, the BoxRelaxation that at every third compute() but the
- *   first says kLowPrecision, as a Lagrangian Dual not solved to the
- *   required accuracy does, leaving a node that can be neither branched
- *   upon nor fenced.
+ * - BoxUnresolved, which models an advanced partial inner result at every
+ *   third compute() and certifies its bound and branching information as kOK.
  *
  * The inner Solver are given to BranchAndXSolver by the BlockSolverConfig
  * in InnerBSCfg.txt (the relaxation alone), InnerBSCfg-rounding.txt (the
@@ -68,7 +66,9 @@
 #include <map>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -295,6 +295,23 @@ class BoxRelaxation : public BoxBase , public RelaxationSolver {
 
 SMSpp_insert_in_factory_cpp_0( BoxRelaxation );
 
+/// A controlled failure at the root or first child for the CSV regression.
+class BoxLogFailure : public BoxRelaxation
+{
+ public:
+ int compute( bool changedvars = true ) override {
+  const int status = BoxRelaxation::compute( changedvars );
+  return( ++f_calls == fail_at ? kError : status );
+  }
+ static inline int fail_at = 1;
+
+ private:
+ int f_calls = 0;
+ SMSpp_insert_in_factory_h;
+ };
+
+SMSpp_insert_in_factory_cpp_0( BoxLogFailure );
+
 /*--------------------------------------------------------------------------*/
 /*---------------------------- CLASS BoxRounding ---------------------------*/
 /*--------------------------------------------------------------------------*/
@@ -431,12 +448,156 @@ class BoxWrongEstimate : public BoxEstimate {
 
 SMSpp_insert_in_factory_cpp_0( BoxWrongEstimate );
 
+
+
 /*--------------------------------------------------------------------------*/
 /*--------------------------- CLASS BoxUnresolved --------------------------*/
 /*--------------------------------------------------------------------------*/
-/// the BoxRelaxation that at every third compute() but the first says
-/// kLowPrecision instead of kOK, as a Lagrangian Dual not solved to the
-/// required accuracy does: the node can be neither branched upon nor fenced
+/// Bound-only partial results without certified branching information
+
+// A valid continuous bound plus an independently feasible rounded incumbent,
+// returned together with each standard partial-result status.
+// compute() is read-only, so these mocks can run beside a solving relaxation.
+// The zero incumbent is written only during serial solution extraction.
+class BoxConstantPartial : public BoxRelaxation
+{
+ public:
+ static inline int result = Solver::kStopTime;
+ int compute( bool = true ) override { return( result ); }
+ OFValue get_lb() override { return( -1 ); }
+ OFValue get_ub() override { return( 0 ); }
+ bool has_true_var_solution() override { return( true ); }
+ OFValue get_true_lb() override { return( 0 ); }
+ OFValue get_true_ub() override { return( 0 ); }
+ void get_true_var_solution( Configuration * = nullptr ) override {
+  std::vector< double > point( f_box->size() );
+  for( std::size_t i = 0 ; i < point.size() ; ++i ) {
+   const double lo = std::ceil( ( *f_box )[ i ].get_lhs() );
+   const double hi = std::floor( ( *f_box )[ i ].get_rhs() );
+   if( lo > hi )
+    throw( std::logic_error( "BoxConstantPartial: no integer point" ) );
+   point[ i ] = std::clamp( 0.0 , lo , hi );
+   }
+  if( objective_value( point ) != 0 )
+   throw( std::logic_error( "BoxConstantPartial: expected zero objective" ) );
+  write( point );
+  }
+ Solution * get_true_solution( Configuration * c = nullptr ) override {
+  get_true_var_solution( c );
+  return( f_Block->get_Solution( c , false ) );
+  }
+
+ private:
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxConstantPartial );
+class BoxStrongPartial : public BoxConstantPartial
+{
+ public:
+ static inline int result = Solver::kStopTime;
+ int compute( bool = true ) override { return( result ); }
+ OFValue get_lb() override { return( -0.25 ); }
+
+ private:
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxStrongPartial );
+
+class BoxNearBound : public BoxConstantPartial
+{
+ public:
+ int compute( bool = true ) override { return( kOK ); }
+ OFValue get_lb() override { return( -5e-7 ); }
+ OFValue get_ub() override { return( 5e-7 ); }
+
+ private:
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxNearBound );
+
+class BoxBadCertificate : public BoxRelaxation
+{
+ public:
+ static inline int mode = 0;
+ OFValue get_lb() override {
+  return( mode == 0   ? std::numeric_limits< double >::quiet_NaN()
+	   : mode == 1 ? INFINITY
+		       : BoxRelaxation::get_lb() + 100 );
+  }
+ OFValue get_ub() override {
+  return( mode == 0   ? std::numeric_limits< double >::quiet_NaN()
+	   : mode == 1 ? -INFINITY
+		       : BoxRelaxation::get_ub() - 100 );
+  }
+
+ private:
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxBadCertificate );
+
+class BoxPartial : public BoxRelaxation
+{
+ public:
+ static inline int result = Solver::kStopIter;
+ static inline bool stop = true;
+ static inline bool bound_available = true;
+ static inline bool root_only = false;
+ static inline bool certify_partial = true;
+ static inline int n_certified = 0;
+ static inline int n_branch = 0;
+ OFValue get_lb() override {
+  return( ! bound_available        ? -Inf< OFValue >()
+	   : root_only && calls > 1 ? -1.0
+				    : BoxRelaxation::get_lb() );
+  }
+ OFValue get_ub() override {
+  return( ! bound_available        ? Inf< OFValue >()
+	   : root_only && calls > 1 ? 1.0
+				    : BoxRelaxation::get_ub() );
+  }
+ bool has_var_solution() override {
+  return( ( ! root_only || calls == 1 ) &&
+	   BoxRelaxation::has_var_solution() );
+  }
+ int compute( bool changedvars = true ) override {
+  ++calls;
+  int status = BoxRelaxation::compute( changedvars );
+  rounded = f_val;
+  for( std::size_t i = 0 ; i < rounded.size() ; ++i )
+   rounded[ i ] = std::max( std::ceil( ( *f_box )[ i ].get_lhs() ) ,
+			    std::min( std::floor( ( *f_box )[ i ].get_rhs() ) ,
+				      std::round( rounded[ i ] ) ) );
+  if( status != kOK || ! stop )
+   return( status );
+  // The inner BoxSolver has completed its optimization. The wrapper knows
+  // whether its current bound and branching solution are ready to be used.
+  if( certify_partial && bound_available && has_var_solution() ) {
+   ++n_certified;
+   return( kOK );
+   }
+  return( result );
+  }
+ std::vector< Change * > branch() override {
+  ++n_branch;
+  return( BoxRelaxation::branch() );
+  }
+ bool has_true_var_solution() override { return( ! rounded.empty() ); }
+ OFValue get_true_lb() override { return( objective_value( rounded ) ); }
+ OFValue get_true_ub() override { return( objective_value( rounded ) ); }
+ void get_true_var_solution( Configuration * = nullptr ) override {
+  write( rounded );
+  }
+ Solution * get_true_solution( Configuration * c = nullptr ) override {
+  write( rounded );
+  return( f_Block->get_Solution( c , false ) );
+  }
+
+ private:
+ unsigned calls = 0;
+ std::vector< double > rounded;
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxPartial );
 
 class BoxUnresolved : public BoxRelaxation {
 
@@ -445,16 +606,17 @@ class BoxUnresolved : public BoxRelaxation {
  int compute( bool changedvars = true ) override {
   const int status = BoxRelaxation::compute( changedvars );
   if( ( status == kOK ) && ( ( ++n_calls % 3 ) == 0 ) ) {
-   ++n_unresolved;
-   return( kLowPrecision );
+   ++n_partial;
+   // Model an advanced inner result: the wrapper certifies the completed
+   // relaxation and its branching information by returning kOK.
    }
   return( status );
   }
 
  /// the compute() of all the BoxUnresolved so far, and how many of them
- /// said kLowPrecision
+ /// certified an advanced partial inner result
  static inline int n_calls = 0;
- static inline int n_unresolved = 0;
+ static inline int n_partial = 0;
 
  private:
 
@@ -726,21 +888,14 @@ void solve_and_check_stop( Solver * bnx , Instance & inst , int expected ,
  }
 
 /*--------------------------------------------------------------------------*/
-/// solve with an inconclusive relaxation [see BoxUnresolved] and check that
-/// the exploration has gone on past the first node set aside, that the
-/// status says whether some of them could still improve the incumbent, and
-/// that the bounds hold on both sides of the optimum; \p bounded says that
-/// the nodes set aside have a finite bound, which a node of the frontier of
-/// a retained tree has not, since its re-evaluation starts with none [see
-/// BranchAndXSolver::reseedFrontier()]
+/// A partial status with a valid bound and solution must not stop the search.
 
-void solve_and_check_unresolved( Solver * bnx , Instance & inst ,
-                                 const std::string & name ,
-                                 bool bounded = true )
+void solve_and_check_usable_partial( Solver * bnx , Instance & inst ,
+				     const std::string & name )
 {
  const double opt = closed_form( inst.data , inst.max );
  BoxUnresolved::n_calls = 0;
- BoxUnresolved::n_unresolved = 0;
+ BoxUnresolved::n_partial = 0;
  int status = Solver::kError;
  try {
   status = bnx->compute();
@@ -752,26 +907,16 @@ void solve_and_check_unresolved( Solver * bnx , Instance & inst ,
  const double v = bnx->get_var_value();
  const double lb = bnx->get_lb() , ub = bnx->get_ub();
  std::cout << std::left << std::setw( 40 ) << name << std::right
-           << std::scientific << std::setprecision( 9 ) << " lb " << lb
-           << " ub " << ub << " status " << status << " set aside "
-           << BoxUnresolved::n_unresolved << std::endl;
- check( ( status == Solver::kOK ) || ( status == Solver::kLowPrecision ) ,
-        name + ": status " + std::to_string( status ) +
-        ", neither kOK nor kLowPrecision" );
+	   << std::scientific << std::setprecision( 9 ) << " lb " << lb
+	   << " ub " << ub << " status " << status << " partial results "
+	   << BoxUnresolved::n_partial << std::endl;
+ check( status == Solver::kOK ,
+	name + ": usable partial result stopped the search" );
  check( BoxUnresolved::n_calls > 3 ,
-        name + ": the exploration stopped at the first node set aside" );
- // a node set aside covers a part of the region that has not been explored,
- // so its bound only is valid there: the bound on its side is not the
- // optimum unless the incumbent is, and both bounds hold
+	name + ": the exploration stopped at the first partial result" );
  check( ( lb <= opt + tol ) && ( ub >= opt - tol ) ,
         name + ": the bounds do not hold" );
- check( inst.max ? v <= opt + tol : v >= opt - tol ,
-        name + ": a value better than the optimum" );
- if( status == Solver::kOK )
-  check( std::abs( v - opt ) <= tol , name + ": kOK with a wrong value" );
- else if( bounded )
-  check( inst.max ? ub < INF : lb > - INF ,
-         name + ": no relaxation bound from the nodes set aside" );
+ check( std::abs( v - opt ) <= tol , name + ": wrong optimum" );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -890,13 +1035,13 @@ void test_best_estimate( void )
  }
 
 /*--------------------------------------------------------------------------*/
-/// a relaxation that is inconclusive at some nodes [see BoxUnresolved]:
+/// Usable partial results [see BoxUnresolved] must not stop exploration:
 /// every strategy under both bounding protocols, both senses, and a
-/// retained tree, whose re-solve re-evaluates the nodes set aside
+/// retained tree, whose unchanged re-solve reuses the completed search
 
-void test_unresolved( void )
+void test_usable_partial_results( void )
 {
- std::cout << "nodes whose relaxation is inconclusive" << std::endl;
+ std::cout << "nodes with usable partial relaxations" << std::endl;
  const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
                           "BestEstimate" };
  bool some = false;
@@ -908,20 +1053,22 @@ void test_unresolved( void )
     set_int( bnx , "intSolveMethod" , m );
     set_int( bnx , "intBoundingProtocol" , p );
     inst.block->register_Solver( bnx );
-    solve_and_check_unresolved( bnx , inst , std::string( "unresolved, " ) +
-                                ( max ? "max, " : "min, " ) + method[ m ] +
-                                ( p ? ", lazy" : ", eager" ) );
-    some |= BoxUnresolved::n_unresolved > 0;
+    solve_and_check_usable_partial(
+      bnx , inst ,
+      std::string( "usable partial, " ) + ( max ? "max, " : "min, " ) +
+	method[ m ] + ( p ? ", lazy" : ", eager" ) );
+    some |= BoxUnresolved::n_partial > 0;
     destroy( inst );
     }
- check( some , "no node set aside" );
+ check( some , "no partial result exercised" );
 
  auto inst = make( 7 , false );
  auto bnx = new_bnx( "InnerBSCfg-unresolved.txt" );
  set_int( bnx , "intReoptimize" , 1 );
  inst.block->register_Solver( bnx );
- solve_and_check_unresolved( bnx , inst , "unresolved, retained tree" );
- solve_and_check_unresolved( bnx , inst , "unresolved, re-solve" , false );
+ solve_and_check_usable_partial( bnx , inst ,
+				 "usable partial, retained tree" );
+ solve_and_check( bnx , inst , "usable partial, unchanged re-solve" );
  destroy( inst );
  }
 
@@ -1007,7 +1154,360 @@ void test_integral_root( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/// Every evaluated serial node has one CSV row, including roots and nodes
+/// whose evaluation returns before branching (infeasibility, stop or error).
+void test_tree_log( void )
+{
+ std::cout << "per-node CSV log" << std::endl;
+ for( int protocol = 0 ; protocol < 2 ; ++protocol )
+  for( int kind = 0 ; kind < 6 ; ++kind ) {
+   std::ostringstream log;
+   Instance inst;
+   inst.data = random_data( 7 , false );
+   if( kind == 0 )
+    for( auto & d : inst.data )
+     d.b = -2 * d.q * std::ceil( d.l );
+   if( kind == 1 )
+    inst.data[ 2 ].l = 1 , inst.data[ 2 ].u = 0;
+   build( inst );
+   BoxLogFailure::fail_at = kind == 4 ? 1 : 2;
+   auto bnx = new_bnx( kind >= 4   ? "InnerBSCfg-log-failure.txt"
+		       : kind == 3 ? "InnerBSCfg-unresolved.txt"
+				   : "InnerBSCfg.txt" );
+   set_int( bnx , "intBoundingProtocol" , protocol );
+   bnx->set_log( &log );
+   inst.block->register_Solver( bnx );
+   const int status = bnx->compute();
+   const std::string tag = "CSV protocol " + std::to_string( protocol ) +
+			   " case " + std::to_string( kind );
+   if( kind >= 4 )
+    check( status == Solver::kError , tag + ": no injected failure" );
+   else if( kind == 1 )
+    check( status == Solver::kInfeasible , tag + ": not infeasible" );
+   else
+    check( status == Solver::kOK , tag + ": solve failed" );
+   std::istringstream input( log.str() );
+   std::string line;
+   long rows = 0;
+   while( std::getline( input , line ) ) {
+    if( line.empty() || line[ 0 ] < '0' || line[ 0 ] > '9' )
+     continue;
+    check( std::count( line.begin() , line.end() , ',' ) == 9 ,
+	   tag + ": wrong CSV column count" );
+    if( rows++ == 0 ) {
+     const auto first = line.find( ',' );
+     check( line.substr( first + 1 , 7 ) == "0,-1,0," ,
+	    tag + ": first row is not the root" );
+     if( kind == 1 )
+      check( line.back() == '1' , tag + ": infeasible root not marked" );
+     }
+    }
+   const auto evaluated =
+     dynamic_cast< BranchAndXSolver * >( bnx )->get_evaluated_nodes();
+   check( rows > 0 && rows == evaluated ,
+	  tag + ": CSV rows differ from evaluated nodes" );
+   if( kind == 0 || kind == 1 || kind == 4 )
+    check( rows == 1 , tag + ": expected only the root" );
+   if( kind == 5 )
+    check( rows == 2 , tag + ": failing child not logged" );
+   check( log.str().find( "[BranchAndXSolver] nodes_evaluated=" +
+			  std::to_string( evaluated ) ) != std::string::npos ,
+	  tag + ": missing summary" );
+   destroy( inst );
+   }
+ }
+
+/*--------------------------------------------------------------------------*/
 /// a node budget and a time budget that stop the enumeration
+
+void test_bad_certificates()
+{
+ for( int mode : { 0 , 1 , 2 } )
+  for( bool max : { false , true } )
+   for( int protocol : { 0 , 1 } )
+    for( int threads : { 1 , 2 } ) {
+     Instance inst;
+     inst.max = max;
+     inst.data = { { 0.0 , 2.0 , max ? -1.0 : 1.0 , 0.0 } };
+     build( inst );
+     BoxBadCertificate::mode = mode;
+     auto bnx = new_bnx( "InnerBSCfg-bad-certificate.txt" );
+     set_int( bnx , "intBoundingProtocol" , protocol );
+     set_int( bnx , "intMaxThread" , threads );
+     inst.block->register_Solver( bnx );
+     check(
+       bnx->compute() == Solver::kError ,
+       "certificate: NaN/infinite/contradictory bound falsely fenced node" );
+     check( ! bnx->has_var_solution() ,
+	    "certificate: invalid result was published as an incumbent" );
+     destroy( inst );
+     }
+ }
+
+void test_bound_only_partial_results()
+{
+ for( int first : std::vector< int >{ Solver::kStopTime , Solver::kStopIter ,
+				      Solver::kLowPrecision , Solver::kCutOff ,
+				      Solver::kError - 1 } )
+  for( int second : std::vector< int >{ Solver::kStopTime , Solver::kStopIter ,
+					Solver::kLowPrecision ,
+					Solver::kCutOff ,
+					Solver::kError - 1 } )
+   for( int threads : { 1 , 2 } ) {
+ BoxConstantPartial::result = first;
+ BoxStrongPartial::result = second;
+ Instance inst;inst.data={{0.0,2.0,1.0,-1.0}};build(inst);
+ auto bnx=new_bnx("InnerBSCfg-parallel-partial.txt");
+ set_int(bnx,"intBoundingProtocol",1);
+ set_int(bnx,"intThreadForDifferentSolvers",threads);
+ inst.block->register_Solver(bnx);
+ // These bound-only mocks have no solution for branching. Keep the first
+ // unresolved status without assigning priority to the second solver.
+ const int expected = first == Solver::kCutOff ? Solver::kLowPrecision : first;
+ check(bnx->compute()==expected,"bound-only result: first status was lost");
+ check(std::abs(bnx->get_lb()+0.25)<1e-12 && bnx->get_ub()==0,
+       "parallel reduction: later partial bound/incumbent discarded");
+ destroy(inst);
+ }
+ BoxConstantPartial::result = BoxStrongPartial::result = Solver::kStopTime;
+}
+
+void test_large_finite_incumbent()
+{
+ for( bool max : { false , true } ) {
+  Instance inst;
+  inst.max = max;
+  const double expected = max ? -1e201 : 1e201;
+  inst.data = { { 1 , 1 , expected , 0 } };
+  build( inst );
+  auto bnx = new_bnx();
+  inst.block->register_Solver( bnx );
+  check( bnx->compute() == Solver::kOK ,
+	 "large finite objective: solve failed" );
+  check( bnx->has_var_solution() ,
+	 "large finite objective: incumbent discarded" );
+  check( std::abs( bnx->get_var_value() / expected - 1 ) < 1e-12 ,
+	 "large finite objective: incorrect incumbent" );
+  destroy( inst );
+  }
+ }
+
+
+void test_numeric_closure_bound()
+{
+ for(bool max:{false,true}) for(int protocol:{0,1}) for(int threads:{1,2}) {
+  Instance inst;inst.max=max;inst.data={{0.0,2.0,max?-1.0:1.0,0.0}};build(inst);
+  auto bnx=new_bnx("InnerBSCfg-near-bound.txt");
+  set_int(bnx,"intBoundingProtocol",protocol);set_int(bnx,"intMaxThread",threads);
+  set_int(bnx,"intSolveMethod",0);bnx->set_par(Solver::dblAbsAcc,1e-6);
+  inst.block->register_Solver(bnx);
+  for(int repeat=0;repeat<2;++repeat) {
+   check(bnx->compute()==Solver::kOK,"numeric closure: failed");
+   check(std::abs(bnx->get_lb()-(max?0:-5e-7))<1e-12 &&
+         std::abs(bnx->get_ub()-(max?5e-7:0))<1e-12,
+         "numeric closure: calculated certificate replaced by incumbent");
+  }
+  destroy(inst);
+ }
+}
+
+void test_partial_results()
+{
+ for( int status : { Solver::kStopIter , Solver::kStopTime ,
+		     Solver::kLowPrecision , Solver::kCutOff } )
+  for( bool max : { false , true } )
+   for( int protocol : { 0 , 1 } )
+    for( int retain : { 0 , 1 } )
+     for( int threads : { 1 , 2 } ) {
+      Instance inst;
+      inst.max = max;
+      inst.data = { { 0.0 , 2.0 , max ? -1.0 : 1.0 , max ? 1.0 : -1.0 } };
+      build( inst );
+      BoxPartial::result = status;
+      BoxPartial::stop = true;
+      BoxPartial::n_certified = 0;
+      auto bnx = new_bnx( "InnerBSCfg-partial.txt" );
+      set_int( bnx , "intBoundingProtocol" , protocol );
+      set_int( bnx , "intReoptimize" , retain );
+      set_int( bnx , "intMaxThread" , threads );
+      inst.block->register_Solver( bnx );
+      solve_and_check( bnx , inst , "usable partial result" );
+      check( BoxPartial::n_certified > 0 ,
+	     "partial result: no advanced inner computation certified" );
+      BoxPartial::stop = false;
+      solve_and_check( bnx , inst , "usable partial result, unchanged solve" );
+      destroy( inst );
+      }
+ }
+
+void test_partial_status_range()
+{
+ for( int status :
+      std::vector< int >{ Solver::kOK , Solver::kStopIter , Solver::kStopTime ,
+			  Solver::kCutOff , Solver::kError - 1 ,
+			  Solver::kError ,
+			  Solver::kBlockLocked , Solver::kLowPrecision } )
+  for( bool max : { false , true } )
+   for( int protocol : { 0 , 1 } )
+    for( int retain : { 0 , 1 } ) {
+     Instance inst;
+     inst.max = max;
+     inst.data = { { 0.0 , 2.0 , max ? -1.0 : 1.0 , max ? 1.0 : -1.0 } };
+     build( inst );
+     BoxPartial::result = status;
+     BoxPartial::stop = true;
+     BoxPartial::certify_partial = false;
+     BoxPartial::n_branch = 0;
+     auto bnx = new_bnx( "InnerBSCfg-partial.txt" );
+     set_int( bnx , "intBoundingProtocol" , protocol );
+     set_int( bnx , "intReoptimize" , retain );
+     inst.block->register_Solver( bnx );
+     if( status >= Solver::kOK && status < Solver::kError ) {
+      solve_and_check( bnx , inst , "status in [kOK, kError)" );
+      check( BoxPartial::n_branch > 0 ,
+	     "status in [kOK, kError): no branching" );
+      }
+     else {
+      check( bnx->compute() == status , "status outside range: was ignored" );
+      check( BoxPartial::n_branch == 0 ,
+	     "status outside range: branch() called" );
+      if( status == Solver::kLowPrecision )
+       check( bnx->has_var_solution() && std::isfinite( bnx->get_lb() ) &&
+		std::isfinite( bnx->get_ub() ) ,
+	      "kLowPrecision: valid values were discarded" );
+      else
+       check( ! bnx->has_var_solution() ,
+	      "error result: incumbent published" );
+      }
+     BoxPartial::certify_partial = true;
+     solve_and_check( bnx , inst , "status range, repeat or resume" );
+     destroy( inst );
+     }
+ }
+
+void test_missing_partial_bound()
+{
+ for( int status : std::vector< int >{ Solver::kStopIter , Solver::kStopTime ,
+				       Solver::kLowPrecision ,
+				       Solver::kCutOff ,
+				       Solver::kError - 1 } )
+  for( bool max : { false , true } )
+   for( int protocol : { 0 , 1 } )
+    for( int retain : { 0 , 1 } ) {
+     Instance inst;
+     inst.max = max;
+     inst.data = { { 0.0 , 2.0 , max ? -1.0 : 1.0 , max ? 1.0 : -1.0 } };
+     build( inst );
+     BoxPartial::result = status;
+     BoxPartial::stop = true;
+     BoxPartial::bound_available = false;
+     auto bnx = new_bnx( "InnerBSCfg-partial.txt" );
+     set_int( bnx , "intBoundingProtocol" , protocol );
+     set_int( bnx , "intReoptimize" , retain );
+     inst.block->register_Solver( bnx );
+     const int expected =
+       status == Solver::kCutOff ? Solver::kLowPrecision : status;
+     check( bnx->compute() == expected ,
+	    "partial without a bound: falsely reported a completed search" );
+     check( bnx->has_var_solution() ,
+	    "partial without a bound: incumbent lost" );
+     check( max ? bnx->get_ub() == INF : bnx->get_lb() == -INF ,
+	    "partial without a bound: falsely claimed a finite certificate" );
+     BoxPartial::bound_available = true;
+     solve_and_check( bnx , inst , "partial without a bound, resume" );
+     destroy( inst );
+     }
+ }
+
+void test_partial_child_without_solution()
+{
+ for( bool max : { false , true } )
+  for( int protocol : { 0 , 1 } )
+   for( int retain : { 0 , 1 } ) {
+    Instance inst;
+    inst.max = max;
+    inst.data = { { 0.0 , 2.0 , max ? -1.0 : 1.0 , max ? 1.0 : -1.0 } };
+    build( inst );
+    BoxPartial::result = Solver::kStopIter;
+    BoxPartial::stop = true;
+    BoxPartial::root_only = true;
+    auto bnx = new_bnx( "InnerBSCfg-partial.txt" );
+    set_int( bnx , "intBoundingProtocol" , protocol );
+    set_int( bnx , "intReoptimize" , retain );
+    inst.block->register_Solver( bnx );
+    solve_and_check_stop( bnx , inst , Solver::kStopIter ,
+			  "partial child without a branching solution" );
+    BoxPartial::root_only = false;
+    solve_and_check( bnx , inst , "partial child, resume" );
+    destroy( inst );
+    }
+ }
+
+void test_mixed_partial_results()
+{
+ class ReorderedSolver : public BranchAndXSolver
+ {
+  public:
+  void reverse_relaxations() {
+   std::reverse( f_RelaxationSolvers.begin() , f_RelaxationSolvers.end() );
+   }
+  };
+ // Exercise both raw recoverable statuses and wrappers that normalize an
+ // advanced inner result to kOK. In particular, do not hide the parallel
+ // reduction's range checks behind BoxPartial::certify_partial.
+ for( int status : std::vector< int >{ Solver::kStopIter , Solver::kStopTime ,
+				       Solver::kLowPrecision ,
+				       Solver::kCutOff ,
+				       Solver::kError - 1 } )
+  for( bool certified : { false , true } )
+   for( int protocol : { 0 , 1 } )
+    for( int threads : { 1 , 2 } )
+     for( bool reverse : { false , true } ) {
+      Instance inst;
+      inst.data = { { 0.0 , 2.0 , 1.0 , -1.0 } };
+      build( inst );
+      BoxConstantPartial::result = Solver::kStopTime;
+      BoxStrongPartial::result = Solver::kLowPrecision;
+      BoxPartial::result = status;
+      BoxPartial::stop = true;
+      BoxPartial::certify_partial = certified;
+      BoxPartial::n_branch = 0;
+      auto bnx = new ReorderedSolver;
+      bnx->set_par(
+	bnx->str_par_str2idx( "strNameOfBlockSolverConfigurationFile" ) ,
+	"InnerBSCfg-mixed-partial.txt" );
+      set_int( bnx , "intThreadForDifferentSolvers" , threads );
+      set_int( bnx , "intBoundingProtocol" , protocol );
+      inst.block->register_Solver( bnx );
+      if( reverse )
+       bnx->reverse_relaxations();
+      const std::string tag = "mixed partial status " +
+			      std::to_string( status ) +
+			      ( certified ? ", normalized" : ", raw" ) +
+			      ( protocol ? ", lazy" : ", eager" ) +
+			      ", threads=" + std::to_string( threads ) +
+			      ( reverse ? ", reversed" : ", original" );
+      if( certified || status != Solver::kLowPrecision ) {
+       solve_and_check( bnx , inst , tag );
+       check( bnx->get_evaluated_nodes() > 1 && BoxPartial::n_branch > 0 ,
+	      tag + ": no children evaluated or branching performed" );
+       }
+      else {
+       // Every solver is unresolved. The first status is reported, and the
+       // finite values remain available without branching on kLowPrecision.
+       solve_and_check_stop(
+	 bnx , inst , reverse ? Solver::kLowPrecision : Solver::kStopTime ,
+	 tag );
+       check( BoxPartial::n_branch == 0 ,
+	      tag + ": branched on kLowPrecision" );
+       check( std::abs( bnx->get_lb() + 0.25 ) < tol && bnx->get_ub() == 0 ,
+	      tag + ": partial bound or incumbent discarded" );
+       }
+      destroy( inst );
+      }
+ BoxConstantPartial::result = BoxStrongPartial::result = Solver::kStopTime;
+ BoxPartial::certify_partial = true;
+ }
 
 void test_limits( void )
 {
@@ -1260,6 +1760,60 @@ void test_integrality_change( void )
         "a Variable becoming continuous has kept the retained tree" );
  }
 
+// A recursive mutex must be probed from another thread to detect a leaked lock.
+void test_compute_unlock()
+{
+ class InspectableSolver : public BranchAndXSolver
+ {
+  public:
+  void set_state( int state ) { f_state = state; }
+  int state() const { return( f_state ); }
+  };
+ Instance inst;
+ inst.data = { { 0.0 , 2.0 , 1.0 , -1.0 } };
+ build( inst );
+ InspectableSolver bnx;
+ inst.block->register_Solver( &bnx );
+ const auto check_unlocked = [ & ]( const std::string & name ) {
+  bool acquired = false;
+  std::thread probe( [ & ] {
+   acquired = bnx.try_lock();
+   if( acquired )
+    bnx.unlock();
+   } );
+  probe.join();
+  check( acquired , name );
+  };
+
+ bnx.set_state( Solver::kStillRunning );
+ check( bnx.compute() == Solver::kError ,
+	"recursive compute: expected kError" );
+ check_unlocked( "recursive compute: Solver left locked" );
+
+ // No inner configuration: worker creation throws before allocating a tree.
+ bnx.set_state( Solver::kUnEval );
+ set_int( &bnx , "intSolveMethod" , BranchAndXSolver::DFS );
+ set_int( &bnx , "intMaxThread" , 2 );
+ bool threw = false;
+ try {
+  bnx.compute();
+  }
+ catch( const std::logic_error & ) {
+  threw = true;
+  }
+ check( threw , "worker configuration: expected exception" );
+ check( bnx.state() == Solver::kError , "exception: state is not kError" );
+ check_unlocked( "exception: Solver left locked" );
+
+ set_int( &bnx , "intMaxThread" , 1 );
+ bnx.set_par( bnx.str_par_str2idx( "strNameOfBlockSolverConfigurationFile" ) ,
+	      "InnerBSCfg.txt" );
+ check( bnx.compute() == Solver::kOK , "compute after exception: failed" );
+ check_unlocked( "successful compute: Solver left locked" );
+ inst.block->unregister_Solver( &bnx );
+ destroy( inst );
+ }
+
 }  // namespace
 
 /*--------------------------------------------------------------------------*/
@@ -1269,10 +1823,31 @@ void test_integrality_change( void )
 int main( void )
 {
  const std::vector< void ( * )( void ) > cases = {
-  test_closed_form , test_strategies , test_maximization ,
-  test_best_estimate , test_unresolved , test_heuristic , test_infeasible ,
-  test_integral_root , test_limits , test_parameters , test_detach_reattach ,
-  test_objective_change , test_integrality_change };
+  test_closed_form ,
+  test_strategies ,
+  test_maximization ,
+  test_best_estimate ,
+  test_usable_partial_results ,
+  test_heuristic ,
+  test_infeasible ,
+  test_integral_root ,
+  test_tree_log ,
+  test_limits ,
+  test_parameters ,
+  test_detach_reattach ,
+  test_objective_change ,
+  test_integrality_change ,
+  test_compute_unlock ,
+  test_bad_certificates ,
+  test_bound_only_partial_results ,
+  test_numeric_closure_bound ,
+  test_partial_results ,
+  test_partial_status_range ,
+  test_missing_partial_bound ,
+  test_partial_child_without_solution ,
+  test_mixed_partial_results ,
+  test_large_finite_incumbent
+  };
 
  for( auto c : cases ) {
   try {
