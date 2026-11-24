@@ -233,6 +233,80 @@ namespace SMSpp_di_unipi_it
  * is left. Reoptimization across compute() calls is described in
  * intReoptimize.
  *
+ * \par Cutoff probing.
+ * With intCutOffProbing the solve is a sequence of decision problems, as in
+ * Posta, Ferland and Michelon (2012): rather than waiting for the inner
+ * Solver to find an incumbent good enough for the pruning, and for the
+ * tightenings that read it (say, fixing by reduced cost), an artificial
+ * one, the target, is set close to the bound of the root, and each
+ * exploration either finds a solution better than the target or proves that
+ * there is none, in which case the target is moved away from the bound and
+ * the exploration is repeated. Let \f$ D \f$ be the bound of the root, given
+ * by its relaxations before the first exploration, and
+ * \f$ \varepsilon( v ) = \max \{ \varepsilon_a \,,\, \varepsilon_r
+ * \max \{ | v | , 1 \} \} \f$ the tolerance of the pruning against
+ * \f$ v \f$. The \f$ k \f$-th target (\f$ k = 0, 1, \ldots \f$) is
+ *  \f[
+ *    t_k = D - \Delta_0 \sum_{h = 0}^{k} \varphi^h \;,
+ *  \f]
+ * with \f$ \Delta_0 \f$ = dblCutOffProbingGap, multiplied by
+ * \f$ \max \{ | D | , 1 \} \f$ if intCutOffProbing is RelativeGap, and
+ * \f$ \varphi \f$ = dblCutOffProbingFactor \f$ \geq 1 \f$: with
+ * \f$ \varphi = 1 \f$ the target moves by the same step every time, with
+ * \f$ \varphi = 2 \f$ the step doubles. The \f$ k \f$-th exploration
+ * starts with \f$ t_k \f$ as the incumbent, i.e., it is the one with the
+ * cutoff dblLwCutOff = \f$ t_k \f$ [see set_par( double )], and since a
+ * node is fenced when \f$ D( \nu ) \leq t_k + \varepsilon( t_k ) \f$ it
+ * ends in one of two ways. Either it finds a solution better than
+ * \f$ t_k \f$, or it proves that the target is refuted, i.e., that
+ * \f$ z^* \leq u_k = t_k + \varepsilon( t_k ) \f$. In the second case
+ * the next target is tried, and every node of the next exploration, the
+ * root included, starts from the bound \f$ u_k \f$ [see f_probeBound], so
+ * that a node is fenced also when
+ * \f$ u_k \leq \bar{z} + \varepsilon( \bar{z} ) \f$, whatever its own
+ * \f$ D( \nu ) \f$ (\f$ u_{-1} = D \f$).
+ *
+ * The solve ends, and what it gives is optimal within the tolerances, in
+ * one of three ways:
+ *
+ * - The first exploration that finds a solution better than its target
+ *   \f$ t_k \f$ goes on as an ordinary one against the incumbent
+ *   \f$ \bar{z} \f$ thus found, with the bound of each node no larger than
+ *   \f$ u_{k-1} \f$; when it ends every node is fenced, hence
+ *   \f$ z^* \leq \bar{z} + \varepsilon( \bar{z} ) \f$, the same guarantee
+ *   as without probing. In particular it stops as soon as
+ *   \f$ \bar{z} \geq u_{k-1} - \varepsilon( \bar{z} ) \f$: with integer
+ *   objective values, \f$ \Delta_0 = \varphi = 1 \f$ and tolerances
+ *   below 1 this happens at the first solution found, which is the method of
+ *   Posta et al., where the target decreases by 1 at each refutation.
+ *
+ * - A target is never set beyond the true incumbent, the best of the
+ *   cutoff dblLwCutOff and of the solution that the relaxations may have
+ *   found at the root: when \f$ t_k \f$ would be, the last exploration is
+ *   the ordinary one against it, with the bound \f$ u_{k-1} \f$, and its
+ *   outcome (kCutOff or kInfeasible if it finds nothing better) is that of
+ *   the solve.
+ *
+ * - The same last exploration follows the intCutOffProbingRuns-th refuted
+ *   target, which bounds the number of explorations also on a problem with
+ *   no solution better than the cutoff, where every target is refuted.
+ *
+ * An exploration stopped by a budget (dblMaxTime bounds the whole solve)
+ * ends the solve, with a bound no smaller than the target, those of the
+ * nodes fenced against it being so. The inner Solver keep their state
+ * across the explorations (say, the multipliers of a Lagrangian Dual at the
+ * root, which make its next evaluation cheap), and so does the solution
+ * found at the root, if any; the tree is not retained [see intReoptimize].
+ * The target is the cutoff that each relaxation is given at every node and
+ * the incumbent of GlobalInformation::str_Incumbent, hence any tightening
+ * that reads them, as fixing by reduced cost, uses the target: this is
+ * the point of the method, since with an incumbent close to the bound such
+ * a tightening fixes much more, and every exploration is that much smaller.
+ * Of course, a refuted target costs a whole exploration, which the next one
+ * largely repeats: the probing pays when \f$ D - z^* \f$ is small with
+ * respect to the gap between \f$ D \f$ and the incumbents that the inner
+ * Solver find.
+ *
  * \par References.
  * E. L. Lawler, D. E. Wood, "Branch-and-bound methods: a survey",
  * Operations Research 14(4):699-719, 1966. \n
@@ -250,7 +324,10 @@ namespace SMSpp_di_unipi_it
  * Methodologies and Applications in Operations Research, Springer, 2005. \n
  * B. Archibald, P. Maier, C. McCreesh, R. Stewart, P. Trinder, "Replicable
  * parallel branch and bound search", Journal of Parallel and Distributed
- * Computing 113:92-114, 2018. */
+ * Computing 113:92-114, 2018. \n
+ * M. Posta, J. A. Ferland, P. Michelon, "An exact method with variable
+ * fixing for solving the generalized assignment problem", Computational
+ * Optimization and Applications 52(3):629-644, 2012. */
 
 class BranchAndXSolver : public Solver {
 
@@ -305,7 +382,17 @@ class BranchAndXSolver : public Solver {
   intPBeFSBudget ,                  ///< the spawn budget of PBeFS
   intPBeFSSplitShared ,             ///< the SelfSplit of PBeFS shares
   intPBeFSRaceNodes ,               ///< the nodes of a racer of PBeFS
+  intCutOffProbing ,                ///< the scheme of the cutoff probing
+  intCutOffProbingRuns ,            ///< max refuted targets of the probing
   intLastBXSPar                     ///< first allowed new int parameter
+  };
+
+ /// public enum for the double algorithmic parameters
+
+ enum dbl_par_type_BXS {
+  dblCutOffProbingGap = dblLastAlgPar ,  ///< first step of the probing
+  dblCutOffProbingFactor ,               ///< growth of the step
+  dblLastBXSPar                          ///< first allowed new dbl parameter
   };
 
  /// public enum for the vector-of-int algorithmic parameters
@@ -345,6 +432,15 @@ class BranchAndXSolver : public Solver {
  enum TreeExplorer {
   OwnExplorer = 0 ,                 ///< the explorations of this class
   PBeFS = 1                         ///< the branch-and-bound of PBeFS
+  };
+
+/*--------------------------------------------------------------------------*/
+ /// public enum for the schemes of the cutoff probing [see intCutOffProbing]
+
+ enum CutOffProbing {
+  NoProbing = 0 ,                   ///< one exploration against the cutoff
+  AbsoluteGap = 1 ,                 ///< first step dblCutOffProbingGap
+  RelativeGap = 2                   ///< the same times max( | D | , 1 )
   };
 
 /*--------------------------------------------------------------------------*/
@@ -515,6 +611,16 @@ class BranchAndXSolver : public Solver {
   * - intPBeFSRaceNodes [0]: the nodes that each racer of PBeFS evaluates at
   *   most [see vintPBeFSRace]; <= 0 means the default of PBeFS.
   *
+  * - intCutOffProbing [NoProbing]: the scheme of the cutoff probing (see
+  *   CutOffProbing), by which the solve is a sequence of explorations, each
+  *   against a target incumbent moved away from the bound of the root after
+  *   each one that proves it too good [see the class description].
+  *
+  * - intCutOffProbingRuns [100]: the targets that the cutoff probing may
+  *   find refuted before the last exploration, which is against the true
+  *   cutoff; <= 0 means no limit, with which a problem with no solution
+  *   better than the cutoff is explored with ever worse targets forever.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -568,6 +674,15 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSRaceNodes ):
     pbefsRaceNodes = std::max( 0 , value );
     break;
+   case( intCutOffProbing ):
+    if( ( value < NoProbing ) || ( value > RelativeGap ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "invalid intCutOffProbing" ) );
+    probing = static_cast< CutOffProbing >( value );
+    break;
+   case( intCutOffProbingRuns ):
+    probingRuns = std::max( 0 , value );
+    break;
    default:
     Solver::set_par( par , value );
    }
@@ -594,7 +709,18 @@ class BranchAndXSolver : public Solver {
   *   against it until a better solution is found; if none is, compute()
   *   returns kCutOff with no solution, and get_lb() (get_ub() when
   *   maximizing) gives the cutoff. A change of it discards the tree retained
-  *   for reoptimization, which may have been pruned against the old one. */
+  *   for reoptimization, which may have been pruned against the old one.
+  *
+  * The double parameters specific of BranchAndXSolver are those of the
+  * cutoff probing [see intCutOffProbing and the class description]:
+  *
+  * - dblCutOffProbingGap [1]: \f$ \Delta_0 > 0 \f$, the distance of the
+  *   first target from the bound of the root, absolute or relative to it
+  *   as intCutOffProbing says; 1 is the step of the integer objective
+  *   values.
+  *
+  * - dblCutOffProbingFactor [1]: \f$ \varphi \geq 1 \f$, the factor by
+  *   which the step of the target grows at each refuted target. */
 
  void set_par( idx_type par , double value ) override {
   switch( par ) {
@@ -616,6 +742,18 @@ class BranchAndXSolver : public Solver {
     if( value != lwCutOff )
      changes = Modification::eModAll;
     lwCutOff = value;
+    break;
+   case( dblCutOffProbingGap ):
+    if( ! ( value > 0 ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "dblCutOffProbingGap must be positive" ) );
+    probingGap = value;
+    break;
+   case( dblCutOffProbingFactor ):
+    if( ! ( value >= 1 ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "dblCutOffProbingFactor must be at least 1" ) );
+    probingFactor = value;
     break;
    default:
     Solver::set_par( par , value );
@@ -848,6 +986,10 @@ class BranchAndXSolver : public Solver {
   return( idx_type( intLastBXSPar ) );
   }
 
+ [[nodiscard]] idx_type get_num_dbl_par( void ) const override {
+  return( idx_type( dblLastBXSPar ) );
+  }
+
  [[nodiscard]] idx_type get_num_str_par( void ) const override {
   return( idx_type( strLastBXSPar ) );
   }
@@ -874,8 +1016,18 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSBudget ):               return( 0 );
    case( intPBeFSSplitShared ):          return( 0 );
    case( intPBeFSRaceNodes ):            return( 0 );
+   case( intCutOffProbing ):             return( int( NoProbing ) );
+   case( intCutOffProbingRuns ):         return( 100 );
    }
   return( Solver::get_dflt_int_par( par ) );
+  }
+
+ [[nodiscard]] double get_dflt_dbl_par( idx_type par ) const override {
+  switch( par ) {
+   case( dblCutOffProbingGap ):    return( 1 );
+   case( dblCutOffProbingFactor ): return( 1 );
+   }
+  return( Solver::get_dflt_dbl_par( par ) );
   }
 
  [[nodiscard]] const std::vector< int > & get_dflt_vint_par( idx_type par )
@@ -922,6 +1074,8 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSBudget ):               return( pbefsBudget );
    case( intPBeFSSplitShared ):          return( pbefsSplitShared ? 1 : 0 );
    case( intPBeFSRaceNodes ):            return( pbefsRaceNodes );
+   case( intCutOffProbing ):             return( int( probing ) );
+   case( intCutOffProbingRuns ):         return( probingRuns );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -947,6 +1101,8 @@ class BranchAndXSolver : public Solver {
    case( dblAbsAcc ):  return( absAcc );
    case( dblUpCutOff ): return( upCutOff );
    case( dblLwCutOff ): return( lwCutOff );
+   case( dblCutOffProbingGap ):    return( probingGap );
+   case( dblCutOffProbingFactor ): return( probingFactor );
    }
   return( Solver::get_dbl_par( par ) );
   }
@@ -984,7 +1140,20 @@ class BranchAndXSolver : public Solver {
    return( intPBeFSSplitShared );
   if( name == "intPBeFSRaceNodes" )
    return( intPBeFSRaceNodes );
+  if( name == "intCutOffProbing" )
+   return( intCutOffProbing );
+  if( name == "intCutOffProbingRuns" )
+   return( intCutOffProbingRuns );
   return( Solver::int_par_str2idx( name ) );
+  }
+
+ [[nodiscard]] idx_type dbl_par_str2idx( const std::string & name )
+  const override {
+  if( name == "dblCutOffProbingGap" )
+   return( dblCutOffProbingGap );
+  if( name == "dblCutOffProbingFactor" )
+   return( dblCutOffProbingFactor );
+  return( Solver::dbl_par_str2idx( name ) );
   }
 
  [[nodiscard]] idx_type str_par_str2idx( const std::string & name )
@@ -1022,10 +1191,21 @@ class BranchAndXSolver : public Solver {
                                       "intPBeFSSpawnDepth" ,
                                       "intPBeFSBudget" ,
                                       "intPBeFSSplitShared" ,
-                                      "intPBeFSRaceNodes" };
+                                      "intPBeFSRaceNodes" ,
+                                      "intCutOffProbing" ,
+                                      "intCutOffProbingRuns" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
+  }
+
+ [[nodiscard]] const std::string & dbl_par_idx2str( idx_type idx )
+  const override {
+  static const std::string pars[] = { "dblCutOffProbingGap" ,
+                                      "dblCutOffProbingFactor" };
+  if( ( idx >= dblCutOffProbingGap ) && ( idx < dblLastBXSPar ) )
+   return( pars[ idx - dblCutOffProbingGap ] );
+  return( Solver::dbl_par_idx2str( idx ) );
   }
 
  [[nodiscard]] const std::string & str_par_idx2str( idx_type idx )
@@ -1415,6 +1595,27 @@ class BranchAndXSolver : public Solver {
  int treeSolve( std::mutex & globalMutex );
 
 /*--------------------------------------------------------------------------*/
+ /// one exploration of the tree, by the explorer and the strategy asked
+ /** The branch-and-bound of PBeFS [see PBeFSSolve()] if intTreeExplorer
+  * says so, the parallel depth-first exploration [see ParallelDFSSolve()]
+  * if the strategy is DFS on more than one thread, and the serial one [see
+  * treeSolve()] otherwise; it starts from the incumbent in f_incumbentCell
+  * and from the bound f_probeBound. */
+
+ int runExploration( std::mutex & globalMutex );
+
+/*--------------------------------------------------------------------------*/
+ /// the sequence of explorations of the cutoff probing
+ /** Evaluates the relaxations of the root, out of which the first target,
+  * then runs an exploration [see runExploration()] per target, until one
+  * finds a solution better than its target or is the last one, as the
+  * class description details; returns the sol_type of that exploration,
+  * and that of the only one if the root is infeasible, fenced or
+  * inconclusive, or has no finite bound. */
+
+ int probeCutOff( std::mutex & globalMutex );
+
+/*--------------------------------------------------------------------------*/
  /// the single serial tree exploration, driven by the open-list discipline
  /** The one exploration loop shared by every (serial) strategy: it
   * repeatedly takes the next node from \p open [see OpenList], moves the
@@ -1593,6 +1794,22 @@ class BranchAndXSolver : public Solver {
  int pbefsRaceNodes = 0;   ///< see intPBeFSRaceNodes
 
  std::vector< int > pbefsRace;  ///< see vintPBeFSRace
+
+ CutOffProbing probing = NoProbing;  ///< see intCutOffProbing
+
+ int probingRuns = 100;              ///< see intCutOffProbingRuns
+
+ double probingGap = 1;              ///< see dblCutOffProbingGap
+
+ double probingFactor = 1;           ///< see dblCutOffProbingFactor
+
+ /// the bound that every root of the current exploration starts from
+ /** In the sense of the Block, the infinity that any bound improves upon
+  * but in the explorations of the cutoff probing, where it is
+  * \f$ u_{k-1} \f$, the bound of the root or that proven by the last
+  * refuted target [see the class description]: the children inherit it,
+  * so that it is the bound of a node whose relaxation gives a worse one. */
+ double f_probeBound = 0;
 
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
 

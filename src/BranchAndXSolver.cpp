@@ -595,7 +595,8 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
 /** The root is fenced with the same tolerances \p relAcc and \p absAcc as
  * any other node [see cannot_improve()]: with none, a root whose bound is
  * the value of its own true solution up to the accuracy of the relaxation
- * would be branched, with nothing left to branch upon. */
+ * would be branched, with nothing left to branch upon. The root starts
+ * from the bound \p floor [see BranchAndXSolver::f_probeBound]. */
 
 static int initializeRoot(
                   std::vector< std::pair< RelaxationSolver * ,
@@ -608,9 +609,10 @@ static int initializeRoot(
                   const Deadline deadline ,
                   RelaxationSolver * & branchSolver ,
                   std::mutex & globalMutex ,
-                  double relAcc , double absAcc )
+                  double relAcc , double absAcc , double floor )
 {
  rootNode->initializeBound( minimizing );
+ rootNode->set_bound( floor );
  rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
@@ -949,9 +951,9 @@ struct BXContext {
  using Heuristics = std::vector< std::pair< ChangeSolver * , Solver * > >;
 
  BXContext( double rt , double at , bool min , bool e , bool l ,
-            std::mutex & gm , Deadline d )
+            std::mutex & gm , Deadline d , double f )
   : relTol( rt ) , absTol( at ) , minimizing( min ) , eager( e ) ,
-    lifo( l ) , globalMutex( gm ) , deadline( d ) {}
+    lifo( l ) , globalMutex( gm ) , deadline( d ) , floor( f ) {}
 
  double relTol;                          ///< the relative tolerance
  double absTol;                          ///< the absolute tolerance
@@ -960,6 +962,7 @@ struct BXContext {
  bool lifo;                              ///< the first branch last
  std::mutex & globalMutex;               ///< of the BranchAndXSolver
  Deadline deadline;                      ///< the end of the time budget
+ double floor;                           ///< the bound the root starts from
  /// the bounds of the nodes set aside unresolved, under unresolvedMutex
  std::vector< double > unresolved;
  std::mutex unresolvedMutex;             ///< of unresolved
@@ -1186,7 +1189,7 @@ struct BXTree {
 
  [[nodiscard]] node_type root( void ) const {
   auto r = std::make_shared< BXLink >();
-  r->bound = c.minimizing ? - Inf< double >() : Inf< double >();
+  r->bound = c.floor;
   return( r );
   }
 
@@ -1306,7 +1309,7 @@ int BranchAndXSolver::compute( bool changedvars )
  // incumbents: forbid it in that case, allow it otherwise [see
  // GlobalInformation::local_fixing_allowed()]
  f_lfaCell->store( ! ( ( reoptimize > 0 ) && ( ! parallelDFS ) &&
-                       ( ! astar ) ) );
+                       ( ! astar ) && ( ! probing ) ) );
 
  // nothing changed since the last solve, which has ended: its answer
  // stands; one stopped by a budget goes on instead [see Solver::kStopTime]
@@ -1325,7 +1328,7 @@ int BranchAndXSolver::compute( bool changedvars )
   // different Modification or-ed together (an added Variable and an added
   // Constraint, say) may read as one that the tree does not survive
   if( ( changes == Modification::eModAll ) || ( ! reoptimize ) ||
-      parallelDFS || astar )
+      parallelDFS || astar || probing )
    discardRetainedTree();
 
   bestBound = no_incumbent();
@@ -1333,18 +1336,16 @@ int BranchAndXSolver::compute( bool changedvars )
   // but the cutoff, if any, which the nodes are pruned against as if it were
   // one [see start_incumbent()]
   f_incumbentCell->store( start_incumbent() );
-  // one exploration, parameterized by the open set that the strategy asks
-  // for [see treeSolve()]; the only separate one is the parallel depth-first,
-  // which runs its own workers [see ParallelDFSSolve()]
-  // an exception (say, a Block that the parallel exploration cannot copy)
-  // leaves the Solver unlocked, and in error
+  // no bound known but those of the nodes [see f_probeBound]
+  f_probeBound = ( f_Block->get_objective_sense() == Objective::eMax )
+                 ? Inf< double >() : - Inf< double >();
+  // one exploration [see runExploration()], or the sequence of those of
+  // the cutoff probing [see probeCutOff()]; an exception (say, a Block that
+  // the parallel exploration cannot copy) leaves the Solver unlocked, and
+  // in error
   try {
-   if( astar )
-    f_state = PBeFSSolve( globalMutex , get_int_par( intMaxThread ) );
-   else
-    f_state = parallelDFS ? ParallelDFSSolve( globalMutex ,
-                                              get_int_par( intMaxThread ) )
-                          : treeSolve( globalMutex );
+   f_state = probing ? probeCutOff( globalMutex )
+                     : runExploration( globalMutex );
    }
   catch( ... ) {
    f_state = kError;
@@ -1377,6 +1378,92 @@ int BranchAndXSolver::compute( bool changedvars )
 
  }  // end( BranchAndXSolver::compute )
 
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::runExploration( std::mutex & globalMutex )
+{
+ // one exploration, parameterized by the open set that the strategy asks
+ // for [see treeSolve()]; the only separate ones are the parallel
+ // depth-first, which runs its own workers [see ParallelDFSSolve()], and
+ // the branch-and-bound of PBeFS [see PBeFSSolve()]
+ if( treeExplorer != OwnExplorer )
+  return( PBeFSSolve( globalMutex , get_int_par( intMaxThread ) ) );
+ if( ( solveType == DFS ) && ( get_int_par( intMaxThread ) > 1 ) )
+  return( ParallelDFSSolve( globalMutex , get_int_par( intMaxThread ) ) );
+ return( treeSolve( globalMutex ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::probeCutOff( std::mutex & globalMutex )
+{
+ // the values are those of the Block times sign, so that they are minimized
+ const bool minimizing =
+  ( f_Block->get_objective_sense() != Objective::eMax );
+ const double sign = minimizing ? 1 : -1;
+
+ // the bound D of the root, out of its relaxations [see computeRelaxations()]
+ DFSNode root( nullptr );
+ root.initializeBound( minimizing );
+ root.set_evaluated( true );
+ bool toPrune = false;
+ RelaxationSolver * branchSolver = nullptr;
+ f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+ const int res = computeRelaxations( &f_RelaxationSolvers , &root ,
+                                     minimizing , bestBound , bestSolution ,
+                                     f_incumbentCell , f_deadline , toPrune ,
+                                     branchSolver , relTol , absTol , 1 ,
+                                     &globalMutex );
+ const double D = sign * root.get_bound();
+
+ // nothing to probe if the root is infeasible, fenced or inconclusive, or
+ // has no finite bound: the exploration says which is the case
+ if( ( res != kOK ) || toPrune || ( ! std::isfinite( D ) ) )
+  return( runExploration( globalMutex ) );
+
+ // the tolerance by which a node is pruned against the value v [see
+ // cannot_improve()]
+ const double absEps = ( absTol == Inf< double >() ) ? 0 : absTol;
+ const auto eps = [ & ]( double v ) {
+  return( std::max( absEps , relTol * std::max( std::abs( v ) , 1.0 ) ) );
+  };
+
+ double delta = probingGap;
+ if( probing == RelativeGap )
+  delta *= std::max( std::abs( D ) , 1.0 );
+ double target = D + delta;
+ double proven = D;
+
+ for( int refuted = 0 ; ; ++refuted ) {
+  // the incumbent: the best of the cutoff and of the solution found, if any
+  const double zbar = sign * f_incumbentCell->load();
+  const bool last = ( target >= zbar ) ||
+                    ( ( probingRuns > 0 ) && ( refuted >= probingRuns ) );
+  if( ! last )
+   f_incumbentCell->store( sign * target );
+  f_probeBound = sign * proven;
+  const double found = bestBound;
+  const int z = runExploration( globalMutex );
+  if( last )
+   return( z );
+  if( bestBound != found )  // a solution better than the target: optimal
+   return( z );
+  // the target is no incumbent: the cell is given back the true one
+  f_incumbentCell->store( sign * zbar );
+  if( z != kOK ) {
+   // stopped by a budget: the nodes fenced against the target have bounds
+   // no better than it, the open ones say the rest
+   f_open_bound = sign * std::min( sign * f_open_bound , target );
+   return( z );
+   }
+  // no solution better than the target, which is now a valid bound but
+  // for the tolerance the nodes were fenced with
+  proven = target - eps( target );
+  delta *= probingFactor;
+  target += delta;
+  }
+ }  // end( BranchAndXSolver::probeCutOff )
 
 /*--------------------------------------------------------------------------*/
 
@@ -1872,7 +1959,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  // the tree is retained for reoptimization whatever the strategy [see
  // intReoptimize]: a re-solve re-seeds from the frontier of the retained
  // tree, in the order that the open set of this very strategy dictates
- const bool retain = ( reoptimize > 0 );
+ const bool retain = ( reoptimize > 0 ) && ( ! probing );
  int res;
  ExploringNode * currentNode;
  if( f_treeRoot ) {
@@ -1883,6 +1970,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
   if( boundingProtocol == Lazy ) {
    // like any other node, the root is evaluated when it is extracted
    rootNode->initializeBound( minimizing );
+   rootNode->set_bound( f_probeBound );
    res = Solver::kOK;
    }
   else {
@@ -1890,7 +1978,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                          rootNode , minimizing , bestBound , bestSolution ,
                          f_incumbentCell , f_deadline , branchSolver ,
-                         globalMutex , relTol , absTol );
+                         globalMutex , relTol , absTol , f_probeBound );
    }
   if( res == Solver::kOK )
    open.push( rootNode );
@@ -2016,7 +2104,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
                            rootNode , minimizing , bestBound , bestSolution ,
                            f_incumbentCell , f_deadline , branchSolver ,
-                           globalMutex , relTol , absTol );
+                           globalMutex , relTol , absTol , f_probeBound );
  if( res != Solver::kOK ) {
   if( inconclusive( res ) )        // the bound of the root, if any
    f_open_bound = rootNode->get_bound();
@@ -2295,7 +2383,7 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   ( f_Block->get_objective_sense() != Objective::eMax );
  BXContext c( relTol , absTol , minimizing , boundingProtocol == Eager ,
               ( solveType == DFS ) || ( solveType == BestFSDive ) ,
-              globalMutex , f_deadline );
+              globalMutex , f_deadline , f_probeBound );
  for( auto & ws : v_workerSolvers ) {
   c.relaxation.push_back( & ws.relaxation );
   c.heuristic.push_back( & ws.heuristic );
@@ -2336,8 +2424,8 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
  if( pbefsBudget > 0 )
   o.budget = std::uint64_t( pbefsBudget );
  o.split_shared = pbefsSplitShared;
- if( start_incumbent() != no_incumbent() )
-  o.incumbent = c.sign() * start_incumbent();
+ if( f_incumbentCell->load() != no_incumbent() )
+  o.incumbent = c.sign() * f_incumbentCell->load();
 
  const BXTree t{ c };
  const auto s = PB::parallel_branch_and_bound( t ,

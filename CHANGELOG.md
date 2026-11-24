@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker of the parallel explorations but the first, so that the racers
   (and the workers) may have differently configured inner Solver
 
+- the cutoff probing, by `intCutOffProbing`, `intCutOffProbingRuns`,
+  `dblCutOffProbingGap` and `dblCutOffProbingFactor`: the solve is a
+  sequence of explorations, each against a target incumbent close to the
+  bound of the root, which the relaxations are given as their cutoff, and
+  moved away from it after each exploration that proves no solution better
+  than it, until one finds a solution, whose optimality the bound proven by
+  the last refuted target makes quicker to prove
+
 ### Changed
 
 - the makefiles give the shared library of the module by default, a DLL on
