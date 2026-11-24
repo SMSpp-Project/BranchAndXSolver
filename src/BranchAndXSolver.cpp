@@ -596,7 +596,7 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
  * any other node [see cannot_improve()]: with none, a root whose bound is
  * the value of its own true solution up to the accuracy of the relaxation
  * would be branched, with nothing left to branch upon. The root starts
- * from the bound \p floor [see BranchAndXSolver::f_probeBound]. */
+ * from the bound \p rootBound [see BranchAndXSolver::f_probeBound]. */
 
 static int initializeRoot(
                   std::vector< std::pair< RelaxationSolver * ,
@@ -609,10 +609,10 @@ static int initializeRoot(
                   const Deadline deadline ,
                   RelaxationSolver * & branchSolver ,
                   std::mutex & globalMutex ,
-                  double relAcc , double absAcc , double floor )
+                  double relAcc , double absAcc , double rootBound )
 {
  rootNode->initializeBound( minimizing );
- rootNode->set_bound( floor );
+ rootNode->set_bound( rootBound );
  rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
@@ -953,7 +953,7 @@ struct BXContext {
  BXContext( double rt , double at , bool min , bool e , bool l ,
             std::mutex & gm , Deadline d , double f )
   : relTol( rt ) , absTol( at ) , minimizing( min ) , eager( e ) ,
-    lifo( l ) , globalMutex( gm ) , deadline( d ) , floor( f ) {}
+    lifo( l ) , globalMutex( gm ) , deadline( d ) , rootBound( f ) {}
 
  double relTol;                          ///< the relative tolerance
  double absTol;                          ///< the absolute tolerance
@@ -962,7 +962,7 @@ struct BXContext {
  bool lifo;                              ///< the first branch last
  std::mutex & globalMutex;               ///< of the BranchAndXSolver
  Deadline deadline;                      ///< the end of the time budget
- double floor;                           ///< the bound the root starts from
+ double rootBound;                       ///< the bound the root starts from
  /// the bounds of the nodes set aside unresolved, under unresolvedMutex
  std::vector< double > unresolved;
  std::mutex unresolvedMutex;             ///< of unresolved
@@ -1189,7 +1189,7 @@ struct BXTree {
 
  [[nodiscard]] node_type root( void ) const {
   auto r = std::make_shared< BXLink >();
-  r->bound = c.floor;
+  r->bound = c.rootBound;
   return( r );
   }
 
