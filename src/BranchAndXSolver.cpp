@@ -1019,6 +1019,7 @@ class BXWorker {
  template< class F >
  void branch( const BXNode & n , F && f ) {
   std::vector< std::shared_ptr< BXLink > > kids;
+  kids.reserve( n->branches.size() );
   for( std::size_t i = 0 ; i < n->branches.size() ; ++i ) {
    auto k = std::make_shared< BXLink >();
    k->change = n->branches[ i ];
@@ -1107,16 +1108,22 @@ class BXWorker {
 
  // moves the Solver from their node to n (nullptr is the root): up to the
  // deepest common ancestor by the undo Changes, then down by the Changes,
- // the first Solver giving the undo Change [see moveBetweenNodes()]
+ // the first Solver giving the undo Change [see moveBetweenNodes()]; the
+ // common ancestor is found climbing from n only until a node sits in the
+ // path at the position of its depth, the path being a chain from the root,
+ // so that a move costs its own steps rather than the depth of n
  void move_to( const std::shared_ptr< BXLink > & n ) {
-  std::vector< std::shared_ptr< BXLink > > target;
-  for( auto x = n ; x && x->change ; x = x->parent )
-   target.push_back( x );
-  std::reverse( target.begin() , target.end() );
-  std::size_t k = 0;
-  while( ( k < v_path.size() ) && ( k < target.size() ) &&
-         ( v_path[ k ].first == target[ k ] ) )
-   ++k;
+  v_down.clear();
+  const std::shared_ptr< BXLink > * x = & n;
+  for( ; * x && ( * x )->change ; x = & ( * x )->parent ) {
+   const auto d = std::size_t( ( * x )->depth );
+   if( ( d >= 1 ) && ( d <= v_path.size() ) &&
+       ( v_path[ d - 1 ].first.get() == x->get() ) )
+    break;
+   v_down.push_back( x );
+   }
+  const std::size_t k = ( * x && ( * x )->change )
+                        ? std::size_t( ( * x )->depth ) : 0;
   while( v_path.size() > k ) {
    Change * undo = v_path.back().second;
    for( auto s : f_solvers )
@@ -1124,17 +1131,18 @@ class BXWorker {
    delete undo;
    v_path.pop_back();
    }
-  for( ; k < target.size() ; ++k ) {
+  for( auto it = v_down.rbegin() ; it != v_down.rend() ; ++it ) {
+   const std::shared_ptr< BXLink > & y = ** it;
    Change * undo = nullptr;
    bool first = true;
    for( auto s : f_solvers ) {
     if( first )
-     undo = s->apply( target[ k ]->change.get() , true );
+     undo = s->apply( y->change.get() , true );
     else
-     s->apply( target[ k ]->change.get() , false );
+     s->apply( y->change.get() , false );
     first = false;
     }
-   v_path.emplace_back( target[ k ] , undo );
+   v_path.emplace_back( y , undo );
    }
   }
 
@@ -1143,6 +1151,9 @@ class BXWorker {
  std::list< ChangeSolver * > f_solvers;         ///< its Solver
  /// the nodes from the root to that of the Solver, with the undo Changes
  std::vector< std::pair< std::shared_ptr< BXLink > , Change * > > v_path;
+ /// the nodes that a move descends, deepest first, as the pointers that
+ /// hold them (n, or the parent of a node of the move) [see move_to()]
+ std::vector< const std::shared_ptr< BXLink > * > v_down;
  /// by synchronous rounds, the incumbent of the worker [see cutoff()]: its
  /// value, the solution found by the node being evaluated, if any, and the
  /// value as the cell that evaluateNode() reads
