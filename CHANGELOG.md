@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- a child starts from the bound that the RelaxationSolver that branched
+  gives of it, if it is a `BranchBounder` of SMS++ and the bound is better
+  than that of the parent, and in the serial exploration the children are
+  taken best bound first and, unless the tree is retained, those that cannot
+  improve the incumbent are pruned before their evaluation, whose number
+  the log gives
+
 - the value `GlobalInformation::str_BestBound` that the relaxations read is
   the global relaxation bound of the exploration under way, the best among
   the bounds of the open nodes, of the node being evaluated and of those set

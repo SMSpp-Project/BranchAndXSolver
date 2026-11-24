@@ -35,6 +35,7 @@
 #include <cmath>
 #include <deque>
 #include <memory>
+#include <numeric>
 #include <set>
 #include <stack>
 #include <thread>
@@ -1370,6 +1371,7 @@ int BranchAndXSolver::compute( bool changedvars )
   return( kError );
  f_state = kStillRunning;
  f_evaluated_nodes.store( 0 , std::memory_order_relaxed );
+ f_bounded_children = 0;
  // no bound until an exploration says otherwise [see explore()]
  f_open_bound = ( f_Block->get_objective_sense() == Objective::eMax )
                 ? Inf< double >() : - Inf< double >();
@@ -1475,9 +1477,13 @@ int BranchAndXSolver::compute( bool changedvars )
 
  // The summary also covers an eager root closed without entering explore(),
  // and the parallel search, whose worker nodes do not use the serial CSV log.
- if( f_log )
+ if( f_log ) {
   ( *f_log ) << "[BranchAndXSolver] nodes_evaluated="
              << get_evaluated_nodes() << std::endl;
+  if( f_bounded_children )
+   ( *f_log ) << "[BranchAndXSolver] children_pruned_by_bound="
+              << f_bounded_children << std::endl;
+  }
 
  changes = 0;
  unlock();
@@ -1830,16 +1836,43 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                           minimizing , relTol , absTol ) ) ) {
    auto & branches = currentNode->getBranches();
    kept.clear();         // survivors, pushed after the loop
-   for( std::size_t i = 0 ; i < branches.size() ; ++i ) {
+   // with the bounds of the children given by the RelaxationSolver that
+   // branched [see BranchBounder], the children are taken best bound first
+   // and, unless the tree is retained, those known to be empty or that
+   // cannot improve the incumbent are pruned without being created
+   const bool bounded = currentNode->has_child_bounds();
+   std::vector< std::size_t > order( branches.size() );
+   std::iota( order.begin() , order.end() , std::size_t( 0 ) );
+   if( bounded )
+    std::stable_sort( order.begin() , order.end() ,
+                      [ & ]( std::size_t a , std::size_t b ) {
+     const double ba = currentNode->child_bound( a , minimizing );
+     const double bb = currentNode->child_bound( b , minimizing );
+     return( minimizing ? ba < bb : ba > bb );
+     } );
+   for( const std::size_t i : order ) {
+    const double childBound = currentNode->child_bound( i , minimizing );
+    if( bounded && ( ! retain ) &&
+        ( ( childBound == ( minimizing ? Inf< double >()
+                                       : - Inf< double >() ) ) ||
+          cannot_improve( childBound , f_incumbentCell->load() , minimizing ,
+                          relTol , absTol ) ) ) {
+     ++f_bounded_children;
+     delete branches[ i ];
+     branches[ i ] = nullptr;
+     continue;
+     }
     ExploringNode * new_node = new ExploringNode( branches[ i ] ,
                                                   currentNode ,
                                                   currentNode->get_level()
                                                   + 1 , ++counter );
     // the relaxation bound of the parent is valid for the child, whose region
-    // is a part of that of the parent: the child starts from it, and its own
-    // evaluation can only improve it; the estimate is the one given by the
-    // RelaxationSolver that branched, if any [see BranchEstimator]
-    new_node->set_bound( currentNode->get_bound() );
+    // is a part of that of the parent: the child starts from it, or from the
+    // better one given by the RelaxationSolver that branched, if any [see
+    // BranchBounder], and its own evaluation can only improve it; the
+    // estimate is the one given by the RelaxationSolver that branched, if any
+    // [see BranchEstimator]
+    new_node->set_bound( childBound );
     new_node->set_estimate( currentNode->child_estimate( i ) );
     if( boundingProtocol == Lazy ) {
      // the child is not evaluated now: it goes into the open set carrying the
