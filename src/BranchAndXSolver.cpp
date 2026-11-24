@@ -1565,13 +1565,16 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
       cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
                       minimizing , relTol , absTol ) ) {
    prunedHere = true;
-   logNode( f_log , iterations , currentNode , bestBound ,
+   if( f_log )
+    logNode( f_log , iterations , currentNode , bestBound ,
 	    std::chrono::duration< double >(
 	     std::chrono::high_resolution_clock::now() - start ).count() ,
 	    0 , true );
    }
   else if( ! currentNode->is_evaluated() ) {
-   auto evalStart = std::chrono::high_resolution_clock::now();
+   decltype( start ) evalStart;  // the clock is read for the log only
+   if( f_log )
+    evalStart = std::chrono::high_resolution_clock::now();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
                        &f_HeuristicSolvers , minimizing , bestBound ,
@@ -1593,7 +1596,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     }
    if( ! prunedHere )
     currentNode->obtainBranchList( branchSolver );
-   logNode( f_log , iterations , currentNode , bestBound ,
+   if( f_log )
+    logNode( f_log , iterations , currentNode , bestBound ,
 	    std::chrono::duration< double >(
 	     std::chrono::high_resolution_clock::now() - start ).count() ,
 	    std::chrono::duration< double >(
@@ -1633,7 +1637,9 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      continue;
      }
     bool toPrune = false;
-    auto evalStart = std::chrono::high_resolution_clock::now();
+    decltype( start ) evalStart;  // the clock is read for the log only
+    if( f_log )
+     evalStart = std::chrono::high_resolution_clock::now();
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
@@ -1651,7 +1657,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      discardTree( rootNode , open , solvers , currentNode );
      return( res );
      }
-    logNode( f_log , iterations , new_node , bestBound ,
+    if( f_log )
+     logNode( f_log , iterations , new_node , bestBound ,
 	     std::chrono::duration< double >(
 	      std::chrono::high_resolution_clock::now() - start ).count() ,
 	     std::chrono::duration< double >(
