@@ -2010,6 +2010,16 @@ class OpenList {
 
  [[nodiscard]] virtual bool isLIFO( void ) const { return( false ); }
 
+ /// the relaxation bound of the next node, if the nodes come by their bound
+ /** Writes in \p bound that of the node that pop() gives next and returns
+  * true if no open node has a better relaxation bound, i.e., if the list
+  * gives the nodes best bound first; returns false otherwise, and for an
+  * empty list. */
+
+ [[nodiscard]] virtual bool next_bound( double & bound ) const {
+  return( false );
+  }
+
  };  // end( class( OpenList ) )
 
 /*--------------------------------------------------------------------------*/

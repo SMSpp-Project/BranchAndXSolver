@@ -766,7 +766,8 @@ class PriorityOpenList final : public OpenList {
 
  public:
 
- explicit PriorityOpenList( Cmp cmp ) : c( std::move( cmp ) ) {}
+ explicit PriorityOpenList( Cmp cmp )
+  : by_bound( ! cmp.estimate ) , c( std::move( cmp ) ) {}
 
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
 
@@ -778,7 +779,16 @@ class PriorityOpenList final : public OpenList {
   return( node );
   }
 
+ [[nodiscard]] bool next_bound( double & bound ) const override {
+  if( ( ! by_bound ) || c.empty() )
+   return( false );
+  bound = c.top()->get_bound();
+  return( true );
+  }
+
  private:
+
+ bool by_bound;  ///< ordered by the bounds, not by the estimates
 
  std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
   c;
@@ -1524,10 +1534,20 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  ExploringNode * oldNode = nullptr;
  int iterations = 0;      // extractions from the open set, for the log
  std::vector< ExploringNode * > kept;  // surviving children of a node
+ // whether the loop stopped at a node whose bound cannot improve the
+ // incumbent, which the open set gives best bound first: none of the open
+ // nodes can, and they are all fenced as they would be at their pop
+ bool fenced = false;
 
  while( ( ! open.empty() ) && ( nodeBudget > 1 ) &&
         ( timeBudget > std::chrono::duration< double >(
            std::chrono::high_resolution_clock::now() - start ).count() ) ) {
+  if( double next ; open.next_bound( next ) &&
+      cannot_improve( next , f_incumbentCell->load() , minimizing , relTol ,
+                      absTol ) ) {
+   fenced = true;
+   break;
+   }
   nodeBudget--;
   ++iterations;
   oldNode = currentNode;
@@ -1713,13 +1733,17 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 
  // the nodes left open when a budget stops the loop are taken out of the
  // open set: the exploration is complete only if none of them can improve
- // the incumbent, whatever the budgets that remain
+ // the incumbent, whatever the budgets that remain; those left when the
+ // loop stopped at a fenced node are all fenced
  bool complete = true;
  std::vector< ExploringNode * > leftOpen;
  // the global relaxation bound: the best among those of the open nodes
  f_open_bound = minimizing ? Inf< double >() : - Inf< double >();
  while( ! open.empty() ) {
   auto node = open.pop();
+  leftOpen.push_back( node );
+  if( fenced )             // fenced, as at their pop: no open bound
+   continue;
   if( ! cannot_improve( node->get_bound() , f_incumbentCell->load() ,
                         minimizing , relTol , absTol ) )
    complete = false;
@@ -1727,7 +1751,6 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                                         node->get_bound() )
                             : std::max( f_open_bound ,
                                         node->get_bound() );
-  leftOpen.push_back( node );
   }
 
  // move the :ChangeSolver back to the root
@@ -1739,7 +1762,8 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
 
  if( retain ) {
   // retain the tree for future reoptimizations: the nodes left in the open
-  // set (early stops) are open work, hence part of the frontier to re-seed
+  // set (early stops) are open work, and those fenced are of the fenced
+  // frontier, hence both part of the frontier to re-seed
   subOptimalNodes.insert( subOptimalNodes.end() , leftOpen.begin() ,
                           leftOpen.end() );
   f_treeRoot = rootNode;
