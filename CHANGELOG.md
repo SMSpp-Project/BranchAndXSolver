@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the makefiles give the shared library of the module by default, a DLL on
+  Windows, as CMake does, and its objects with `SMSppSTATIC` [see
+  `lib/makefile-shared` of SMS++]
+
 - the library is kept in whoever links it by a source that calls its
   `SMSpp_force_load_` function, the tests and the tools take the static
   libraries whole by the `WHOLE_ARCHIVE` feature of CMake and copy the DLLs
@@ -38,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supplied by interrupted relaxations
 
 - a cutoff prunes a node only when its bound proves that it cannot improve
-  the incumbent, rather than treating every `kCutOff` as a pruning certificate
+  the incumbent, rather than treating every `kCutOff` as a pruning certificate;
+  an unpruned node without usable branching information keeps its bound and
+  is set aside, including when there is no incumbent
 
 - release the Solver with RAII on normal returns, early errors and exceptions;
   failed explorations leave its state at `kError` while propagating the
@@ -52,6 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - delete an eagerly evaluated child that fails before it is linked into the
   tree, releasing its undo Change without double-deleting its branching Change
+
+- the workers of the parallel exploration no longer share the Block: their
+  inner Solver were all attached to it, and a relaxation that applies the
+  branching to the Block (say, `LagrangianDualRelaxationSolver` fixing the
+  variables of its sub-Blocks) made each worker see the fixings of the
+  others; the first worker now drives the inner Solver of the Block, each of
+  the others an identical copy of the Block (`get_R3_Block()`) with its own
+  inner Solver, a Block that gives no copy is refused with an exception, and
+  a worker that stops leaves its Solver at the root of its subtree
+
+- `dblMaxTime` bounds the whole solve: it was only checked between the nodes,
+  and a long `compute()` of an inner Solver ran past it; each one now has the
+  `dblMaxTime` of its own or the time left, whichever is smaller, a node that
+  it leaves unsolved is set aside with the bound the Solver gives, and the
+  solve ends with `kStopTime`
 
 ## [0.4.0] - 2026-11-16
 

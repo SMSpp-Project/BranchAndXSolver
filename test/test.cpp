@@ -463,10 +463,11 @@ class BoxConstantPartial : public BoxRelaxation
 {
  public:
  static inline int result = Solver::kStopTime;
+ static inline bool provide_solution = true;
  int compute( bool = true ) override { return( result ); }
  OFValue get_lb() override { return( -1 ); }
  OFValue get_ub() override { return( 0 ); }
- bool has_true_var_solution() override { return( true ); }
+ bool has_true_var_solution() override { return( provide_solution ); }
  OFValue get_true_lb() override { return( 0 ); }
  OFValue get_true_ub() override { return( 0 ); }
  void get_true_var_solution( Configuration * = nullptr ) override {
@@ -598,6 +599,47 @@ class BoxPartial : public BoxRelaxation
  SMSpp_insert_in_factory_h;
  };
 SMSpp_insert_in_factory_cpp_0( BoxPartial );
+
+class BoxTimeProbe : public BoxPartial
+{
+ public:
+ using BoxPartial::set_par;
+ void set_par( idx_type par , double value ) override {
+  if( par == Solver::dblMaxTime )
+   limit = value;
+  else
+   BoxPartial::set_par( par , value );
+  }
+ double get_dbl_par( idx_type par ) const override {
+  return( par == Solver::dblMaxTime ? limit
+				     : BoxPartial::get_dbl_par( par ) );
+  }
+ int compute( bool changedvars = true ) override {
+  ++calls;
+  observed = limit;
+  return( BoxPartial::compute( changedvars ) );
+  }
+ OFValue get_lb() override {
+  ++queries;
+  return( BoxPartial::get_lb() );
+  }
+ OFValue get_ub() override {
+  ++queries;
+  return( BoxPartial::get_ub() );
+  }
+ bool has_true_var_solution() override {
+  ++queries;
+  return( BoxPartial::has_true_var_solution() );
+  }
+ static inline int calls = 0;
+ static inline int queries = 0;
+ static inline double observed = -1;
+
+ private:
+ double limit = std::numeric_limits< double >::infinity();
+ SMSpp_insert_in_factory_h;
+ };
+SMSpp_insert_in_factory_cpp_0( BoxTimeProbe );
 
 class BoxUnresolved : public BoxRelaxation {
 
@@ -1299,7 +1341,7 @@ void test_numeric_closure_bound()
   Instance inst;inst.max=max;inst.data={{0.0,2.0,max?-1.0:1.0,0.0}};build(inst);
   auto bnx=new_bnx("InnerBSCfg-near-bound.txt");
   set_int(bnx,"intBoundingProtocol",protocol);set_int(bnx,"intMaxThread",threads);
-  set_int(bnx,"intSolveMethod",0);bnx->set_par(Solver::dblAbsAcc,1e-6);
+  set_int(bnx,"intSolveMethod",BranchAndXSolver::BestFS);bnx->set_par(Solver::dblAbsAcc,1e-6);
   inst.block->register_Solver(bnx);
   for(int repeat=0;repeat<2;++repeat) {
    check(bnx->compute()==Solver::kOK,"numeric closure: failed");
@@ -1544,6 +1586,38 @@ void test_limits( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/// a parallel exploration of a Block that gives no copy of itself
+
+void test_parallel_no_copy( void )
+{
+ std::cout << "parallel exploration without a copy of the Block" << std::endl;
+ auto inst = make( 7 , false );
+ auto bnx = new_bnx();
+ set_int( bnx , "intSolveMethod" , BranchAndXSolver::DFS );
+ set_int( bnx , "intMaxThread" , 2 );
+ inst.block->register_Solver( bnx );
+ bool refused = false;
+ try {
+  bnx->compute();
+  }
+ catch( std::invalid_argument & ) {
+  refused = true;
+  }
+ check( refused , "a parallel exploration with no copy of the Block" );
+ bool unlocked = false;
+ std::thread probe( [ & ] {
+  unlocked = bnx->try_lock();
+  if( unlocked )
+   bnx->unlock();
+  } );
+ probe.join();
+ check( unlocked , "no-copy exception: Solver left locked" );
+ set_int( bnx , "intMaxThread" , 1 );
+ solve_and_check( bnx , inst , "serial solve after no-copy exception" );
+ destroy( inst );
+ }
+
+/*--------------------------------------------------------------------------*/
 /// the parameters: names, defaults, ComputeConfig, invalid values
 
 void test_parameters( void )
@@ -1760,6 +1834,88 @@ void test_integrality_change( void )
         "a Variable becoming continuous has kept the retained tree" );
  }
 
+void test_cutoff_without_incumbent()
+{
+ for( int protocol : { 0 , 1 } )
+  for( int threads : { 1 , 2 } ) {
+   Instance inst;
+   inst.data = { { 0 , 2 , 1 , -1 } };
+   build( inst );
+   BoxConstantPartial::provide_solution = false;
+   BoxConstantPartial::result = BoxStrongPartial::result = Solver::kCutOff;
+   auto bnx = new_bnx( "InnerBSCfg-parallel-partial.txt" );
+   set_int( bnx , "intBoundingProtocol" , protocol );
+   set_int( bnx , "intThreadForDifferentSolvers" , threads );
+   inst.block->register_Solver( bnx );
+   check( bnx->compute() == Solver::kLowPrecision ,
+	  "cutoff without incumbent: root falsely fenced" );
+   check( ! bnx->has_var_solution() && bnx->get_ub() == INF &&
+	    std::abs( bnx->get_lb() + 0.25 ) < tol ,
+	  "cutoff without incumbent: bound or absence of solution lost" );
+   destroy( inst );
+   }
+ BoxConstantPartial::provide_solution = true;
+ BoxConstantPartial::result = BoxStrongPartial::result = Solver::kStopTime;
+ }
+
+void test_inner_time_budget()
+{
+ class InspectableSolver : public BranchAndXSolver
+ {
+  public:
+  Solver * inner() { return( f_RelaxationSolvers.front().second ); }
+  };
+ for( double own : { 60.0 , 0.01 } ) {
+  Instance inst;
+  inst.data = { { 1 , 1 , 1 , 0 } };
+  build( inst );
+  auto bnx = new InspectableSolver;
+  bnx->set_par(
+    bnx->str_par_str2idx( "strNameOfBlockSolverConfigurationFile" ) ,
+    "InnerBSCfg-time-probe.txt" );
+  bnx->set_par( Solver::dblMaxTime , 30.0 );
+  inst.block->register_Solver( bnx );
+  bnx->inner()->set_par( Solver::dblMaxTime , own );
+  BoxTimeProbe::observed = -1;
+  check( bnx->compute() == Solver::kOK , "time budget: solve failed" );
+  check( BoxTimeProbe::observed > 0 &&
+	   BoxTimeProbe::observed <= std::min( own , 30.0 ) ,
+	 "time budget: inner solver received too much time" );
+  check( bnx->inner()->get_dbl_par( Solver::dblMaxTime ) == own ,
+	 "time budget: inner limit not restored" );
+  destroy( inst );
+  }
+
+ Instance inst;
+ inst.data = { { 0 , 2 , 1 , -1 } };
+ build( inst );
+ auto bnx = new InspectableSolver;
+ bnx->set_par( bnx->str_par_str2idx( "strNameOfBlockSolverConfigurationFile" ) ,
+	       "InnerBSCfg-time-probe.txt" );
+ bnx->set_par( Solver::dblMaxTime , 30.0 );
+ inst.block->register_Solver( bnx );
+ BoxPartial::stop = true;
+ BoxPartial::result = Solver::kLowPrecision;
+ BoxPartial::certify_partial = false;
+ check( bnx->compute() == Solver::kLowPrecision ,
+	"time budget: missing warm state" );
+ const int before_calls = BoxTimeProbe::calls;
+ const int before_queries = BoxTimeProbe::queries;
+ BoxPartial::n_branch = 0;
+ BoxPartial::certify_partial = true;
+ bnx->set_par( Solver::dblMaxTime , 0.0 );
+ check( bnx->compute() == Solver::kStopTime ,
+	"time budget: expired limit ignored" );
+ check( BoxTimeProbe::calls == before_calls &&
+	  BoxTimeProbe::queries == before_queries && BoxPartial::n_branch == 0 ,
+	"time budget: stale inner results used after skipping compute" );
+ check( bnx->get_lb() == -INF && bnx->get_ub() == INF ,
+	"time budget: skipped fresh root published a stale certificate" );
+ bnx->set_par( Solver::dblMaxTime , 30.0 );
+ solve_and_check( bnx , inst , "resume after exhausted time budget" );
+ destroy( inst );
+ }
+
 // A recursive mutex must be probed from another thread to detect a leaked lock.
 void test_compute_unlock()
 {
@@ -1838,6 +1994,9 @@ int main( void )
   test_objective_change ,
   test_integrality_change ,
   test_compute_unlock ,
+  test_parallel_no_copy ,
+  test_cutoff_without_incumbent ,
+  test_inner_time_budget ,
   test_bad_certificates ,
   test_bound_only_partial_results ,
   test_numeric_closure_bound ,

@@ -101,6 +101,41 @@ static bool inconclusive( int res )
 	  res == Solver::kLowPrecision );
  }
 
+/// the time by which a solve has to end, max() if none
+using Deadline = std::chrono::steady_clock::time_point;
+
+/// run the compute() of \p s within the time left before \p deadline
+/** The dblMaxTime of \p s is the smallest between its own and the time
+ * left, and it gets its own back after; with no time left \p s is not run,
+ * \p ran is set to false and the result is kStopTime. */
+
+static int compute_by( Solver * s , const Deadline deadline , bool & ran )
+{
+ ran = true;
+ if( deadline == Deadline::max() )
+  return( s->compute() );
+ const double left = std::chrono::duration< double >(
+			    deadline - std::chrono::steady_clock::now() ).count();
+ if( left <= 0 ) {
+  ran = false;
+  return( Solver::kStopTime );
+  }
+ const double own = s->get_dbl_par( Solver::dblMaxTime );
+ if( own <= left )
+  return( s->compute() );
+ s->set_par( Solver::dblMaxTime , left );
+ int z;
+ try {
+  z = s->compute();
+  }
+ catch( ... ) {
+  s->set_par( Solver::dblMaxTime , own );
+  throw;
+  }
+ s->set_par( Solver::dblMaxTime , own );
+ return( z );
+ }
+
 /// the Solution corresponding to the current solution of \p slvr
 /** Writes the current solution of \p slvr into its Block (under lock) and
  * returns the corresponding newly minted Solution object, whose ownership
@@ -226,7 +261,9 @@ static void moveSolverToFather( Node * currentNode ,
 // parallel evaluation path of computeRelaxations() / computeHeuristic()
 template< typename SolverPtr >
 static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
-				std::vector< int > & zs , int maxThreads );
+                                std::vector< int > & zs ,
+                                std::vector< char > & ran , int maxThreads ,
+                                Deadline deadline );
 
 /*--------------------------------------------------------------------------*/
 /// compute the relaxations at the current node
@@ -249,6 +286,7 @@ static int computeRelaxations(
                   Node * currentNode , const bool minimizing ,
                   double & bestBound , Solution * & bestSol ,
                   std::atomic< double > * incumbentCell ,
+                  const Deadline deadline ,
                   bool & toPrune , RelaxationSolver * & branchSolver ,
                   double relAcc = 0 , double absAcc = 0 ,
                   int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
@@ -265,8 +303,10 @@ static int computeRelaxations(
  // Use the same validation and reduction for serial and parallel execution.
  // Never publish a solution until its certificate has been checked and the
  // Solution object has been constructed successfully.
- const auto reduce = [ & ]( RelaxationSolver * rs , Solver * s ,
-			    int status ) -> int {
+ const auto reduce = [ & ]( RelaxationSolver * rs , Solver * s , int status ,
+			    bool ran ) -> int {
+  if( ! ran )
+   return( status );  // No fresh certificate or solution to inspect.
   if( status == Solver::kInfeasible ) {
    currentNode->set_infeasible( true );
    currentNode->set_bound( minimizing ? Inf< double >() : -Inf< double >() );
@@ -336,14 +376,18 @@ static int computeRelaxations(
   };
 
  int partial_status = Solver::kOK;
+ bool skipped = false;
  if( nThreads > 1 && f_RelaxationSolvers->size() > 1 && ! incumbentMutex ) {
   const auto n = f_RelaxationSolvers->size();
   std::vector< int > statuses( n , INT_MIN );
-  if( computeAllParallel( *f_RelaxationSolvers , statuses , nThreads ) )
-   return( reduce( nullptr , nullptr , Solver::kInfeasible ) );
+  std::vector< char > ran( n , 0 );
+  if( computeAllParallel( *f_RelaxationSolvers , statuses , ran , nThreads ,
+			  deadline ) )
+   return( reduce( nullptr , nullptr , Solver::kInfeasible , true ) );
   for( std::size_t i = 0 ; i < n ; ++i ) {
    auto & [ rs , s ] = ( *f_RelaxationSolvers )[ i ];
-   const int status = reduce( rs , s , statuses[ i ] );
+   skipped = skipped || ! ran[ i ];
+   const int status = reduce( rs , s , statuses[ i ] , ran[ i ] );
    if( toPrune || ( status != Solver::kOK && ! inconclusive( status ) ) )
     return( status );
    if( partial_status == Solver::kOK && status != Solver::kOK )
@@ -352,14 +396,19 @@ static int computeRelaxations(
   }
  else {
   for( auto & [ rs , s ] : *f_RelaxationSolvers ) {
-   const int computed = s->compute();
-   const int status = reduce( rs , s , computed );
+   bool ran;
+   const int computed = compute_by( s , deadline , ran );
+   const int status = reduce( rs , s , computed , ran );
+   if( ! ran )
+    return( status );
    if( toPrune || ( status != Solver::kOK && ! inconclusive( status ) ) )
     return( status );
    if( partial_status == Solver::kOK && status != Solver::kOK )
     partial_status = status;
    }
   }
+ if( skipped )
+  return( Solver::kStopTime );
  // One usable relaxation suffices; bounds from the others remain valid.
  return( branchSolver ? int( Solver::kOK ) : partial_status );
  }
@@ -372,11 +421,13 @@ static int computeRelaxations(
  *  @return the sol_type [see Solver.h] of the computation */
 
 static int computeHeuristic(
-  std::vector< std::pair< ChangeSolver * , Solver * > > * f_HeuristicSolvers ,
-  Node * currentNode , const bool minimizing , double & bestBound ,
-  Solution *& bestSol , std::atomic< double > * incumbentCell ,
-  bool & toPrune ,
-  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
+                  std::vector< std::pair< ChangeSolver * ,
+                               Solver * > > * f_HeuristicSolvers ,
+                  Node * currentNode , const bool minimizing ,
+                  double & bestBound , Solution * & bestSol ,
+                  std::atomic< double > * incumbentCell ,
+                  const Deadline deadline , bool & toPrune ,
+                  int nThreads = 1 , std::mutex * incumbentMutex = nullptr )
 {
  // parallel evaluation of the (several) heuristics of this node, bit-identical
  // to the serial path below [see computeRelaxations()]
@@ -384,7 +435,9 @@ static int computeHeuristic(
      ( ! incumbentMutex ) ) {
   const std::size_t n = f_HeuristicSolvers->size();
   std::vector< int > zs( n , INT_MIN );   // INT_MIN: not computed (early stop)
-  if( computeAllParallel( *f_HeuristicSolvers , zs , nThreads ) ) {
+  std::vector< char > ran( n , 0 );
+  if( computeAllParallel( *f_HeuristicSolvers , zs , ran , nThreads ,
+                          deadline ) ) {
    if( ! currentNode->get_toFather() )    // the root is infeasible
     return( Solver::kInfeasible );
    toPrune = true;
@@ -408,7 +461,8 @@ static int computeHeuristic(
 
  // serial evaluation
  for( auto & [ hs , s ] : *f_HeuristicSolvers ) {
-  auto z = s->compute();
+  bool ran;
+  auto z = compute_by( s , deadline , ran );
   if( z == Solver::kInfeasible ) {
    if( ! currentNode->get_toFather() )    // the root is infeasible
     return( Solver::kInfeasible );
@@ -439,10 +493,12 @@ static int computeHeuristic(
 /*--------------------------------------------------------------------------*/
 /// run the compute() of a set of Solver in parallel over \p maxThreads
 /** Runs s->compute() for every Solver \p s in \p slvrs concurrently on (up
- * to) \p maxThreads threads (the calling thread is one of them), storing the
- * return codes in \p zs. Only compute() is run here, never any result
- * extraction (get_lb() / get_true_solution() / ...): those touch the shared
- * Block and are left to the serial reduction in the caller. This is safe
+ * to) \p maxThreads threads (the calling thread is one of them), within the
+ * time left before \p deadline [see compute_by()], storing the return codes
+ * in \p zs and in \p ran whether each was run. Only compute() is run here,
+ * never any result extraction (get_lb() / get_true_solution() / ...): those
+ * touch the shared Block and are left to the serial reduction in the
+ * caller. This is safe
  * because the inner Solver of the BranchAndXSolver are independent clones
  * with private state [see createWorkerSolvers() / the per-node Solver sets],
  * so their compute() do not race on the Block.
@@ -456,7 +512,9 @@ static int computeHeuristic(
 
 template< typename SolverPtr >
 static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
-				std::vector< int > & zs , int maxThreads )
+                                std::vector< int > & zs ,
+                                std::vector< char > & ran , int maxThreads ,
+                                const Deadline deadline )
 {
  const int n = int( slvrs.size() );
  const int K = std::max( 1 , std::min( maxThreads , n ) );
@@ -465,7 +523,9 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
  auto work = [ & ]() {
   for( int i ; ( ! infeasible.load( std::memory_order_relaxed ) ) &&
                ( ( i = next.fetch_add( 1 ) ) < n ) ; ) {
-   zs[ i ] = slvrs[ i ].second->compute();
+   bool r;
+   zs[ i ] = compute_by( slvrs[ i ].second , deadline , r );
+   ran[ i ] = r;
    if( zs[ i ] == Solver::kInfeasible )
     infeasible.store( true , std::memory_order_relaxed );
    }
@@ -495,6 +555,7 @@ static int initializeRoot(
                   Node * rootNode , const bool minimizing ,
                   double & bestBound , Solution * & bestSol ,
                   std::atomic< double > * incumbentCell ,
+                  const Deadline deadline ,
                   RelaxationSolver * & branchSolver ,
                   std::mutex & globalMutex ,
                   double relAcc , double absAcc )
@@ -503,15 +564,14 @@ static int initializeRoot(
  rootNode->set_evaluated( true );
  bool toPrune = false;
  int res = computeRelaxations( f_RelaxationSolvers , rootNode , minimizing ,
-			       bestBound , bestSol , incumbentCell , toPrune ,
-			       branchSolver , relAcc , absAcc , 1 ,
-			       &globalMutex );
+                               bestBound , bestSol , incumbentCell ,
+                               deadline , toPrune , branchSolver , relAcc ,
+                               absAcc , 1 , &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  res = computeHeuristic( f_HeuristicSolvers , rootNode , minimizing ,
-			 bestBound ,
-			 bestSol , incumbentCell , toPrune , 1 ,
-			 &globalMutex );
+                         bestBound , bestSol , incumbentCell , deadline ,
+                         toPrune , 1 , &globalMutex );
  if( toPrune || ( res != ThinComputeInterface::kOK ) )
   return( res );
  rootNode->obtainBranchList( branchSolver );
@@ -540,6 +600,7 @@ static int evaluateNode(
                                Solver * > > * heuristic ,
                   bool minimizing , double & bestBound , Solution * & bestSol ,
                   std::atomic< double > * incumbentCell ,
+                  const Deadline deadline ,
                   bool & toPrune , RelaxationSolver * & branchSolver ,
                   int nThreads ,
                   double relAcc , double absAcc , std::mutex & globalMutex ,
@@ -562,16 +623,15 @@ static int evaluateNode(
  // evaluates its per-node solvers serially, otherwise nThreads > 1 runs them
  // in parallel
  int res = computeRelaxations( relaxation , node , minimizing , bestBound ,
-			       bestSol , incumbentCell , toPrune ,
-			       branchSolver ,
-			       relAcc , absAcc , nThreads , incumbentMutex );
+                               bestSol , incumbentCell , deadline , toPrune ,
+                               branchSolver , relAcc ,
+                               absAcc , nThreads , incumbentMutex );
  if( ( res != Solver::kOK ) || toPrune )
   return( res );
 
  return( computeHeuristic( heuristic , node , minimizing , bestBound ,
-			   bestSol ,
-			    incumbentCell , toPrune , nThreads ,
-			    incumbentMutex ) );
+                           bestSol , incumbentCell , deadline , toPrune ,
+                           nThreads , incumbentMutex ) );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -800,6 +860,18 @@ int BranchAndXSolver::compute( bool changedvars )
  // per-solve budgets and tolerances from the inherited standard parameters
  nodeBudget = get_int_par( intMaxNodes );
  timeBudget = get_dbl_par( dblMaxTime );
+ // a time budget beyond what the clock can count (say, an infinite one)
+ // must not be duration_cast, as it would overflow into a deadline in the
+ // past: it simply means no deadline at all
+ {
+  const auto now = std::chrono::steady_clock::now();
+  const double most = std::chrono::duration< double >(
+   std::chrono::steady_clock::time_point::max() - now ).count();
+  f_deadline = ( timeBudget < most / 2 ) ?
+   now + std::chrono::duration_cast< std::chrono::steady_clock::duration >(
+                             std::chrono::duration< double >( timeBudget ) ) :
+   std::chrono::steady_clock::time_point::max();
+  }
  relTol = get_dbl_par( dblRelAcc );
  absTol = get_dbl_par( dblAbsAcc );
 
@@ -972,12 +1044,14 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
   RelaxationSolver * nodeBranchSolver = nullptr;
   f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
   res = computeRelaxations( &f_RelaxationSolvers , F , minimizing , bestBound ,
-			    bestSolution , f_incumbentCell , toPrune ,
+			    bestSolution , f_incumbentCell , f_deadline ,
+			    toPrune ,
 			    nodeBranchSolver , relTol , absTol ,
 			    maxThreadForSolvers );
   if( ( res == Solver::kOK ) && ( ! toPrune ) )
    res = computeHeuristic( &f_HeuristicSolvers , F , minimizing , bestBound ,
-			   bestSolution , f_incumbentCell , toPrune ,
+			   bestSolution , f_incumbentCell , f_deadline ,
+			   toPrune ,
 			   maxThreadForSolvers );
   if( inconclusive( res ) ) {  // set aside, still in the frontier
    record_unresolved( F->get_bound() , res );
@@ -1068,10 +1142,10 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
    res = evaluateNode( currentNode , *solvers , &f_RelaxationSolvers ,
 		       &f_HeuristicSolvers , minimizing , bestBound ,
-		       bestSolution , f_incumbentCell , prunedHere ,
-		       branchSolver ,
-		       maxThreadForSolvers , relTol , absTol , globalMutex ,
-		       nullptr , false );
+		       bestSolution , f_incumbentCell , f_deadline ,
+		       prunedHere ,
+		       branchSolver , maxThreadForSolvers , relTol , absTol ,
+		       globalMutex , nullptr , false );
    if( inconclusive( res ) ) {  // set aside, as if fenced
     record_unresolved( currentNode->get_bound() , res );
     prunedHere = true;
@@ -1132,11 +1206,12 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     bool toPrune = false;
     auto evalStart = std::chrono::high_resolution_clock::now();
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
-    res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
-			&f_HeuristicSolvers , minimizing , bestBound ,
-			bestSolution , f_incumbentCell , toPrune ,
-			branchSolver ,
-			maxThreadForSolvers , relTol , absTol , globalMutex );
+    res =
+      evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
+		    &f_HeuristicSolvers , minimizing , bestBound ,
+		    bestSolution ,
+		    f_incumbentCell , f_deadline , toPrune , branchSolver ,
+		    maxThreadForSolvers , relTol , absTol , globalMutex );
     if( inconclusive( res ) ) {  // set aside, as if fenced
      record_unresolved( new_node->get_bound() , res );
      toPrune = true;
@@ -1289,8 +1364,9 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   add_unresolved_bounds( minimizing );
   return( nodeBudget <= 1 ? Solver::kStopIter : Solver::kStopTime );
   }
- return( add_unresolved_bounds( minimizing ) ? int( f_unresolved_status )
-					      : int( kOK ) );
+ if( add_unresolved_bounds( minimizing ) )
+  return( out_of_time() ? int( Solver::kStopTime ) : f_unresolved_status );
+ return( kOK );
 
  }  // end( BranchAndXSolver::explore )
 
@@ -1359,11 +1435,11 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
   else {
    const auto evalStart = std::chrono::high_resolution_clock::now();
    f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
-   res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
-			 rootNode ,
-			 minimizing , bestBound , bestSolution ,
-			 f_incumbentCell ,
-			 branchSolver , globalMutex , relTol , absTol );
+   res =
+     initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers , rootNode ,
+		     minimizing , bestBound , bestSolution , f_incumbentCell ,
+		     f_deadline , branchSolver , globalMutex , relTol ,
+		     absTol );
    // Eager roots are already evaluated when explore() sees them, including
    // roots that close the entire solve: record them here exactly once.
    if( res == Solver::kInfeasible )
@@ -1433,7 +1509,8 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  int res = evaluateNode( currentNode , solvers , &relaxation , &heuristic ,
 			 minimizing , bestBound , bestSolution ,
 			 f_incumbentCell ,
-			 toPrune , branchSolver , 1 , relTol , absTol ,
+			 f_deadline , toPrune , branchSolver , 1 , relTol ,
+			 absTol ,
 			 incumbentMutex , &incumbentMutex );
  if( inconclusive( res ) ) {  // set aside, as if fenced
   {
@@ -1490,6 +1567,11 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
 
 int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 {
+ // the copies of the Block and their Solver last as long as this solve
+ struct DropWorkers {
+  BranchAndXSolver * bxs;
+  ~DropWorkers() { bxs->dropWorkerSolvers(); }
+  } dropWorkers{ this };
  createWorkerSolvers( K );
 
  // the serial Solver set drives the ramp-up
@@ -1498,14 +1580,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  initializeVariables( &solvers , &f_RelaxationSolvers , &f_HeuristicSolvers ,
                       minimizing );
 
- // an infinite time budget must not be duration_cast (it overflows into a
- // deadline in the past): it simply means no deadline at all
- const auto deadline =
-   timeBudget == Inf< double >()
-     ? std::chrono::steady_clock::time_point::max()
-     : std::chrono::steady_clock::now() +
-	 std::chrono::duration_cast< std::chrono::steady_clock::duration >(
-	   std::chrono::duration< double >( timeBudget ) );
+ const auto deadline = f_deadline;
  std::atomic< int > nodeBdg( nodeBudget );
 
  // ramp-up- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1518,13 +1593,13 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  ExploringNode * rootNode = new ExploringNode( nullptr , nullptr , 0 );
  RelaxationSolver * branchSolver = nullptr;
  f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
- int res = initializeRoot(
-   &f_RelaxationSolvers , &f_HeuristicSolvers , rootNode , minimizing ,
-   bestBound ,
-   bestSolution , f_incumbentCell , branchSolver , globalMutex , relTol ,
-   absTol );
+ int res = initializeRoot( &f_RelaxationSolvers , &f_HeuristicSolvers ,
+                           rootNode , minimizing , bestBound , bestSolution ,
+                           f_incumbentCell , f_deadline , branchSolver ,
+                           globalMutex , relTol , absTol );
  if( res != Solver::kOK ) {
-  f_open_bound = rootNode->get_bound();
+  if( inconclusive( res ) )        // the bound of the root, if any
+   f_open_bound = rootNode->get_bound();
   delete rootNode;
   return( res );
   }
@@ -1559,7 +1634,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
     res = evaluateNode( new_node , solvers , &f_RelaxationSolvers ,
 			&f_HeuristicSolvers , minimizing , bestBound ,
-			bestSolution , f_incumbentCell , toPrune ,
+			bestSolution , f_incumbentCell , f_deadline , toPrune ,
 			nodeBranchSolver , 1 , relTol , absTol , globalMutex );
     if( inconclusive( res ) ) {  // set aside, as if fenced
      record_unresolved( new_node->get_bound() , res );
@@ -1681,14 +1756,13 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        int RV = computeRelaxations( &ws.relaxation , new_node , minimizing ,
 				    bestBound , bestSolution ,
 				    f_incumbentCell ,
-				    toPrune , nodeBranchSolver , relTol ,
-				    absTol ,
-				    1 , &incumbentMutex );
+				    f_deadline , toPrune , nodeBranchSolver ,
+				    relTol , absTol , 1 , &incumbentMutex );
        if( RV == Solver::kOK && ! toPrune )
 	RV = computeHeuristic( &ws.heuristic , new_node , minimizing ,
 			       bestBound ,
-			       bestSolution , f_incumbentCell , toPrune , 1 ,
-			       &incumbentMutex );
+			       bestSolution , f_incumbentCell , f_deadline ,
+			       toPrune , 1 , &incumbentMutex );
        if( inconclusive( RV ) ) {  // set aside, as if fenced
 	{
 	 std::lock_guard< std::mutex > guard( incumbentMutex );
@@ -1794,7 +1868,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  if( result.load() == Solver::kOK ) {
   f_open_bound = minimizing ? Inf< double >() : - Inf< double >();
   if( add_unresolved_bounds( minimizing ) )
-   return( f_unresolved_status );
+   return( out_of_time() ? int( Solver::kStopTime ) : f_unresolved_status );
   }
  return( result.load() );
 

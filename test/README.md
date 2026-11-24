@@ -118,6 +118,15 @@ with and without tree retention. Other regressions check that:
 - sufficiently advanced inner results that the concrete relaxation reports
   as `kOK` remain usable, including on an unchanged repeat solve.
 
+`test_cutoff_without_incumbent` checks that a cutoff with neither an incumbent nor
+usable branching information leaves the node unresolved with its bound, under
+both bounding protocols and with serial or parallel relaxation evaluation.
+
+`test_inner_time_budget` checks that each inner solve receives the smaller of
+its own time limit and the time left to the outer solve, and that its original
+limit is restored afterwards. With no time left, the inner solver is not run
+and its previous bounds and solutions are not read; a later solve can resume.
+
 ### Certificates, logging and cleanup
 
 Invalid certificates (`NaN`, an infinite bound contradicting a finite true
@@ -148,6 +157,7 @@ The additional configurations, read from this directory, are:
 | [InnerBSCfg-near-bound.txt](InnerBSCfg-near-bound.txt) | Closing within tolerance must retain the computed bound. |
 | [InnerBSCfg-parallel-partial.txt](InnerBSCfg-parallel-partial.txt) | Bound-only results retain their bounds and the first unresolved status. |
 | [InnerBSCfg-partial.txt](InnerBSCfg-partial.txt) | Return-code boundaries, missing bounds or solutions, sufficiently advanced results, and resumption. |
+| [InnerBSCfg-time-probe.txt](InnerBSCfg-time-probe.txt) | Propagated time limits, restoration of the original limit, and no stale result extraction after an expired budget. |
 
 ## Parallelism covered
 
@@ -158,10 +168,12 @@ During serial result extraction, each provider writes its own feasible
 zero-cost integer solution before capturing it, so a fractional point left
 by another solver cannot be published as that incumbent.
 
-Full parallel depth-first tree exploration (`intMaxThread` > 1) is not covered:
-the box relaxation applies branching to the shared `Block`, and the test
-fixture does not supply independent copies. The lock-release test uses the
-parallel configuration only to trigger a setup exception before exploration.
+The fixture does not supply independent Block copies. `test_parallel_no_copy`
+checks that parallel depth-first exploration (`intMaxThread` > 1) is refused
+with an exception in that case. Full parallel worker exploration on copyable
+Blocks is not exercised here. The lock-release regression also checks a
+setup exception before exploration.
+
 
 ## Authors
 

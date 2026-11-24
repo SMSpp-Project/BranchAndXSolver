@@ -1,0 +1,6 @@
+# Inspect the propagated time limit and reads of stale results.
+BlockSolverConfig
+1
+1
+BoxTimeProbe
+0
