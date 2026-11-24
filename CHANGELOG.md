@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the value `GlobalInformation::str_BestBound` that the relaxations read is
+  the global relaxation bound of the exploration under way, the best among
+  the bounds of the open nodes, of the node being evaluated and of those set
+  aside, and the incumbent, which every open list keeps in constant time
+  (but the best-estimate one, in logarithmic time) and the parallel
+  depth-first search takes from its pool and from the subtrees claimed by
+  the workers, while the search of PBeFS, which gives the bound of its
+  frontier only at its end, gives that of the root until then
+
 - the parameters `intPBeFSSpawnDepth` and `intPBeFSBudget`, the spawn depth
   of the schemes `depthbounded` and `ordered` of PBeFS and the backtracks
   after which the scheme `budget` spawns tasks, whose defaults (those of

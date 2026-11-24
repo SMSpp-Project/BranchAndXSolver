@@ -35,6 +35,7 @@
 #include <cmath>
 #include <deque>
 #include <memory>
+#include <set>
 #include <stack>
 #include <thread>
 #include <functional>
@@ -693,74 +694,125 @@ static int evaluateNode(
 // container adapters a common interface [see OpenList]: a LIFO stack (depth-
 // first), a FIFO queue (breadth-first), a relaxation-bound priority queue
 // (best- first). The storage is entirely std::stack / std::queue /
-// std::priority_- queue, there is no hand-rolled data structure here
+// std::priority_- queue, besides what each keeps to give the best bound of
+// its nodes [see OpenList::best_bound()]
 
 namespace {
 
+/// the order of a best-first open list: the worse relaxation bound first,
+/// or the worse estimate first in a best-estimate search
+/** A plain function object rather than a std::function, so that the heap
+ * calls it directly; worse() compares two values, and also serves the
+ * lists that keep the best bound of their nodes. */
+
+struct BoundCmp {
+ bool minimizing;
+ bool estimate = false;  ///< by Node::estimate_key() rather than the bound
+ [[nodiscard]] bool worse( double ka , double kb ) const {
+  return( minimizing ? ka > kb : ka < kb );
+  }
+ bool operator()( ExploringNode * a , ExploringNode * b ) const {
+  const double ka = estimate ? a->estimate_key( minimizing ) : a->get_bound();
+  const double kb = estimate ? b->estimate_key( minimizing ) : b->get_bound();
+  return( worse( ka , kb ) );
+  }
+ };
+
+/*--------------------------------------------------------------------------*/
 /// LIFO open list: a std::stack, giving depth-first exploration
+/** Each entry carries the best bound of the nodes from the bottom of the
+ * stack up to it, so that the best bound is that of the top. */
 
 class StackOpenList final : public OpenList {
 
  public:
 
+ explicit StackOpenList( BoundCmp cmp ) : f_cmp( cmp ) {}
+
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
 
- void push( ExploringNode * node ) override { c.push( node ); }
+ void push( ExploringNode * node ) override {
+  const double b = node->get_bound();
+  c.emplace( node , ( c.empty() || f_cmp.worse( c.top().second , b ) )
+                    ? b : c.top().second );
+  }
 
  ExploringNode * pop( void ) override {
-  auto node = c.top();
+  auto node = c.top().first;
   c.pop();
   return( node );
   }
 
  [[nodiscard]] bool isLIFO( void ) const override { return( true ); }
 
+ [[nodiscard]] bool best_bound( double & bound ) const override {
+  if( c.empty() )
+   return( false );
+  bound = c.top().second;
+  return( true );
+  }
+
  private:
 
- std::stack< ExploringNode * > c;
+ BoundCmp f_cmp;  ///< the order of the bounds
+
+ std::stack< std::pair< ExploringNode * , double > > c;
 
  };  // end( class( StackOpenList ) )
 
 /*--------------------------------------------------------------------------*/
 /// FIFO open list: a std::queue, giving breadth-first exploration
+/** Besides the queue of the nodes, the deque of the bounds that may still
+ * become the best one, i.e., of those no worse than any pushed after them:
+ * the best bound is the front, pushing a node drops from the back the
+ * bounds worse than its own, and popping a node drops the front if it is
+ * its bound, which takes constant amortized time. */
 
 class QueueOpenList final : public OpenList {
 
  public:
 
+ explicit QueueOpenList( BoundCmp cmp ) : f_cmp( cmp ) {}
+
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
 
- void push( ExploringNode * node ) override { c.push( node ); }
+ void push( ExploringNode * node ) override {
+  c.push( node );
+  const double b = node->get_bound();
+  while( ( ! best.empty() ) && f_cmp.worse( best.back() , b ) )
+   best.pop_back();
+  best.push_back( b );
+  }
 
  ExploringNode * pop( void ) override {
   auto node = c.front();
   c.pop();
+  if( best.front() == node->get_bound() )
+   best.pop_front();
   return( node );
+  }
+
+ [[nodiscard]] bool best_bound( double & bound ) const override {
+  if( best.empty() )
+   return( false );
+  bound = best.front();
+  return( true );
   }
 
  private:
 
+ BoundCmp f_cmp;  ///< the order of the bounds
+
  std::queue< ExploringNode * > c;
+
+ std::deque< double > best;  ///< the bounds that may become the best
 
  };  // end( class( QueueOpenList ) )
 
 /*--------------------------------------------------------------------------*/
 /// relaxation-bound priority open list: a std::priority_queue, best-first
-
-/// the order of a best-first open list: the worse relaxation bound first,
-/// or the worse estimate first in a best-estimate search
-/** A plain function object rather than a std::function, so that the heap
- * calls it directly. */
-
-struct BoundCmp {
- bool minimizing;
- bool estimate = false;  ///< by Node::estimate_key() rather than the bound
- bool operator()( ExploringNode * a , ExploringNode * b ) const {
-  const double ka = estimate ? a->estimate_key( minimizing ) : a->get_bound();
-  const double kb = estimate ? b->estimate_key( minimizing ) : b->get_bound();
-  return( minimizing ? ka > kb : ka < kb );
-  }
- };
+/** Ordered by the estimates, the list keeps also the multiset of the bounds
+ * of its nodes, whose best is the best bound. */
 
 class PriorityOpenList final : public OpenList {
 
@@ -769,15 +821,23 @@ class PriorityOpenList final : public OpenList {
  public:
 
  explicit PriorityOpenList( Cmp cmp )
-  : by_bound( ! cmp.estimate ) , c( std::move( cmp ) ) {}
+  : by_bound( ! cmp.estimate ) , minimizing( cmp.minimizing ) ,
+    c( std::move( cmp ) ) {}
 
  [[nodiscard]] bool empty( void ) const override { return( c.empty() ); }
 
- void push( ExploringNode * node ) override { c.push( node ); }
+ void push( ExploringNode * node ) override {
+  c.push( node );
+  if( ! by_bound )
+   bounds.insert( node->get_bound() );
+  }
 
  ExploringNode * pop( void ) override {
   auto node = c.top();
   c.pop();
+  if( ! by_bound )
+   if( auto it = bounds.find( node->get_bound() ) ; it != bounds.end() )
+    bounds.erase( it );
   return( node );
   }
 
@@ -788,9 +848,21 @@ class PriorityOpenList final : public OpenList {
   return( true );
   }
 
+ [[nodiscard]] bool best_bound( double & bound ) const override {
+  if( by_bound )
+   return( next_bound( bound ) );
+  if( bounds.empty() )
+   return( false );
+  bound = minimizing ? *bounds.begin() : *bounds.rbegin();
+  return( true );
+  }
+
  private:
 
- bool by_bound;  ///< ordered by the bounds, not by the estimates
+ bool by_bound;    ///< ordered by the bounds, not by the estimates
+ bool minimizing;  ///< the sense of the bounds
+
+ std::multiset< double > bounds;  ///< of the nodes, if not by_bound
 
  std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
   c;
@@ -815,7 +887,7 @@ class DiveOpenList final : public OpenList {
 
  public:
 
- explicit DiveOpenList( Cmp cmp ) : best( std::move( cmp ) ) {}
+ explicit DiveOpenList( Cmp cmp ) : f_cmp( cmp ) , best( std::move( cmp ) ) {}
 
  [[nodiscard]] bool empty( void ) const override {
   return( best.empty() && children.empty() );
@@ -841,7 +913,25 @@ class DiveOpenList final : public OpenList {
 
  [[nodiscard]] bool isLIFO( void ) const override { return( true ); }
 
+ /// the best of the bound of the top of the queue, ordered by the bounds,
+ /// and of those of the children pushed since the last pop()
+ [[nodiscard]] bool best_bound( double & bound ) const override {
+  if( empty() )
+   return( false );
+  bool first = best.empty();
+  if( ! first )
+   bound = best.top()->get_bound();
+  for( auto child : children )
+   if( first || f_cmp.worse( bound , child->get_bound() ) ) {
+    bound = child->get_bound();
+    first = false;
+    }
+  return( true );
+  }
+
  private:
+
+ Cmp f_cmp;  ///< the order of the bounds
 
  std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
   best;
@@ -969,6 +1059,10 @@ struct BXContext {
  std::vector< Relaxations * > relaxation;  ///< of each worker
  std::vector< Heuristics * > heuristic;    ///< of each worker
  std::atomic< int > error{ Solver::kOK };  ///< the first error, if any
+ /// called with the bound of the root once it is evaluated, which is all
+ /// that the BranchAndXSolver knows of the bound of the search before its
+ /// end [see BranchAndXSolver::publish_bound()]
+ std::function< void( double ) > root_evaluated;
 
  /// the sign that turns a value of the Block into one to minimize
  [[nodiscard]] double sign( void ) const { return( minimizing ? 1 : -1 ); }
@@ -1082,6 +1176,8 @@ class BXWorker {
   tmp.set_toFather( nullptr );
   n->evaluated = true;
   n->bound = tmp.get_bound();
+  if( ( ! n->change ) && ( res == Solver::kOK ) && f_c.root_evaluated )
+   f_c.root_evaluated( n->bound );
   if( f_sol ) {                         // found by this node
    n->solution.reset( f_sol );
    n->found = f_best;
@@ -1336,6 +1432,9 @@ int BranchAndXSolver::compute( bool changedvars )
   // but the cutoff, if any, which the nodes are pruned against as if it were
   // one [see start_incumbent()]
   f_incumbentCell->store( start_incumbent() );
+  // nor any bound of the search, nor nodes set aside [see publish_bound()]
+  f_bestBoundCell->store( - no_incumbent() );
+  f_unresolvedBound.store( no_incumbent() , std::memory_order_relaxed );
   // no bound known but those of the nodes [see f_probeBound]
   f_probeBound = ( f_Block->get_objective_sense() == Objective::eMax )
                  ? Inf< double >() : - Inf< double >();
@@ -1363,6 +1462,13 @@ int BranchAndXSolver::compute( bool changedvars )
     f_state = kCutOff;
     f_open_bound = start_incumbent();
     }
+   }
+
+  // the bound of the whole solve [see get_lb()], unless it has failed
+  if( f_state != kError ) {
+   const bool minimizing =
+    ( f_Block->get_objective_sense() != Objective::eMax );
+   publish_bound( minimizing ? get_lb() : get_ub() , minimizing );
    }
   }
 
@@ -1564,7 +1670,7 @@ int BranchAndXSolver::reseedFrontier( OpenList & open ,
                            bestSolution , f_incumbentCell , f_deadline ,
                            toPrune , maxThreadForSolvers );
   if( inconclusive( res ) ) {    // set aside, still in the frontier
-   v_unresolved.push_back( F->get_bound() );
+   set_aside( F->get_bound() , minimizing );
    subOptimalNodes.push_back( F );
    res = Solver::kOK;
    continue;
@@ -1629,6 +1735,10 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  while( ( ! open.empty() ) && ( nodeBudget > 1 ) &&
         ( timeBudget > std::chrono::duration< double >(
            std::chrono::high_resolution_clock::now() - start ).count() ) ) {
+  // the bound of the search: that of the open nodes, the next one included,
+  // which the node being evaluated has until the next extraction
+  if( double best ; open.best_bound( best ) )
+   publish_bound( best , minimizing );
   if( double next ; open.next_bound( next ) &&
       cannot_improve( next , f_incumbentCell->load() , minimizing , relTol ,
                       absTol ) ) {
@@ -1690,7 +1800,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                        maxThreadForSolvers , relTol , absTol , globalMutex ,
                        nullptr , false );
    if( inconclusive( res ) ) {     // set aside, as if fenced
-    v_unresolved.push_back( currentNode->get_bound() );
+    set_aside( currentNode->get_bound() , minimizing );
     prunedHere = true;
     res = Solver::kOK;
     }
@@ -1753,7 +1863,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
                         branchSolver ,
                         maxThreadForSolvers , relTol , absTol , globalMutex );
     if( inconclusive( res ) ) {    // set aside, as if fenced
-     v_unresolved.push_back( new_node->get_bound() );
+     set_aside( new_node->get_bound() , minimizing );
      toPrune = true;
      res = Solver::kOK;
      }
@@ -1931,10 +2041,10 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
  std::unique_ptr< OpenList > openPtr;
  switch( solveType ) {
   case( DFS ):
-   openPtr.reset( new StackOpenList() );
+   openPtr.reset( new StackOpenList( cmp ) );
    break;
   case( BFS ):
-   openPtr.reset( new QueueOpenList() );
+   openPtr.reset( new QueueOpenList( cmp ) );
    break;
   case( BestFS ):
    openPtr.reset( new PriorityOpenList( cmp ) );
@@ -2034,7 +2144,7 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  if( inconclusive( res ) ) {       // set aside, as if fenced
   {
    std::lock_guard< std::mutex > guard( incumbentMutex );
-   v_unresolved.push_back( currentNode->get_bound() );
+   set_aside( currentNode->get_bound() , minimizing );
    }
   moveSolverToFather( currentNode , &solvers );
   return( Solver::kOK );
@@ -2117,9 +2227,29 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  ExploringNode * currentNode = rootNode;
  const std::size_t target = std::size_t( 4 * K );
 
+ // the bound of the search [see publish_bound()]: the best among those of
+ // the nodes of the pool and of the subtrees that the workers have claimed,
+ // each of which is no worse than that of the node at its root; it is
+ // published by the ramp-up before each extraction, and by the workers
+ // when they claim a subtree and when they end its exploration, under the
+ // lock of the pool
+ const double noBound = minimizing ? Inf< double >() : - Inf< double >();
+ std::vector< double > claimed( std::size_t( K ) , noBound );
+ const auto publishPool = [ & ]( void ) {
+  double best = noBound;
+  for( auto n : pool )
+   best = minimizing ? std::min( best , n->get_bound() )
+                     : std::max( best , n->get_bound() );
+  for( auto b : claimed )
+   best = minimizing ? std::min( best , b ) : std::max( best , b );
+  if( best != noBound )
+   publish_bound( best , minimizing );
+  };
+
  while( ( ! pool.empty() ) && ( pool.size() < target ) &&
         ( --nodeBdg > 0 ) &&
         ( std::chrono::steady_clock::now() < deadline ) ) {
+  publishPool();
   ExploringNode * oldNode = currentNode;
   currentNode = pool.front();
   pool.pop_front();
@@ -2143,7 +2273,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                         toPrune , nodeBranchSolver ,
                         1 , relTol , absTol , globalMutex );
     if( inconclusive( res ) ) {    // set aside, as if fenced
-     v_unresolved.push_back( new_node->get_bound() );
+     set_aside( new_node->get_bound() , minimizing );
      toPrune = true;
      res = Solver::kOK;
      }
@@ -2218,6 +2348,8 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
      pool.pop_front();
      --poolSize;
      ++busy;
+     claimed[ std::size_t( w ) ] = node->get_bound();
+     publishPool();
      }
 
     // claim the subtree: re-apply the path of Changes from the root
@@ -2268,7 +2400,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        if( inconclusive( RV ) ) {  // set aside, as if fenced
         {
          std::lock_guard< std::mutex > guard( incumbentMutex );
-         v_unresolved.push_back( new_node->get_bound() );
+         set_aside( new_node->get_bound() , minimizing );
          }
         toPrune = true;
         RV = Solver::kOK;
@@ -2330,6 +2462,9 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     {
      std::lock_guard< std::mutex > guard( poolMutex );
      --busy;
+     claimed[ std::size_t( w ) ] = noBound;
+     if( result.load() == Solver::kOK )
+      publishPool();
      }
     poolChanged.notify_all();
     }
@@ -2388,6 +2523,11 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   c.relaxation.push_back( & ws.relaxation );
   c.heuristic.push_back( & ws.heuristic );
   }
+ // the frontier is within PBeFS, which gives its bound only at the end:
+ // during the search the bound is that of the root [see publish_bound()]
+ c.root_evaluated = [ this , minimizing ]( double b ) {
+  publish_bound( b , minimizing );
+  };
 
  // the strategy as a selection of PBeFS: the dive of BestFSDive goes
  // down to a leaf whatever the bound of the child
@@ -2473,6 +2613,32 @@ void BranchAndXSolver::checkPBeFSScheme( const std::string & name )
   throw( std::invalid_argument( "BranchAndXSolver::set_par: PBeFS has no "
                                 "scheme " + name ) );
   }
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void BranchAndXSolver::set_aside( double bound , bool minimizing )
+{
+ v_unresolved.push_back( bound );
+ // the best of the bounds set aside is lowered lock-free, the caller's lock
+ // being on v_unresolved only
+ double cur = f_unresolvedBound.load( std::memory_order_relaxed );
+ while( ( minimizing ? bound < cur : bound > cur ) &&
+        ( ! f_unresolvedBound.compare_exchange_weak( cur , bound ) ) ) {}
+ }
+
+/*--------------------------------------------------------------------------*/
+
+void BranchAndXSolver::publish_bound( double bound , bool minimizing )
+{
+ const double u = f_unresolvedBound.load( std::memory_order_relaxed );
+ const double z = f_incumbentCell->load( std::memory_order_relaxed );
+ bound = minimizing ? std::min( { bound , u , z } )
+                    : std::max( { bound , u , z } );
+ // only improved, by whichever thread finds a better one
+ double cur = f_bestBoundCell->load( std::memory_order_relaxed );
+ while( ( minimizing ? bound > cur : bound < cur ) &&
+        ( ! f_bestBoundCell->compare_exchange_weak( cur , bound ) ) ) {}
  }
 
 /*--------------------------------------------------------------------------*/

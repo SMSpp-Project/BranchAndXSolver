@@ -498,7 +498,8 @@ class BranchAndXSolver : public Solver {
                       boundingProtocol( Eager ) ,
                       maxThread( 0 ) , reoptimize( 0 ) ,
                       maxNodes( INT_MAX ) , treeExplorer( OwnExplorer ) ,
-                      f_incumbentCell( nullptr ) , f_lfaCell( nullptr ) ,
+                      f_incumbentCell( nullptr ) ,
+                      f_bestBoundCell( nullptr ) , f_lfaCell( nullptr ) ,
                       f_treeRoot( nullptr ) ,
                       nodeBudget( INT_MAX ) , timeBudget( Inf< double >() ) ,
                       relTol( 0 ) , absTol( 0 ) ,
@@ -1297,21 +1298,22 @@ class BranchAndXSolver : public Solver {
  /// declare in the GlobalInformation what this search shares
  /** Declares in the GlobalInformation the Collection that the search shares
   * with its inner Solver: the reserved "hot" scalars and flags of the whole
-  * cooperation [see GlobalInformation.h], i.e., the incumbent and the
-  * local-fixing-allowed flag. The references to the two individual atomics
-  * are cached once here, and used lock-free ever after; the incumbent starts
-  * at "no incumbent", which is why this needs the Block: which infinity that
-  * is depends on the sense of the Objective. Called by set_Block(), i.e.,
-  * before any inner Solver is handed the GlobalInformation. */
+  * cooperation [see GlobalInformation.h], i.e., the incumbent, the best
+  * bound and the local-fixing-allowed flag. The references to the three
+  * individual atomics are cached once here, and used lock-free ever after;
+  * the incumbent starts at "no incumbent" and the best bound at "no bound",
+  * which is why this needs the Block: which infinity that is depends on the
+  * sense of the Objective. Called by set_Block(), i.e., before any inner
+  * Solver is handed the GlobalInformation. */
 
  void initializeGlobalInformation( void ) {
   if( ! f_incumbentCell ) {   // the first Block: declare the Collection
    f_globalInfo.add_to_Universe< std::atomic< double > >(
 				GlobalInformation::str_AtomicScalars );
-   f_incumbentCell = &( ( * f_globalInfo.get_from_Universe<
-			  std::atomic< double > >(
-			   GlobalInformation::str_AtomicScalars ) )[
-			    GlobalInformation::str_Incumbent ] );
+   auto scalars = f_globalInfo.get_from_Universe< std::atomic< double > >(
+					   GlobalInformation::str_AtomicScalars );
+   f_incumbentCell = &( ( * scalars )[ GlobalInformation::str_Incumbent ] );
+   f_bestBoundCell = &( ( * scalars )[ GlobalInformation::str_BestBound ] );
 
    f_globalInfo.add_to_Universe< std::atomic< bool > >(
 				GlobalInformation::str_AtomicFlags );
@@ -1320,6 +1322,7 @@ class BranchAndXSolver : public Solver {
 		      GlobalInformation::str_LocalFixingAllowed ] );
    }
   f_incumbentCell->store( no_incumbent() );
+  f_bestBoundCell->store( - no_incumbent() );
   f_lfaCell->store( true );
   }
 
@@ -1555,6 +1558,28 @@ class BranchAndXSolver : public Solver {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// set aside a node whose evaluation is inconclusive, of the given bound
+ /** Adds \p bound to v_unresolved, under the lock of the caller if any, and
+  * improves f_unresolvedBound with it [see publish_bound()]. */
+
+ void set_aside( double bound , bool minimizing );
+
+/*--------------------------------------------------------------------------*/
+ /// improve the best bound of the GlobalInformation
+ /** Takes \p bound, the best among the relaxation bounds of the open nodes
+  * and of the node being evaluated as the caller knows them, makes it no
+  * better than those of the nodes set aside unresolved [see
+  * f_unresolvedBound] and than the incumbent, and stores it in
+  * f_bestBoundCell if it improves it (i.e., if it is larger for a
+  * minimization problem, smaller for a maximization one), so that the cell
+  * is monotone and a call that does not change it costs only the loads.
+  * The incumbent may be a cutoff, or the target of the cutoff probing
+  * [see intCutOffProbing], with which the value is still a bound, since a
+  * solution better than it can only lie under an open node. */
+
+ void publish_bound( double bound , bool minimizing );
+
+/*--------------------------------------------------------------------------*/
  /// account for the nodes set aside unresolved in the global bound
  /** Improves f_open_bound with the relaxation bounds of the nodes set aside
   * unresolved in this solve [see v_unresolved], and returns true if some of
@@ -1751,6 +1776,22 @@ class BranchAndXSolver : public Solver {
   * GlobalInformation::str_Incumbent]; not finite when no feasible solution
   * has been found yet [see no_incumbent()]. nullptr until set_Block(). */
  std::atomic< double > * f_incumbentCell;
+
+ /// the cached reference to the atomic best-bound cell
+ /** The global relaxation bound of the exploration under way, i.e., the
+  * best among the relaxation bounds of the open nodes, of the node being
+  * evaluated, of the nodes set aside unresolved, and the incumbent [see
+  * get_lb()], which is how the relaxations see it lock-free [see
+  * GlobalInformation::str_BestBound and publish_bound()]: it starts at "no
+  * bound" (- no_incumbent()) at each compute(), and is only ever improved
+  * during it. nullptr until set_Block(). */
+ std::atomic< double > * f_bestBoundCell;
+
+ /// the best of the bounds of the nodes set aside unresolved in this solve
+ /** The best (smallest for a minimization problem) of v_unresolved, kept
+  * lock-free by set_aside() so that publish_bound() can account for them
+  * at no cost; no_incumbent() when there are none. */
+ std::atomic< double > f_unresolvedBound{ 0 };
 
  /// the cached reference to the atomic local-fixing-allowed flag
  /** Set by each compute(), which is where it is known whether the tree is
@@ -2274,6 +2315,18 @@ class OpenList {
   * empty list. */
 
  [[nodiscard]] virtual bool next_bound( double & bound ) const {
+  return( false );
+  }
+
+ /// the best relaxation bound of the open nodes, if the list knows it
+ /** Writes in \p bound the best (the smallest for a minimization problem)
+  * relaxation bound among those of the open nodes and returns true, which
+  * the exploration publishes as the bound of the search [see
+  * GlobalInformation::str_BestBound]; returns false for an empty list, and
+  * for one that does not keep it. A node does not change its bound while it
+  * is in the list. */
+
+ [[nodiscard]] virtual bool best_bound( double & bound ) const {
   return( false );
   }
 
