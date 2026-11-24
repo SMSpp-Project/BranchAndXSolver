@@ -1935,6 +1935,46 @@ class ExploringNode : public Node {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// whether prune_away() can prune the node, the :ChangeSolver being on
+ /// the node \p at
+ /** The pruning of an open node deletes it and the ancestors it leaves
+  * childless, the root excepted; it can be done without the :ChangeSolver
+  * if none of them is the node they are on. */
+
+ static bool can_prune_away( const ExploringNode * node ,
+                             const ExploringNode * at ) {
+  if( ( node == at ) || ( ! node->parent ) )
+   return( false );
+  for( auto p = node->parent ; p->parent && ( p->f_children.size() == 1 ) ;
+       p = p->parent )
+   if( p == at )
+    return( false );
+  return( true );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// prune an open node that the :ChangeSolver are not on, not moving them
+ /** Deletes \p node and, recursively, any ancestor left childless, the root
+  * excepted, as prune() does, but applying no undo Change, the :ChangeSolver
+  * being elsewhere [see can_prune_away()]. */
+
+ static void prune_away( ExploringNode * node ) {
+  for( ; ; ) {
+   ExploringNode * parentNode = node->parent;
+   auto & children = parentNode->get_children();
+   children.erase( std::remove( children.begin() , children.end() , node ) ,
+                   children.end() );
+   auto & branches = parentNode->getBranches();
+   branches.erase( std::remove( branches.begin() , branches.end() ,
+                                node->get_f_change() ) , branches.end() );
+   delete node;
+   if( ( ! parentNode->get_children().empty() ) || ( ! parentNode->parent ) )
+    return;
+   node = parentNode;
+   }
+  }
+
+/*--------------------------------------------------------------------------*/
  /// prune the node, recursively pruning any parent left childless
  /** Prunes \p nodeToPrune, moving the :ChangeSolver to its parent; if the
   * parent is left with no children it is recursively pruned as well.

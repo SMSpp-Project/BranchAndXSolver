@@ -1552,6 +1552,25 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   ++iterations;
   oldNode = currentNode;
   currentNode = open.pop();
+
+  // a node that can no longer improve the incumbent is pruned where it is,
+  // the solvers staying where they are, unless that would delete the node
+  // they are on; a retained tree keeps it in the fenced frontier instead,
+  // which needs the solvers on it
+  if( ( ! retain ) &&
+      cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
+                      minimizing , relTol , absTol ) &&
+      ExploringNode::can_prune_away( currentNode , oldNode ) ) {
+   if( f_log )
+    logNode( f_log , iterations , currentNode , bestBound ,
+	     std::chrono::duration< double >(
+	      std::chrono::high_resolution_clock::now() - start ).count() ,
+	     0 , true );
+   ExploringNode::prune_away( currentNode );
+   currentNode = oldNode;
+   continue;
+   }
+
   if( currentNode->get_parent() )   // the root: the solvers are already there
    ExploringNode::moveBetweenNodes( oldNode , currentNode , solvers );
 
