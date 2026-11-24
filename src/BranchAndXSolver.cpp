@@ -1053,15 +1053,16 @@ struct BXContext {
  std::mutex & globalMutex;               ///< of the BranchAndXSolver
  Deadline deadline;                      ///< the end of the time budget
  double rootBound;                       ///< the bound the root starts from
- /// the bounds of the nodes set aside unresolved, under unresolvedMutex
- std::vector< double > unresolved;
- std::mutex unresolvedMutex;             ///< of unresolved
+ /// called with the bound of each node set aside unresolved, under
+ /// unresolvedMutex [see BranchAndXSolver::set_aside()]
+ std::function< void( double ) > set_aside;
+ std::mutex unresolvedMutex;             ///< of set_aside
  std::vector< Relaxations * > relaxation;  ///< of each worker
  std::vector< Heuristics * > heuristic;    ///< of each worker
  std::atomic< int > error{ Solver::kOK };  ///< the first error, if any
- /// called with the bound of the root once it is evaluated, which is all
- /// that the BranchAndXSolver knows of the bound of the search before its
- /// end [see BranchAndXSolver::publish_bound()]
+ /// called with the bound of the root once it is evaluated, which is the
+ /// bound of the search until the search gives a better one [see
+ /// BranchAndXSolver::publish_bound()]
  std::function< void( double ) > root_evaluated;
 
  /// the sign that turns a value of the Block into one to minimize
@@ -1186,7 +1187,7 @@ class BXWorker {
   if( inconclusive( res ) ) {           // set aside, as if fenced
    {
     std::lock_guard< std::mutex > guard( f_c.unresolvedMutex );
-    f_c.unresolved.push_back( n->bound );
+    f_c.set_aside( n->bound );
     }
    n->pruned = true;
    return;
@@ -2523,8 +2524,13 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   c.relaxation.push_back( & ws.relaxation );
   c.heuristic.push_back( & ws.heuristic );
   }
- // the frontier is within PBeFS, which gives its bound only at the end:
- // during the search the bound is that of the root [see publish_bound()]
+ c.set_aside = [ this , minimizing ]( double b ) {
+  set_aside( b , minimizing );
+  };
+ // the frontier is within PBeFS, which gives its bound (in the sense of
+ // the minimization) by on_bound when it improves and at the end, and may
+ // give none before the end: until it does, the bound is that of the root;
+ // both are given by the workers, which publish_bound() allows
  c.root_evaluated = [ this , minimizing ]( double b ) {
   publish_bound( b , minimizing );
   };
@@ -2566,6 +2572,9 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
  o.split_shared = pbefsSplitShared;
  if( f_incumbentCell->load() != no_incumbent() )
   o.incumbent = c.sign() * f_incumbentCell->load();
+ o.on_bound = [ this , & c , minimizing ]( double b ) {
+  publish_bound( c.sign() * b , minimizing );
+  };
 
  const BXTree t{ c };
  const auto s = PB::parallel_branch_and_bound( t ,
@@ -2581,10 +2590,8 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   delete bestSolution;
   bestSolution = ( *s.node )->solution.release();
   }
- // the nodes set aside unresolved bound what is left, as the open ones do
- // [see add_unresolved_bounds()]
- v_unresolved.insert( v_unresolved.end() , c.unresolved.begin() ,
-                      c.unresolved.end() );
+ // the nodes set aside unresolved [see set_aside()] bound what is left,
+ // as the open ones do [see add_unresolved_bounds()]
  switch( s.status ) {
   case( PB::BBStatus::node_limit ):
    f_open_bound = c.sign() * s.bound;

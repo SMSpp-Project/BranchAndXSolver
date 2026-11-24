@@ -61,7 +61,7 @@ endif ()
 # intTreeExplorer]: installed, or else the sources of the commit
 # BXS_PBEFS_COMMIT, added as a subproject with the C++ threads only and
 # without the symbolic searches
-set(BXS_PBEFS_COMMIT 3cea768e341d329c47223ab34dc05b4e303eb156
+set(BXS_PBEFS_COMMIT 3fc57057e54ca77edfb50d7d2dbe1a876f5ce12c
     CACHE STRING "The commit of PBeFS to download")
 find_package(PBeFS CONFIG QUIET)
 if (NOT PBeFS_FOUND)

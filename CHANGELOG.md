@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aside, and the incumbent, which every open list keeps in constant time
   (but the best-estimate one, in logarithmic time) and the parallel
   depth-first search takes from its pool and from the subtrees claimed by
-  the workers, while the search of PBeFS, which gives the bound of its
-  frontier only at its end, gives that of the root until then
+  the workers, and the search of PBeFS gives each time it improves, that of
+  the root standing until it gives one
 
 - the parameters `intPBeFSSpawnDepth` and `intPBeFSBudget`, the spawn depth
   of the schemes `depthbounded` and `ordered` of PBeFS and the backtracks

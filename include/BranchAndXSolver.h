@@ -1535,7 +1535,11 @@ class BranchAndXSolver : public Solver {
   * they are extracted; with the eager one, a child whose evaluation has
   * found a feasible solution is given to the search even when it cannot
   * improve on that solution, and the solution is lost only if the
-  * incumbent is within the tolerances of it when the child is extracted. */
+  * incumbent is within the tolerances of it when the child is extracted.
+  * The bound of the search [see publish_bound()] is the one that PBeFS
+  * gives each time it improves, and that of the root until it gives one;
+  * a node set aside unresolved, which PBeFS takes as infeasible, bounds it
+  * through set_aside(). */
 
  int PBeFSSolve( std::mutex & globalMutex , int K );
 
