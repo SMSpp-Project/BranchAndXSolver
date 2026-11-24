@@ -4,9 +4,9 @@
 #                                                                            #
 #   makefile of test (for BranchAndXSolver)                                  #
 #                                                                            #
-#                                Donato Meoli                                #
-#                          Dipartimento di Informatica                       #
-#                              Universita' di Pisa                           #
+#                             Antonio Frangioni                              #
+#                         Dipartimento di Informatica                        #
+#                             Universita' di Pisa                            #
 #                                                                            #
 ##############################################################################
 
