@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exploration starts from, so that the nodes are pruned against it, and a
   solve with no solution better than it ends in `kCutOff`
 
+- the race of PBeFS before its scheme, by `vintPBeFSRace` (the strategy of
+  each racer) and `intPBeFSRaceNodes`, and
+  `vstrWorkerBlockSolverConfigurationFile`, the BlockSolverConfig of each
+  worker of the parallel explorations but the first, so that the racers
+  (and the workers) may have differently configured inner Solver
+
 ### Changed
 
 - the makefiles give the shared library of the module by default, a DLL on

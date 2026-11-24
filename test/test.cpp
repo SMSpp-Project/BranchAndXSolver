@@ -1126,6 +1126,34 @@ void test_infeasible( void )
  }
 
 /*--------------------------------------------------------------------------*/
+/// the race of PBeFS [see vintPBeFSRace] before a scheme, by every
+/// strategy as the racer and with a race short enough to leave the scheme
+/// nodes to explore, in both senses; one worker only, hence one racer [see
+/// test_tree_explorer()]
+
+void test_race( void )
+{
+ std::cout << "the race of PBeFS" << std::endl;
+ const char * method[] = { "DFS" , "BFS" , "BestFS" , "BestFSDive" ,
+                          "BestEstimate" };
+ for( const std::string t : { "sequential" , "shared" , "selfsplit" } )
+  for( bool max : { false , true } )
+   for( int m = 0 ; m < 5 ; ++m ) {
+    auto inst = make( max ? 11 : 7 , max );
+    auto bnx = new_bnx();
+    set_int( bnx , "intTreeExplorer" , BranchAndXSolver::PBeFS );
+    set_str( bnx , "strPBeFSScheme" , t );
+    bnx->set_par( BranchAndXSolver::vintPBeFSRace ,
+                  std::vector< int >{ m , BranchAndXSolver::BestFS } );
+    set_int( bnx , "intPBeFSRaceNodes" , 3 );
+    inst.block->register_Solver( bnx );
+    solve_and_check( bnx , inst , "race " + t + ", " + method[ m ] +
+                     ( max ? ", max" : ", min" ) );
+    destroy( inst );
+    }
+ }
+
+/*--------------------------------------------------------------------------*/
 /// a cutoff (dblUpCutOff when minimizing, dblLwCutOff when maximizing) is the
 /// incumbent that the exploration starts from: one worse than the optimum
 /// leaves it found, with no more nodes than without it, one better than the
@@ -1287,6 +1315,15 @@ void test_parameters( void )
         "string parameter name round trip" );
  check( n_int == BranchAndXSolver::intLastBXSPar ,
         "number of int parameters" );
+ const int vi = BranchAndXSolver::vintPBeFSRace;
+ const int vs = BranchAndXSolver::vstrWorkerBlockSolverConfigurationFile;
+ check( bnx->vint_par_str2idx( bnx->vint_par_idx2str( vi ) ) == vi ,
+        "vector-of-int parameter name round trip" );
+ check( bnx->vstr_par_str2idx( bnx->vstr_par_idx2str( vs ) ) == vs ,
+        "vector-of-string parameter name round trip" );
+ check( ( bnx->get_num_vint_par() == BranchAndXSolver::vintLastBXSPar ) &&
+        ( bnx->get_num_vstr_par() == BranchAndXSolver::vstrLastBXSPar ) ,
+        "number of vector parameters" );
 
  // the defaults
  check( bnx->get_dflt_int_par( BranchAndXSolver::intSolveMethod ) ==
@@ -1306,6 +1343,10 @@ void test_parameters( void )
  cc.dbl_pars.push_back( { "dblAbsAcc" , 1e-7 } );
  cc.str_pars.push_back( { "strNameOfBlockSolverConfigurationFile" ,
                           "InnerBSCfg-rounding.txt" } );
+ cc.vint_pars.push_back( { "vintPBeFSRace" , { BranchAndXSolver::DFS ,
+                                              BranchAndXSolver::BestFS } } );
+ cc.vstr_pars.push_back( { "vstrWorkerBlockSolverConfigurationFile" ,
+                           { "" , "InnerBSCfg.txt" } } );
  try {
   bnx->set_ComputeConfig( & cc );
   }
@@ -1322,6 +1363,12 @@ void test_parameters( void )
  check( get_dbl( bnx , "dblAbsAcc" ) == 1e-7 , "dblAbsAcc by name" );
  check( get_str( bnx , "strNameOfBlockSolverConfigurationFile" ) ==
         "InnerBSCfg-rounding.txt" , "the BlockSolverConfig file by name" );
+ check( bnx->get_vint_par( vi ) == std::vector< int >{
+         BranchAndXSolver::DFS , BranchAndXSolver::BestFS } ,
+        "vintPBeFSRace by name" );
+ check( bnx->get_vstr_par( vs ) == std::vector< std::string >{
+         "" , "InnerBSCfg.txt" } ,
+        "vstrWorkerBlockSolverConfigurationFile by name" );
 
  // intMaxNodes <= 0 means no limit
  set_int( bnx , "intMaxNodes" , -3 );
@@ -1353,6 +1400,22 @@ void test_parameters( void )
   thrown = true;
   }
  check( thrown , "a missing BlockSolverConfig file accepted" );
+ thrown = false;
+ try {
+  bnx->set_par( vs , std::vector< std::string >{ "no-such-file.txt" } );
+  }
+ catch( std::invalid_argument & ) {
+  thrown = true;
+  }
+ check( thrown , "a missing BlockSolverConfig file of a worker accepted" );
+ thrown = false;
+ try {
+  bnx->set_par( vi , std::vector< int >{ BranchAndXSolver::DFS , 9 } );
+  }
+ catch( std::invalid_argument & ) {
+  thrown = true;
+  }
+ check( thrown , "a racer with strategy 9 accepted" );
 
  // the factory reset brings every parameter back to its default, the name
  // of the BlockSolverConfig file (empty) included
@@ -1367,6 +1430,8 @@ void test_parameters( void )
  check( get_dbl( bnx , "dblMaxTime" ) == INF , "dblMaxTime after the reset"
         );
  check( bnx->get_str_par( s ).empty() , "the file name after the reset" );
+ check( bnx->get_vint_par( vi ).empty() && bnx->get_vstr_par( vs ).empty() ,
+        "the vector parameters after the reset" );
 
  // a new BlockSolverConfig on an attached Solver replaces the inner Solver;
  // the name is given as a temporary, i.e., to the rvalue version
@@ -1499,9 +1564,9 @@ int main( void )
  const std::vector< void ( * )( void ) > cases = {
   test_closed_form , test_strategies , test_maximization ,
   test_tree_explorer , test_best_estimate , test_unresolved , test_heuristic ,
-  test_infeasible , test_cutoff , test_integral_root , test_limits ,
-  test_parallel_no_copy , test_parameters , test_detach_reattach ,
-  test_objective_change , test_integrality_change };
+  test_infeasible , test_race , test_cutoff , test_integral_root ,
+  test_limits , test_parallel_no_copy , test_parameters ,
+  test_detach_reattach , test_objective_change , test_integrality_change };
 
  for( auto c : cases ) {
   try {

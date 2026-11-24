@@ -2243,15 +2243,26 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
  // the strategy as a selection of PBeFS: the dive of BestFSDive goes
  // down to a leaf whatever the bound of the child
  PB::ParallelBBOptions o;
- switch( solveType ) {
-  case( DFS ):    o.selection = PB::Selection::depth_first; break;
-  case( BFS ):    o.selection = PB::Selection::breadth_first; break;
-  case( BestFS ): o.selection = PB::Selection::best_first; break;
-  case( BestEstimate ): o.selection = PB::Selection::best_estimate; break;
-  default:
-   o.selection = PB::Selection::plunging;
-   o.plunge_gap = Inf< double >();
+ const auto select = []( auto & b , int m ) {
+  switch( m ) {
+   case( DFS ):    b.selection = PB::Selection::depth_first; break;
+   case( BFS ):    b.selection = PB::Selection::breadth_first; break;
+   case( BestFS ): b.selection = PB::Selection::best_first; break;
+   case( BestEstimate ): b.selection = PB::Selection::best_estimate; break;
+   default:
+    b.selection = PB::Selection::plunging;
+    b.plunge_gap = Inf< double >();
+   }
+  };
+ select( o , solveType );
+ // the racers, at most one per worker [see vintPBeFSRace]
+ for( std::size_t k = 0 ; ( k < pbefsRace.size() ) && ( k < Index( K ) ) ;
+      ++k ) {
+  o.race.emplace_back();
+  select( o.race.back() , pbefsRace[ k ] );
   }
+ if( pbefsRaceNodes > 0 )
+  o.race_nodes = std::size_t( pbefsRaceNodes );
  o.rel_gap = relTol;
  o.abs_gap = absTol == Inf< double >() ? 0 : absTol;
  if( nodeBudget < INT_MAX )

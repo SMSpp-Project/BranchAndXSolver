@@ -304,7 +304,15 @@ class BranchAndXSolver : public Solver {
   intPBeFSSpawnDepth ,              ///< the spawn depth of PBeFS
   intPBeFSBudget ,                  ///< the spawn budget of PBeFS
   intPBeFSSplitShared ,             ///< the SelfSplit of PBeFS shares
+  intPBeFSRaceNodes ,               ///< the nodes of a racer of PBeFS
   intLastBXSPar                     ///< first allowed new int parameter
+  };
+
+ /// public enum for the vector-of-int algorithmic parameters
+
+ enum vint_par_type_BXS {
+  vintPBeFSRace = vintLastAlgPar ,  ///< the racers of PBeFS
+  vintLastBXSPar                    ///< first allowed new vint parameter
   };
 
  /// public enum for the string algorithmic parameters
@@ -314,6 +322,14 @@ class BranchAndXSolver : public Solver {
   strNameOfBlockSolverConfigurationFile = strLastAlgPar ,
   strPBeFSScheme ,                 ///< the scheme of PBeFS
   strLastBXSPar                    ///< first allowed new string parameter
+  };
+
+ /// public enum for the vector-of-string algorithmic parameters
+
+ enum vstr_par_type_BXS {
+  /// the BlockSolverConfig files of the workers but the first
+  vstrWorkerBlockSolverConfigurationFile = vstrLastAlgPar ,
+  vstrLastBXSPar                   ///< first allowed new vstr parameter
   };
 
  /// public enum for when the inner Solver are run on a node
@@ -403,6 +419,8 @@ class BranchAndXSolver : public Solver {
   discardRetainedTree();
   delete bestSolution;
   delete configurationRS;
+  for( auto cfg : v_workerRS )
+   delete cfg;
   for( auto slvr : v_created ) {
    slvr->set_Block( nullptr );
    delete slvr;
@@ -494,6 +512,9 @@ class BranchAndXSolver : public Solver {
   *   evaluated depend on the timing; with 0 each worker prunes only by its
   *   own incumbent, and the nodes evaluated depend only on the workers.
   *
+  * - intPBeFSRaceNodes [0]: the nodes that each racer of PBeFS evaluates at
+  *   most [see vintPBeFSRace]; <= 0 means the default of PBeFS.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -543,6 +564,9 @@ class BranchAndXSolver : public Solver {
     break;
    case( intPBeFSSplitShared ):
     pbefsSplitShared = ( value != 0 );
+    break;
+   case( intPBeFSRaceNodes ):
+    pbefsRaceNodes = std::max( 0 , value );
     break;
    default:
     Solver::set_par( par , value );
@@ -647,6 +671,73 @@ class BranchAndXSolver : public Solver {
    changes = Modification::eModAll;
    applyConfigurationToSolvers();
    }
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// set the vector-of-int parameters of BranchAndXSolver
+ /** - vintPBeFSRace [empty]: the strategies [see intSolveMethod] of the
+  *   racers that the branch-and-bound of PBeFS [see intTreeExplorer] starts
+  *   with: the racer k explores the tree from the root by the k-th of them
+  *   with the inner Solver of the worker k [see
+  *   vstrWorkerBlockSolverConfigurationFile], all of them at once and
+  *   pruning by the best incumbent of all, for at most intPBeFSRaceNodes
+  *   nodes, and the scheme of strPBeFSScheme goes on from the open nodes of
+  *   the racer with the best bound; the racers beyond the workers are left
+  *   out, and the empty vector (the default) means no race. A strategy out
+  *   of SolveMethod throws std::invalid_argument. */
+
+ void set_par( idx_type par , std::vector< int > && value ) override {
+  if( par != vintPBeFSRace ) {
+   Solver::set_par( par , std::move( value ) );
+   return;
+   }
+  for( const auto m : value )
+   if( ( m < DFS ) || ( m > BestEstimate ) )
+    throw( std::invalid_argument( "BranchAndXSolver::set_par: invalid "
+                                  "strategy in vintPBeFSRace" ) );
+  pbefsRace = std::move( value );
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// set the vector-of-string parameters of BranchAndXSolver
+ /** - vstrWorkerBlockSolverConfigurationFile [empty]: the names of the
+  *   files of the BlockSolverConfig of the workers of the parallel
+  *   explorations but the first, the i-th entry for the worker i + 1, whose
+  *   inner Solver are created out of it rather than out of the one of
+  *   strNameOfBlockSolverConfigurationFile, which is that of the first
+  *   worker, of the empty entries and of the workers beyond the vector;
+  *   every BlockSolverConfig must describe the same kinds of inner Solver
+  *   (:RelaxationSolver and heuristic :ChangeSolver), possibly differently
+  *   configured, since each Change of the tree is applied to the inner
+  *   Solver of whichever worker explores the node. A file out of which no
+  *   BlockSolverConfig can be created throws std::invalid_argument. */
+
+ void set_par( idx_type par , std::vector< std::string > && value )
+  override {
+  if( par != vstrWorkerBlockSolverConfigurationFile ) {
+   Solver::set_par( par , std::move( value ) );
+   return;
+   }
+  std::vector< BlockSolverConfig * > cfgs;
+  for( const auto & name : value ) {
+   BlockSolverConfig * cfg = nullptr;
+   if( ! name.empty() ) {
+    auto c = Configuration::deserialize( name );
+    cfg = dynamic_cast< BlockSolverConfig * >( c );
+    if( ! cfg ) {
+     delete c;
+     for( auto d : cfgs )
+      delete d;
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
+            "create a BlockSolverConfig out of " + name ) );
+     }
+    }
+   cfgs.push_back( cfg );
+   }
+  for( auto cfg : v_workerRS )
+   delete cfg;
+  v_workerRS = std::move( cfgs );
+  v_nameWorkerRS = std::move( value );
   }
 
 /*--------------------------------------------------------------------------*/
@@ -761,6 +852,14 @@ class BranchAndXSolver : public Solver {
   return( idx_type( strLastBXSPar ) );
   }
 
+ [[nodiscard]] idx_type get_num_vint_par( void ) const override {
+  return( idx_type( vintLastBXSPar ) );
+  }
+
+ [[nodiscard]] idx_type get_num_vstr_par( void ) const override {
+  return( idx_type( vstrLastBXSPar ) );
+  }
+
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
 
  [[nodiscard]] int get_dflt_int_par( idx_type par ) const override {
@@ -774,8 +873,25 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSSpawnDepth ):           return( 0 );
    case( intPBeFSBudget ):               return( 0 );
    case( intPBeFSSplitShared ):          return( 0 );
+   case( intPBeFSRaceNodes ):            return( 0 );
    }
   return( Solver::get_dflt_int_par( par ) );
+  }
+
+ [[nodiscard]] const std::vector< int > & get_dflt_vint_par( idx_type par )
+  const override {
+  static const std::vector< int > none;
+  if( par == vintPBeFSRace )
+   return( none );
+  return( Solver::get_dflt_vint_par( par ) );
+  }
+
+ [[nodiscard]] const std::vector< std::string > & get_dflt_vstr_par(
+                                         idx_type par ) const override {
+  static const std::vector< std::string > none;
+  if( par == vstrWorkerBlockSolverConfigurationFile )
+   return( none );
+  return( Solver::get_dflt_vstr_par( par ) );
   }
 
  [[nodiscard]] const std::string & get_dflt_str_par( idx_type par )
@@ -805,8 +921,23 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSSpawnDepth ):           return( pbefsSpawnDepth );
    case( intPBeFSBudget ):               return( pbefsBudget );
    case( intPBeFSSplitShared ):          return( pbefsSplitShared ? 1 : 0 );
+   case( intPBeFSRaceNodes ):            return( pbefsRaceNodes );
    }
   return( Solver::get_int_par( par ) );
+  }
+
+ [[nodiscard]] const std::vector< int > & get_vint_par( idx_type par )
+  const override {
+  if( par == vintPBeFSRace )
+   return( pbefsRace );
+  return( Solver::get_vint_par( par ) );
+  }
+
+ [[nodiscard]] const std::vector< std::string > & get_vstr_par(
+                                         idx_type par ) const override {
+  if( par == vstrWorkerBlockSolverConfigurationFile )
+   return( v_nameWorkerRS );
+  return( Solver::get_vstr_par( par ) );
   }
 
  [[nodiscard]] double get_dbl_par( idx_type par ) const override {
@@ -851,6 +982,8 @@ class BranchAndXSolver : public Solver {
    return( intPBeFSBudget );
   if( name == "intPBeFSSplitShared" )
    return( intPBeFSSplitShared );
+  if( name == "intPBeFSRaceNodes" )
+   return( intPBeFSRaceNodes );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -861,6 +994,20 @@ class BranchAndXSolver : public Solver {
   if( name == "strPBeFSScheme" )
    return( strPBeFSScheme );
   return( Solver::str_par_str2idx( name ) );
+  }
+
+ [[nodiscard]] idx_type vint_par_str2idx( const std::string & name )
+  const override {
+  if( name == "vintPBeFSRace" )
+   return( vintPBeFSRace );
+  return( Solver::vint_par_str2idx( name ) );
+  }
+
+ [[nodiscard]] idx_type vstr_par_str2idx( const std::string & name )
+  const override {
+  if( name == "vstrWorkerBlockSolverConfigurationFile" )
+   return( vstrWorkerBlockSolverConfigurationFile );
+  return( Solver::vstr_par_str2idx( name ) );
   }
 
 /*- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -*/
@@ -874,7 +1021,8 @@ class BranchAndXSolver : public Solver {
                                       "intTreeExplorer" ,
                                       "intPBeFSSpawnDepth" ,
                                       "intPBeFSBudget" ,
-                                      "intPBeFSSplitShared" };
+                                      "intPBeFSSplitShared" ,
+                                      "intPBeFSRaceNodes" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -891,6 +1039,24 @@ class BranchAndXSolver : public Solver {
    return( par );
    }
   return( Solver::str_par_idx2str( idx ) );
+  }
+
+ [[nodiscard]] const std::string & vint_par_idx2str( idx_type idx )
+  const override {
+  if( idx == vintPBeFSRace ) {
+   static const std::string par = "vintPBeFSRace";
+   return( par );
+   }
+  return( Solver::vint_par_idx2str( idx ) );
+  }
+
+ [[nodiscard]] const std::string & vstr_par_idx2str( idx_type idx )
+  const override {
+  if( idx == vstrWorkerBlockSolverConfigurationFile ) {
+   static const std::string par = "vstrWorkerBlockSolverConfigurationFile";
+   return( par );
+   }
+  return( Solver::vstr_par_idx2str( idx ) );
   }
 
 /** @} ---------------------------------------------------------------------*/
@@ -1048,10 +1214,14 @@ class BranchAndXSolver : public Solver {
   for( Index w = 1 ; w < K ; ++w ) {
    auto & ws = v_workerSolvers[ w ];
    ws.block = copy_of_Block();
-   for( Index i = 0 ; i < configurationRS->num_ComputeConfig() ; ++i ) {
-    const auto name = configurationRS->get_SolverName( i );
+   // the BlockSolverConfig of the worker, if it has one of its own [see
+   // vstrWorkerBlockSolverConfigurationFile]
+   const auto rs = ( w - 1 < v_workerRS.size() ) && v_workerRS[ w - 1 ] ?
+                   v_workerRS[ w - 1 ] : configurationRS;
+   for( Index i = 0 ; i < rs->num_ComputeConfig() ; ++i ) {
+    const auto name = rs->get_SolverName( i );
     std::unique_ptr< Solver > s( Solver::new_Solver( name ) );
-    if( auto cfg = configurationRS->get_SolverConfig( i ) )
+    if( auto cfg = rs->get_SolverConfig( i ) )
      s->set_ComputeConfig( cfg );
     auto slvr = s.release();
     ws.block->register_Solver( slvr );
@@ -1420,7 +1590,18 @@ class BranchAndXSolver : public Solver {
 
  bool pbefsSplitShared = false;  ///< see intPBeFSSplitShared
 
+ int pbefsRaceNodes = 0;   ///< see intPBeFSRaceNodes
+
+ std::vector< int > pbefsRace;  ///< see vintPBeFSRace
+
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
+
+ /// the names of vstrWorkerBlockSolverConfigurationFile
+ std::vector< std::string > v_nameWorkerRS;
+
+ /// the BlockSolverConfig of vstrWorkerBlockSolverConfigurationFile, owned,
+ /// nullptr for an empty name
+ std::vector< BlockSolverConfig * > v_workerRS;
 
  /// the (private) inner Solver created out of configurationRS, owned
  std::vector< Solver * > v_created;
