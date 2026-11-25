@@ -1,0 +1,6 @@
+# Controlled root/child failure for the per-node CSV regression in test.cpp.
+BlockSolverConfig
+1
+1
+BoxLogFailure
+0

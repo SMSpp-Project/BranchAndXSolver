@@ -57,13 +57,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one of `smspp_install_rpath()`, with no test on the system or on the
   compiler [see `SMSppModule.cmake` of SMS++]; CMake 3.24 or later is needed
 
+- inner relaxation statuses in `[kOK, kError)` can drive branching, including
+  time, iteration and cutoff stops and custom recoverable statuses; an early
+  stop also requires a finite node bound and an available relaxation solution
+
+- `kLowPrecision`, which lies outside that interval, contributes valid bounds
+  and incumbents without authorizing branching; unpruned nodes without usable
+  branching information remain unresolved, and their first recorded status
+  is reported without assigning priorities (an unresolved cutoff becomes
+  `kLowPrecision`)
+
 ### Fixed
 
-- a relaxation that returns kCutOff fences the node only when there is an
-  incumbent, the cutoff that the relaxations are given: with none it comes
-  from a cutoff of their own, which proves nothing, and the node keeps its
-  bound and is set aside, where it fenced the root and the search ended
-  claiming its bound as the optimum with no solution
+- reject `NaN` relaxation bounds, non-finite true solution values and
+  contradictory certificates before updating the incumbent; construct a
+  replacement `Solution` before deleting the previous one, using the same
+  validation in serial and parallel evaluation
+
+- preserve computed bounds when pruning within tolerance and when repeating
+  an unchanged completed solve, and retain the bounds and feasible solutions
+  supplied by interrupted relaxations
+
+- a cutoff prunes a node only when its bound proves that it cannot improve
+  the incumbent, rather than treating every `kCutOff` as a pruning certificate;
+  an unpruned node without usable branching information keeps its bound and
+  is set aside, including when there is no incumbent
+
+- release the Solver with RAII on normal returns, early errors and exceptions;
+  failed explorations leave its state at `kError` while propagating the
+  exception
+
+- restore the parent state before a recursive worker returns an error or a
+  deeper resource-limit stop, and delete the branching Changes left unexplored
+
+- write one CSV row per evaluated serial node, including an eager root and
+  failed evaluations, without counting lazy nodes pruned before evaluation
+
+- delete an eagerly evaluated child that fails before it is linked into the
+  tree, releasing its undo Change without double-deleting its branching Change
+
 - the workers of the parallel exploration no longer share the Block: their
   inner Solver were all attached to it, and a relaxation that applies the
   branching to the Block (say, `LagrangianDualRelaxationSolver` fixing the

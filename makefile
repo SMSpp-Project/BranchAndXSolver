@@ -19,7 +19,7 @@
 #           $(BAXSLVH)    = the .h files to include                          #
 #           $(BAXSLVINC)  = the -I$( source directory )                      #
 #                                                                            #
-#                              Donato Meoli                                  #
+#                             Antonio Frangioni                              #
 #                         Dipartimento di Informatica                        #
 #                             Universita' di Pisa                            #
 #                                                                            #

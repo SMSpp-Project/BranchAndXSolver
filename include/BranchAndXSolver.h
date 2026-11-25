@@ -156,14 +156,17 @@ namespace SMSpp_di_unipi_it
  * "not active", i.e., as \f$ \varepsilon_a = 0 \f$: plugged in literally it
  * would prune every node as soon as there is an incumbent.
  *
- * A node whose evaluation is inconclusive, i.e., whose relaxation returns
- * kStopTime, kStopIter or kLowPrecision (say, a Lagrangian Dual not solved
- * to the required accuracy whose solution gives nothing to branch upon), is
- * set aside: it is neither branched upon nor fenced, the exploration goes on
+ * A relaxation returning a status in [kOK, kError) is eligible for branching.
+ * After an early stop it must also provide a finite bound and a solution.
+ * kLowPrecision lies outside that interval: its valid bounds and true feasible
+ * solutions can still be used, but do not authorize branching by themselves.
+ * Only a node without usable branching information that cannot
+ * be fenced by its bound is set aside: the exploration goes on
  * with the other nodes, and its bound enters that of the whole solve as the
  * bound of an open node does. If, at the end, some node so set aside can
- * still improve the incumbent, compute() returns kLowPrecision rather than
- * kOK; a relaxation returning kError still stops the whole solve.
+ * still improve the incumbent, compute() reports the status of the first
+ * unresolved node, without priority among the partial statuses; a relaxation
+ * returning kError still stops the whole solve.
  *
  * \par The Solver of a node.
  * A node is evaluated by a set of inner Solver, all described by the
@@ -1563,17 +1566,44 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// set aside a node whose evaluation is inconclusive, of the given bound
- /** Adds \p bound to v_unresolved, under the lock of the caller if any, and
-  * improves f_unresolvedBound with it [see publish_bound()]. */
+ /** Adds \p bound to v_unresolved, under the lock of the caller if any,
+  * keeps \p status as f_unresolved_status if the node is the first set
+  * aside, and accounts for \p bound in f_fenced_bound [see
+  * record_fenced()]. */
 
- void set_aside( double bound , bool minimizing );
+ void set_aside( double bound , bool minimizing , int status );
+
+/*--------------------------------------------------------------------------*/
+ /// account for a node fenced or pruned of the given bound
+ /** Lowers f_fenced_bound (raises it, for a maximization problem) to
+  * \p bound if it is worse, lock-free. */
+
+ void record_fenced( double bound , bool minimizing ) {
+  double previous = f_fenced_bound.load( std::memory_order_relaxed );
+  while( ( minimizing ? bound < previous : bound > previous ) &&
+         ( ! f_fenced_bound.compare_exchange_weak(
+                          previous , bound , std::memory_order_relaxed ) ) ) {}
+  }
+
+/*--------------------------------------------------------------------------*/
+ /// forget the nodes fenced and set aside by the explorations so far
+ /** Empties v_unresolved and resets f_unresolved_status and f_fenced_bound,
+  * at the start of each compute() and of each exploration of the cutoff
+  * probing [see probeCutOff()], whose next exploration covers the region
+  * of them all again. */
+
+ void clear_fenced( void ) {
+  v_unresolved.clear();
+  f_unresolved_status = Solver::kLowPrecision;
+  f_fenced_bound.store( no_incumbent() , std::memory_order_relaxed );
+  }
 
 /*--------------------------------------------------------------------------*/
  /// improve the best bound of the GlobalInformation
  /** Takes \p bound, the best among the relaxation bounds of the open nodes
   * and of the node being evaluated as the caller knows them, makes it no
-  * better than those of the nodes set aside unresolved [see
-  * f_unresolvedBound] and than the incumbent, and stores it in
+  * better than those of the nodes fenced or set aside unresolved [see
+  * f_fenced_bound] and than the incumbent, and stores it in
   * f_bestBoundCell if it improves it (i.e., if it is larger for a
   * minimization problem, smaller for a maximization one), so that the cell
   * is monotone and a call that does not change it costs only the loads.
@@ -1791,11 +1821,15 @@ class BranchAndXSolver : public Solver {
   * during it. nullptr until set_Block(). */
  std::atomic< double > * f_bestBoundCell;
 
- /// the best of the bounds of the nodes set aside unresolved in this solve
- /** The best (smallest for a minimization problem) of v_unresolved, kept
-  * lock-free by set_aside() so that publish_bound() can account for them
-  * at no cost; no_incumbent() when there are none. */
- std::atomic< double > f_unresolvedBound{ 0 };
+ /// the worst bound of the nodes taken out of the exploration unexplored
+ /** The worst (smallest for a minimization problem) among the relaxation
+  * bounds of the nodes fenced or pruned [see record_fenced()] and of those
+  * set aside unresolved [see set_aside()] in the exploration under way,
+  * kept lock-free: a node fenced within the tolerances may have a bound
+  * worse than the incumbent, which then bounds the solve no less than the
+  * open nodes do, and so publish_bound() and compute() account for it;
+  * no_incumbent() when there are none. */
+ std::atomic< double > f_fenced_bound{ 0 };
 
  /// the cached reference to the atomic local-fixing-allowed flag
  /** Set by each compute(), which is where it is known whether the tree is
@@ -1895,14 +1929,19 @@ class BranchAndXSolver : public Solver {
  std::list< ExploringNode * > integerNodes;
 
  /// the relaxation bounds of the nodes set aside unresolved in this solve
- /** A node whose evaluation is inconclusive (its relaxation returns
-  * kStopTime, kStopIter or kLowPrecision) can be neither branched upon nor
-  * fenced: it is set aside, and its relaxation bound (that of its father,
+ /** A node whose interrupted relaxation provides no usable branching
+  * solution and cannot be fenced is set aside. Its bound (that of its father,
   * if its own evaluation has not improved it) is kept here, so that the
   * bound of the whole solve accounts for the part of the region that it
   * covers [see add_unresolved_bounds()]. Written under the incumbent mutex
   * by the workers of the parallel exploration. */
  std::vector< double > v_unresolved;
+
+ /// the status of the first node set aside unresolved in this solve
+ /** What compute() returns when some node set aside can still improve the
+  * incumbent at the end [see set_aside()], there being no priority among
+  * the partial statuses; kLowPrecision when there is none. */
+ int f_unresolved_status = Solver::kLowPrecision;
 
  SMSpp_insert_in_factory_h;   // insert BranchAndXSolver in the factory
 

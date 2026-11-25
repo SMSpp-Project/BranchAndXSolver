@@ -1,0 +1,8 @@
+# Bound-only results must not block a usable branching solution.
+BlockSolverConfig
+1
+3
+BoxConstantPartial
+BoxStrongPartial
+BoxPartial
+0

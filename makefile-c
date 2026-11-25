@@ -18,8 +18,7 @@
 #           $(BAXSLVH)    = the .h files to include for BranchAndXSolver     #
 #           $(BAXSLVINC)  = the -I$( BranchAndXSolver directory )            #
 #                                                                            #
-#                              Filippo Magi                                  #
-#                              Donato Meoli                                  #
+#                             Antonio Frangioni                              #
 #                         Dipartimento di Informatica                        #
 #                             Universita' di Pisa                            #
 #                                                                            #
