@@ -949,9 +949,11 @@ struct BXContext {
  using Heuristics = std::vector< std::pair< ChangeSolver * , Solver * > >;
 
  BXContext( double rt , double at , bool min , bool e , bool l ,
-            std::mutex & gm , Deadline d )
+            std::mutex & gm , Deadline d , std::atomic< double > & inc ,
+            std::atomic< long > & ev )
   : relTol( rt ) , absTol( at ) , minimizing( min ) , eager( e ) ,
-    lifo( l ) , globalMutex( gm ) , deadline( d ) {}
+    lifo( l ) , globalMutex( gm ) , deadline( d ) , incumbent( inc ) ,
+    evaluated( ev ) {}
 
  double relTol;                          ///< the relative tolerance
  double absTol;                          ///< the absolute tolerance
@@ -960,6 +962,11 @@ struct BXContext {
  bool lifo;                              ///< the first branch last
  std::mutex & globalMutex;               ///< of the BranchAndXSolver
  Deadline deadline;                      ///< the end of the time budget
+ /// the incumbent of the GlobalInformation, which the inner Solver read
+ /// [see GlobalInformation::str_Incumbent]
+ std::atomic< double > & incumbent;
+ /// the evaluations of the search [see get_evaluated_nodes()]
+ std::atomic< long > & evaluated;
  /// the bounds of the nodes set aside unresolved, under unresolvedMutex
  std::vector< double > unresolved;
  std::mutex unresolvedMutex;             ///< of unresolved
@@ -1004,10 +1011,16 @@ class BXWorker {
   }
 
  /// the incumbent z of the search, in the sense of PBeFS, which the
- /// worker evaluates its next node against
+ /// worker evaluates its next node against, and which the incumbent of the
+ /// GlobalInformation is lowered to, so that the inner Solver read it as in
+ /// the own tree; z is the same for all the workers of a round of the
+ /// deterministic search, which stays deterministic
  void cutoff( double z ) {
   f_best = f_c.sign() * z;
   f_cell.store( f_best );
+  double g = f_c.incumbent.load();
+  while( improves( f_best , g , f_c.minimizing ) &&
+         ( ! f_c.incumbent.compare_exchange_weak( g , f_best ) ) ) {}
   }
 
  /// the evaluation of the node n, done now unless already done, whose
@@ -1061,6 +1074,7 @@ class BXWorker {
  // Changes while the Solver are on it
  void evaluate_here( const std::shared_ptr< BXLink > & n ) {
   move_to( n );
+  f_c.evaluated.fetch_add( 1 , std::memory_order_relaxed );
   DFSNode tmp( nullptr );
   tmp.set_bound( n->bound );
   // a node with no undo Change is the root to the evaluation, which tells
@@ -2295,7 +2309,8 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   ( f_Block->get_objective_sense() != Objective::eMax );
  BXContext c( relTol , absTol , minimizing , boundingProtocol == Eager ,
               ( solveType == DFS ) || ( solveType == BestFSDive ) ,
-              globalMutex , f_deadline );
+              globalMutex , f_deadline , * f_incumbentCell ,
+              f_evaluated_nodes );
  for( auto & ws : v_workerSolvers ) {
   c.relaxation.push_back( & ws.relaxation );
   c.heuristic.push_back( & ws.heuristic );

@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- the exploration of PBeFS gives its incumbent to the GlobalInformation
+  [see `GlobalInformation::str_Incumbent`] as it improves, where it stayed at
+  the cutoff, so that the inner Solver that read it (e.g., to fix by reduced
+  costs) see it as in the own tree, and it counts its evaluations in
+  `get_evaluated_nodes()`, which gave 0
 - a relaxation that returns kCutOff fences the node only when there is an
   incumbent, the cutoff that the relaxations are given: with none it comes
   from a cutoff of their own, which proves nothing, and the node keeps its
