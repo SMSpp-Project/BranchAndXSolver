@@ -402,6 +402,7 @@ class BranchAndXSolver : public Solver {
  enum dbl_par_type_BXS {
   dblCutOffProbingGap = dblLastAlgPar ,  ///< first step of the probing
   dblCutOffProbingFactor ,               ///< growth of the step
+  dblPlungeQuot ,                        ///< how far the dives go
   dblLastBXSPar                          ///< first allowed new dbl parameter
   };
 
@@ -723,7 +724,8 @@ class BranchAndXSolver : public Solver {
   *   for reoptimization, which may have been pruned against the old one.
   *
   * The double parameters specific of BranchAndXSolver are those of the
-  * cutoff probing [see intCutOffProbing and the class description]:
+  * cutoff probing [see intCutOffProbing and the class description], and
+  * that of the dives of BestFSDive:
   *
   * - dblCutOffProbingGap [1]: \f$ \Delta_0 > 0 \f$, the distance of the
   *   first target from the bound of the root, absolute or relative to it
@@ -731,7 +733,20 @@ class BranchAndXSolver : public Solver {
   *   values.
   *
   * - dblCutOffProbingFactor [1]: \f$ \varphi \geq 1 \f$, the factor by
-  *   which the step of the target grows at each refuted target. */
+  *   which the step of the target grows at each refuted target.
+  *
+  * - dblPlungeQuot [+INF]: \f$ \gamma \geq 0 \f$, how far a dive of
+  *   BestFSDive goes, as the plunging of SCIP: the dive goes on to the
+  *   child it would follow, of bound \f$ D \f$, only if \f$ D \leq
+  *   \underline{D} + \gamma ( \bar{z} - \underline{D} ) \f$ (\f$ D
+  *   \geq \overline{D} - \gamma ( \overline{D} - \bar{z} ) \f$ when
+  *   maximizing), for the incumbent \f$ \bar{z} \f$ and the best bound
+  *   \f$ \underline{D} \f$ of the open nodes, the children included, and
+  *   otherwise the children go to the queue and the next node is the one of
+  *   best bound; while there is no incumbent the dive always goes on, and
+  *   so it does with the default, down to a leaf. It is also the plunge_gap
+  *   of the plunging of PBeFS [see intTreeExplorer], which follows the
+  *   child of best bound. */
 
  void set_par( idx_type par , double value ) override {
   switch( par ) {
@@ -765,6 +780,12 @@ class BranchAndXSolver : public Solver {
      throw( std::invalid_argument( "BranchAndXSolver::set_par: "
             "dblCutOffProbingFactor must be at least 1" ) );
     probingFactor = value;
+    break;
+   case( dblPlungeQuot ):
+    if( ! ( value >= 0 ) )
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: "
+            "dblPlungeQuot must be nonnegative" ) );
+    plungeQuot = value;
     break;
    default:
     Solver::set_par( par , value );
@@ -1037,6 +1058,7 @@ class BranchAndXSolver : public Solver {
   switch( par ) {
    case( dblCutOffProbingGap ):    return( 1 );
    case( dblCutOffProbingFactor ): return( 1 );
+   case( dblPlungeQuot ):          return( Inf< double >() );
    }
   return( Solver::get_dflt_dbl_par( par ) );
   }
@@ -1114,6 +1136,7 @@ class BranchAndXSolver : public Solver {
    case( dblLwCutOff ): return( lwCutOff );
    case( dblCutOffProbingGap ):    return( probingGap );
    case( dblCutOffProbingFactor ): return( probingFactor );
+   case( dblPlungeQuot ):          return( plungeQuot );
    }
   return( Solver::get_dbl_par( par ) );
   }
@@ -1164,6 +1187,8 @@ class BranchAndXSolver : public Solver {
    return( dblCutOffProbingGap );
   if( name == "dblCutOffProbingFactor" )
    return( dblCutOffProbingFactor );
+  if( name == "dblPlungeQuot" )
+   return( dblPlungeQuot );
   return( Solver::dbl_par_str2idx( name ) );
   }
 
@@ -1213,7 +1238,8 @@ class BranchAndXSolver : public Solver {
  [[nodiscard]] const std::string & dbl_par_idx2str( idx_type idx )
   const override {
   static const std::string pars[] = { "dblCutOffProbingGap" ,
-                                      "dblCutOffProbingFactor" };
+                                      "dblCutOffProbingFactor" ,
+                                      "dblPlungeQuot" };
   if( ( idx >= dblCutOffProbingGap ) && ( idx < dblLastBXSPar ) )
    return( pars[ idx - dblCutOffProbingGap ] );
   return( Solver::dbl_par_idx2str( idx ) );
@@ -1861,6 +1887,8 @@ class BranchAndXSolver : public Solver {
  double probingGap = 1;              ///< see dblCutOffProbingGap
 
  double probingFactor = 1;           ///< see dblCutOffProbingFactor
+
+ double plungeQuot = Inf< double >(); ///< see dblPlungeQuot
 
  /// the bound that every root of the current exploration starts from
  /** In the sense of the Block, the infinity that any bound improves upon

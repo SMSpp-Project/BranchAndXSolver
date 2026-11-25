@@ -880,7 +880,9 @@ class PriorityOpenList final : public OpenList {
  * through push() before the next pop(): pop() routes the most promising of
  * them onward (continuing the dive) and spills the rest to the priority queue;
  * when no child arrives the dive has bottomed out and the next global best is
- * taken. */
+ * taken. With a finite quotient [see BranchAndXSolver::dblPlungeQuot] the
+ * dive also ends when the bound of the child it would follow is farther from
+ * the best bound than that share of the gap to the incumbent. */
 
 class DiveOpenList final : public OpenList {
 
@@ -888,7 +890,9 @@ class DiveOpenList final : public OpenList {
 
  public:
 
- explicit DiveOpenList( Cmp cmp ) : f_cmp( cmp ) , best( std::move( cmp ) ) {}
+ explicit DiveOpenList( Cmp cmp , double quot = Inf< double >() ,
+                        const std::atomic< double > * inc = nullptr )
+  : f_cmp( cmp ) , f_quot( quot ) , f_inc( inc ) , best( std::move( cmp ) ) {}
 
  [[nodiscard]] bool empty( void ) const override {
   return( best.empty() && children.empty() );
@@ -897,7 +901,7 @@ class DiveOpenList final : public OpenList {
  void push( ExploringNode * node ) override { children.push_back( node ); }
 
  ExploringNode * pop( void ) override {
-  if( ! children.empty() ) {
+  if( ( ! children.empty() ) && plunge( children.back()->get_bound() ) ) {
    // the loop is isLIFO(), so it pushed the children in reverse branching
    // order: back() is the first (most promising) branch, the dive follows it
    auto node = children.back();
@@ -907,6 +911,9 @@ class DiveOpenList final : public OpenList {
    children.clear();
    return( node );
    }
+  for( auto child : children )   // the dive ends here
+   best.push( child );
+  children.clear();
   auto node = best.top();
   best.pop();
   return( node );
@@ -932,7 +939,26 @@ class DiveOpenList final : public OpenList {
 
  private:
 
+ /// whether the dive goes on to a child of the given bound: always with an
+ /// infinite quotient or no incumbent, and otherwise if the bound is within
+ /// the quotient of the gap from the best bound to the incumbent
+ [[nodiscard]] bool plunge( double bound ) const {
+  if( ( f_quot == Inf< double >() ) || ( ! f_inc ) )
+   return( true );
+  const double z = f_inc->load();
+  double b0;
+  if( ( ! std::isfinite( z ) ) || ( ! best_bound( b0 ) ) ||
+      ( ! std::isfinite( b0 ) ) )
+   return( true );
+  return( f_cmp.minimizing ? bound <= b0 + f_quot * ( z - b0 )
+                           : bound >= b0 - f_quot * ( b0 - z ) );
+  }
+
  Cmp f_cmp;  ///< the order of the bounds
+
+ double f_quot;  ///< the quotient of the dives [see dblPlungeQuot]
+
+ const std::atomic< double > * f_inc;  ///< the incumbent, if any
 
  std::priority_queue< ExploringNode * , std::vector< ExploringNode * > , Cmp >
   best;
@@ -2084,7 +2110,7 @@ int BranchAndXSolver::treeSolve( std::mutex & globalMutex )
    openPtr.reset( new PriorityOpenList( cmp ) );
    break;
   case( BestFSDive ):
-   openPtr.reset( new DiveOpenList( cmp ) );
+   openPtr.reset( new DiveOpenList( cmp , plungeQuot , f_incumbentCell ) );
    break;
   case( BestEstimate ):
    openPtr.reset( new PriorityOpenList( BoundCmp{ minimizing , true } ) );
@@ -2568,10 +2594,11 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
   publish_bound( b , minimizing );
   };
 
- // the strategy as a selection of PBeFS: the dive of BestFSDive goes
- // down to a leaf whatever the bound of the child
+ // the strategy as a selection of PBeFS: the dive of BestFSDive goes as
+ // far as dblPlungeQuot says, by default down to a leaf whatever the bound
+ // of the child
  PB::ParallelBBOptions o;
- const auto select = []( auto & b , int m ) {
+ const auto select = [ this ]( auto & b , int m ) {
   switch( m ) {
    case( DFS ):    b.selection = PB::Selection::depth_first; break;
    case( BFS ):    b.selection = PB::Selection::breadth_first; break;
@@ -2579,7 +2606,7 @@ int BranchAndXSolver::PBeFSSolve( std::mutex & globalMutex , int K )
    case( BestEstimate ): b.selection = PB::Selection::best_estimate; break;
    default:
     b.selection = PB::Selection::plunging;
-    b.plunge_gap = Inf< double >();
+    b.plunge_gap = plungeQuot;
    }
   };
  select( o , solveType );

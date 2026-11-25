@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the parameter `dblPlungeQuot`, by which a dive of `BestFSDive` goes on to
+  a child only if its bound is within that share of the gap from the best
+  bound of the open nodes to the incumbent, as the plunging of SCIP, the
+  default going down to a leaf as before; it is also the `plunge_gap` of
+  the plunging of PBeFS
+
 - a child starts from the bound that the RelaxationSolver that branched
   gives of it, if it is a `BranchBounder` of SMS++ and the bound is better
   than that of the parent, and in the serial exploration the children are
