@@ -40,6 +40,8 @@
 #include <thread>
 #include <functional>
 #include <condition_variable>
+#include <exception>
+#include <mutex>
 
 #include "BranchAndXSolver.h"
 
@@ -102,6 +104,41 @@ static bool inconclusive( int res )
 {
  return( ( res > Solver::kOK && res < Solver::kError ) ||
 	  res == Solver::kLowPrecision );
+ }
+
+/// runs a function when it is destroyed by the unwinding of an exception
+/** For the cleanup that only an exception needs, e.g., taking the Solver
+ * back to the root when an inner Solver throws in the middle of a node; any
+ * exception that the function throws is swallowed, the one unwinding being
+ * the one to tell. */
+
+template< class F >
+class OnUnwind {
+ public:
+ explicit OnUnwind( F f ) : f_f( std::move( f ) ) ,
+                            f_n( std::uncaught_exceptions() ) {}
+ OnUnwind( const OnUnwind & ) = delete;
+ OnUnwind & operator=( const OnUnwind & ) = delete;
+ ~OnUnwind() {
+  if( std::uncaught_exceptions() > f_n )
+   try {
+    f_f();
+    }
+   catch( ... ) {}
+  }
+ private:
+ F f_f;
+ int f_n;
+ };
+
+/// delete the tree of ExploringNode under \p root, \p root included
+
+static void delete_tree( ExploringNode * root )
+{
+ for( auto child : root->get_children() )
+  delete_tree( child );
+ root->get_children().clear();
+ delete root;
  }
 
 /// the time by which a solve has to end, max() if none
@@ -523,11 +560,22 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
  const int K = std::max( 1 , std::min( maxThreads , n ) );
  std::atomic< int > next( 0 );
  std::atomic< bool > infeasible( false );
+ // the first exception of a Solver, given to the caller once all are done
+ std::exception_ptr error;
+ std::mutex errorMutex;
  auto work = [ & ]() {
   for( int i ; ( ! infeasible.load( std::memory_order_relaxed ) ) &&
                ( ( i = next.fetch_add( 1 ) ) < n ) ; ) {
-   bool r;
-   zs[ i ] = compute_by( slvrs[ i ].second , deadline , r );
+   bool r = false;
+   try {
+    zs[ i ] = compute_by( slvrs[ i ].second , deadline , r );
+    }
+   catch( ... ) {
+    std::lock_guard< std::mutex > guard( errorMutex );
+    if( ! error )
+     error = std::current_exception();
+    next.store( n );
+    }
    ran[ i ] = r;
    if( zs[ i ] == Solver::kInfeasible )
     infeasible.store( true , std::memory_order_relaxed );
@@ -540,6 +588,8 @@ static bool computeAllParallel( const std::vector< SolverPtr > & slvrs ,
  work();                       // the calling thread is a worker too
  for( auto & th : pool )
   th.join();
+ if( error )
+  std::rethrow_exception( error );
  return( infeasible.load() );
  }
 
@@ -1697,6 +1747,29 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
  ExploringNode * oldNode = nullptr;
  int iterations = 0;      // extractions from the open set, for the log
  std::vector< ExploringNode * > kept;  // surviving children of a node
+ // the child being evaluated, if any: the Solver are on it rather than on
+ // currentNode until they are moved back to its father
+ ExploringNode * child = nullptr;
+ // if an inner Solver throws, the Solver are moved back to the root, so that
+ // none of the Changes of the nodes is left on the Block, and the tree is
+ // discarded, the child included if it is not in the tree yet
+ OnUnwind unwind( [ & ]() {
+  ExploringNode::moveBetweenNodes( child ? child : currentNode , rootNode ,
+                                   solvers );
+  if( child ) {
+   // a child not in the tree yet shares its Change with the branching list
+   // of its parent, which gives it up first, as when it fails
+   auto parent = child->get_parent();
+   auto & sibs = parent->get_children();
+   if( std::find( sibs.begin() , sibs.end() , child ) == sibs.end() ) {
+    for( auto & ch : parent->getBranches() )
+     if( ch == child->get_f_change() )
+      ch = nullptr;
+    delete child;
+    }
+   }
+  discardTree( rootNode , open , solvers , nullptr );
+  } );
  // whether the loop stopped at a node whose bound cannot improve the
  // incumbent, which the open set gives best bound first: none of the open
  // nodes can, and they are all fenced as they would be at their pop
@@ -1822,6 +1895,7 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
     if( f_log )
      evalStart = std::chrono::high_resolution_clock::now();
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+    child = new_node;
     res = evaluateNode( new_node , *solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , f_deadline , toPrune ,
@@ -1862,11 +1936,13 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
      *( std::find( branches.begin() , branches.end() ,
                    new_node->get_f_change() ) ) = nullptr;
      moveSolverToFather( new_node , solvers );
+     child = nullptr;
      kept.push_back( new_node );  // pushed to the open set after the loop
      }
     else {  // fenced or pruned child
      record_fenced( new_node->get_bound() , minimizing );
      moveSolverToFather( new_node , solvers );
+     child = nullptr;
      *( std::find( branches.begin() , branches.end() ,
                    new_node->get_f_change() ) ) = nullptr;
      if( retain ) {              // it belongs to the fenced frontier:
@@ -2127,6 +2203,9 @@ int BranchAndXSolver::workerDFS( Node * currentNode ,
  // (the per-node-solvers parallelism does not lock the incumbent), so the
  // globalMutex argument is unused here
  f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+ // if an inner Solver throws, the Solver go back to the father, and so on
+ // up to the subtree that the worker has claimed [see ParallelDFSSolve()]
+ OnUnwind back( [ & ]() { moveSolverToFather( currentNode , &solvers ); } );
  int res = evaluateNode( currentNode , solvers , &relaxation , &heuristic ,
 			 minimizing , bestBound , bestSolution ,
 			 f_incumbentCell ,
@@ -2249,6 +2328,24 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
    publish_bound( best , minimizing );
   };
 
+ // the child being evaluated, if any; if an inner Solver throws during the
+ // ramp-up, the Solver are moved back to the root and the ramp-up tree is
+ // deleted, the child included (it owns its Change, which left the
+ // branches of its father)
+ ExploringNode * child = nullptr;
+ bool rampUp = true;
+ OnUnwind rampUnwind( [ & ]() {
+  if( ! rampUp )
+   return;
+  ExploringNode::moveBetweenNodes( child ? child : currentNode , rootNode ,
+                                   &solvers );
+  if( child ) {
+   auto & sibs = child->get_parent()->get_children();
+   if( std::find( sibs.begin() , sibs.end() , child ) == sibs.end() )
+    delete child;
+   }
+  delete_tree( rootNode );
+  } );
  while( ( ! pool.empty() ) && ( pool.size() < target ) &&
         ( --nodeBdg > 0 ) &&
         ( std::chrono::steady_clock::now() < deadline ) ) {
@@ -2273,6 +2370,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     bool toPrune = false;
     RelaxationSolver * nodeBranchSolver = nullptr;
     f_evaluated_nodes.fetch_add( 1 , std::memory_order_relaxed );
+    child = new_node;
     res = evaluateNode( new_node , solvers , &f_RelaxationSolvers ,
                         &f_HeuristicSolvers , minimizing , bestBound ,
                         bestSolution , f_incumbentCell , f_deadline ,
@@ -2285,6 +2383,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
      }
     if( res != Solver::kOK ) {
      moveSolverToFather( new_node , &solvers );
+     child = nullptr;
      delete new_node;
      break;
      }
@@ -2299,10 +2398,12 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
      pool.push_back( new_node );
      currentNode->get_children().push_back( new_node );
      moveSolverToFather( new_node , &solvers );
+     child = nullptr;
      }
     else {  // fenced or pruned: discard the child
      record_fenced( new_node->get_bound() , minimizing );
      moveSolverToFather( new_node , &solvers );
+     child = nullptr;
      delete new_node;
      }
     }
@@ -2313,6 +2414,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
 
  // back to the root, ready for the workers
  ExploringNode::moveBetweenNodes( currentNode , rootNode , &solvers );
+ rampUp = false;
 
  // workers - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
  // each worker repeatedly claims the OLDEST open subtree of the pool
@@ -2320,6 +2422,10 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  // on it by re-applying the Changes of its path, explores it depth-first
  // and un-winds back to the root via the (already computed) toFather
  std::atomic< int > result( res );
+ // the first exception of a worker, given to the caller once all are done
+ // and the tree is deleted
+ std::exception_ptr error;
+ std::mutex errorMutex;
  if( ( res == Solver::kOK ) && ( ! pool.empty() ) ) {
   std::mutex poolMutex , incumbentMutex;
   std::atomic< std::size_t > poolSize( pool.size() );
@@ -2328,7 +2434,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
   // busy worker to finish, both of which happen under poolMutex
   std::condition_variable poolChanged;
 
-  auto workerLoop = [ & ]( int w ) {
+  auto workerBody = [ & ]( int w ) {
    auto & ws = v_workerSolvers[ w ];
    std::list< ChangeSolver * > wsolvers;
    for( auto & pr : ws.relaxation )
@@ -2366,6 +2472,14 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     for( auto it = path.rbegin() ; it != path.rend() ; ++it )
      for( auto s : wsolvers )
       s->apply( *it , false );
+    // if an inner Solver throws, the Solver are back at node [see
+    // workerDFS()], and from there they go back to the root
+    OnUnwind unclaim( [ & ]() {
+     for( auto n = node ; n ; n = n->get_parent() )
+      if( n->get_toFather() )
+       for( auto s : wsolvers )
+        s->apply( n->get_toFather() , false );
+     } );
 
     // explore the subtree depth-first, unless meanwhile fenced
     if( cannot_improve( node->get_bound() , f_incumbentCell->load() ,
@@ -2393,6 +2507,15 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
                                           ++wNameCounter );
        br = nullptr;
        moveSolverToSon( new_node , &wsolvers );
+       // if an inner Solver throws, the Solver go back to the claimed node,
+       // and the child, not donated yet, is deleted
+       bool settled = false;
+       OnUnwind back( [ & ]() {
+        if( settled )
+         return;
+        moveSolverToFather( new_node , &wsolvers );
+        delete new_node;
+        } );
        new_node->set_bound( node->get_bound() );  // inherited
        bool toPrune = false;
        RelaxationSolver * nodeBranchSolver = nullptr;
@@ -2426,6 +2549,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
        if( donate )
         new_node->obtainBranchList( nodeBranchSolver );
        moveSolverToFather( new_node , &wsolvers );
+       settled = true;               // the Solver are back: nothing to undo
        if( RV != Solver::kOK ) {
         delete new_node;
         int expected = Solver::kOK;
@@ -2482,6 +2606,25 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
     }
    };
 
+  // an exception of a worker stops all of them
+  auto workerLoop = [ & ]( int w ) {
+   try {
+    workerBody( w );
+    }
+   catch( ... ) {
+    {
+     std::lock_guard< std::mutex > guard( errorMutex );
+     if( ! error )
+      error = std::current_exception();
+     }
+    {
+     std::lock_guard< std::mutex > guard( poolMutex );
+     result.store( Solver::kError );
+     }
+    poolChanged.notify_all();
+    }
+   };
+
   std::vector< std::thread > workers;
   workers.reserve( K );
   for( int w = 0 ; w < K ; ++w )
@@ -2507,6 +2650,8 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
    delete node;
    };
  deleteTree( rootNode );
+ if( error )
+  std::rethrow_exception( error );
 
  if( ( result.load() == Solver::kOK ) && ( nodeBdg <= 0 ) )
   return( Solver::kStopIter );

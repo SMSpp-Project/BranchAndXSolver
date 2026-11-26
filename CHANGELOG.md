@@ -69,6 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- an inner Solver that throws during the exploration leaves none of the
+  Changes of the nodes on the Block: the Solver are taken back to the root
+  and the tree is deleted before the exception goes on, where the Block was
+  left at the node, so that the Solver computed after it saw a restricted
+  problem and gave a bound beyond the optimum; in the parallel explorations
+  the exception of a worker stops the others and is thrown by `compute()`
+  once they are back, where it ended the program
+
 - reject `NaN` relaxation bounds, non-finite true solution values and
   contradictory certificates before updating the incumbent; construct a
   replacement `Solution` before deleting the previous one, using the same
