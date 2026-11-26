@@ -1210,7 +1210,7 @@ class BXWorker {
   if( ( ! n->pruned ) && bs ) {
    for( Change * c : bs->branch() )
     n->branches.emplace_back( c );
-   if( auto be = dynamic_cast< BranchEstimator * >( bs ) ) {
+   if( auto be = branch_estimator( bs ) ) {
     n->estimates = be->branch_estimates();
     if( n->estimates.size() != n->branches.size() )
      n->estimates.clear();

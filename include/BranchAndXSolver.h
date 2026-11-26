@@ -63,6 +63,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <typeinfo>
 #include <vector>
 
 #include "BlockSolverConfig.h"
@@ -1950,6 +1951,30 @@ class BranchAndXSolver : public Solver {
  };  // end( class( BranchAndXSolver ) )
 
 /*--------------------------------------------------------------------------*/
+/*----------------------- FUNCTIONS OF THE NODES ---------------------------*/
+/*--------------------------------------------------------------------------*/
+/// the RelaxationSolver as a BranchEstimator, nullptr if it is not one
+/** A dynamic_cast that fails, which is the case of most RelaxationSolver,
+ * walks the whole hierarchy of the class comparing the names of the types,
+ * when their type_info are not merged across shared libraries; asked at
+ * every node, it costs as much as the node of a cheap relaxation. The
+ * dynamic type found last not to be a BranchEstimator is therefore kept,
+ * for each thread, and a RelaxationSolver of that type is answered with no
+ * cast. */
+
+inline BranchEstimator * branch_estimator( RelaxationSolver * solver )
+{
+ thread_local const std::type_info * none = nullptr;
+ const std::type_info * type = & typeid( * solver );
+ if( type == none )
+  return( nullptr );
+ auto be = dynamic_cast< BranchEstimator * >( solver );
+ if( ! be )
+  none = type;
+ return( be );
+ }
+
+/*--------------------------------------------------------------------------*/
 /*------------------------------ CLASS Node --------------------------------*/
 /*--------------------------------------------------------------------------*/
 /// a node of the Branch-and-Bound tree
@@ -2060,7 +2085,7 @@ class Node {
    delete ch;
   branches = solver->branch();
   estimates.clear();
-  if( auto be = dynamic_cast< BranchEstimator * >( solver ) ) {
+  if( auto be = branch_estimator( solver ) ) {
    estimates = be->branch_estimates();
    if( estimates.size() != branches.size() )
     estimates.clear();
