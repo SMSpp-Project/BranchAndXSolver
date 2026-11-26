@@ -387,6 +387,7 @@ class BranchAndXSolver : public Solver {
   intPBeFSRaceNodes ,               ///< the nodes of a racer of PBeFS
   intCutOffProbing ,                ///< the scheme of the cutoff probing
   intCutOffProbingRuns ,            ///< max refuted targets of the probing
+  intRampUpNodes ,                  ///< nodes per worker of the ramp-up
   intLastBXSPar                     ///< first allowed new int parameter
   };
 
@@ -411,6 +412,8 @@ class BranchAndXSolver : public Solver {
   /// name of the BlockSolverConfig file providing the inner Solver
   strNameOfBlockSolverConfigurationFile = strLastAlgPar ,
   strPBeFSScheme ,                 ///< the scheme of PBeFS
+  /// the BlockSolverConfig of the Solver run at the root alongside
+  strAsyncRootBlockSolverConfigurationFile ,
   strLastBXSPar                    ///< first allowed new string parameter
   };
 
@@ -519,6 +522,7 @@ class BranchAndXSolver : public Solver {
   discardRetainedTree();
   delete bestSolution;
   delete configurationRS;
+  delete configurationAsyncRS;
   for( auto cfg : v_workerRS )
    delete cfg;
   for( auto slvr : v_created ) {
@@ -625,6 +629,12 @@ class BranchAndXSolver : public Solver {
   *   cutoff; <= 0 means no limit, with which a problem with no solution
   *   better than the cutoff is explored with ever worse targets forever.
   *
+  * - intRampUpNodes [4]: the open nodes per worker that the ramp-up of the
+  *   parallel depth-first exploration puts in the pool before the workers
+  *   start [see ParallelDFSSolve()]; the ramp-up evaluates them one at a
+  *   time, so fewer nodes start the workers sooner and leave the balance
+  *   more to the work-sharing; <= 0 means 1.
+  *
   * The inherited intMaxThread [0] sets the number of workers of the
   * parallel tree exploration [see ParallelDFSSolve(); <= 1 = serial; the
   * base Solver classes do not store it, so it is stored here]. The inherited
@@ -686,6 +696,9 @@ class BranchAndXSolver : public Solver {
     break;
    case( intCutOffProbingRuns ):
     probingRuns = std::max( 0 , value );
+    break;
+   case( intRampUpNodes ):
+    rampUpNodes = std::max( 1 , value );
     break;
    default:
     Solver::set_par( par , value );
@@ -782,6 +795,19 @@ class BranchAndXSolver : public Solver {
   *   PBeFS can be named [see bb_scheme() in PBeFS]; an unknown name throws
   *   std::invalid_argument.
   *
+  * - strAsyncRootBlockSolverConfigurationFile [""]: name of the file of the
+  *   BlockSolverConfig of the Solver that a thread of their own computes,
+  *   once, on an identical copy of the Block [see copy_of_Block()] with
+  *   none of the Changes of the tree, while the exploration goes on [see
+  *   runWithAsyncRoot()]: typically a relaxation whose heuristic is
+  *   expensive, so that the exploration, whose inner Solver have a cheap
+  *   one, need not wait for it. As soon as they end, a solution of theirs
+  *   better than the incumbent is the incumbent, which prunes the nodes
+  *   from then on and is the cutoff of the inner Solver; the solve ends
+  *   when both the exploration and they have ended. The empty name (the
+  *   default) means none; it is not used by the cutoff probing [see
+  *   intCutOffProbing].
+  *
   * The string parameters are taken by the rvalue version, which the one
   * taking a const reference forwards to [see ThinComputeInterface]. */
 
@@ -789,6 +815,22 @@ class BranchAndXSolver : public Solver {
   if( par == strPBeFSScheme ) {
    checkPBeFSScheme( value );
    pbefsScheme = std::move( value );
+   return;
+   }
+  if( par == strAsyncRootBlockSolverConfigurationFile ) {
+   BlockSolverConfig * cfg = nullptr;
+   if( ! value.empty() ) {
+    auto c = Configuration::deserialize( value );
+    cfg = dynamic_cast< BlockSolverConfig * >( c );
+    if( ! cfg ) {
+     delete c;
+     throw( std::invalid_argument( "BranchAndXSolver::set_par: unable to "
+            "create a BlockSolverConfig out of " + value ) );
+     }
+    }
+   delete configurationAsyncRS;
+   configurationAsyncRS = cfg;
+   nameAsyncRS = std::move( value );
    return;
    }
   if( par != strNameOfBlockSolverConfigurationFile ) {
@@ -1022,6 +1064,7 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSRaceNodes ):            return( 0 );
    case( intCutOffProbing ):             return( int( NoProbing ) );
    case( intCutOffProbingRuns ):         return( 100 );
+   case( intRampUpNodes ):               return( 4 );
    }
   return( Solver::get_dflt_int_par( par ) );
   }
@@ -1060,6 +1103,10 @@ class BranchAndXSolver : public Solver {
    static const std::string dfltScheme = "shared";
    return( dfltScheme );
    }
+  if( par == strAsyncRootBlockSolverConfigurationFile ) {
+   static const std::string dfltAsync;
+   return( dfltAsync );
+   }
   return( Solver::get_dflt_str_par( par ) );
   }
 
@@ -1080,6 +1127,7 @@ class BranchAndXSolver : public Solver {
    case( intPBeFSRaceNodes ):            return( pbefsRaceNodes );
    case( intCutOffProbing ):             return( int( probing ) );
    case( intCutOffProbingRuns ):         return( probingRuns );
+   case( intRampUpNodes ):               return( rampUpNodes );
    }
   return( Solver::get_int_par( par ) );
   }
@@ -1117,6 +1165,8 @@ class BranchAndXSolver : public Solver {
    return( nameRS );
   if( par == strPBeFSScheme )
    return( pbefsScheme );
+  if( par == strAsyncRootBlockSolverConfigurationFile )
+   return( nameAsyncRS );
   return( Solver::get_str_par( par ) );
   }
 
@@ -1148,6 +1198,8 @@ class BranchAndXSolver : public Solver {
    return( intCutOffProbing );
   if( name == "intCutOffProbingRuns" )
    return( intCutOffProbingRuns );
+  if( name == "intRampUpNodes" )
+   return( intRampUpNodes );
   return( Solver::int_par_str2idx( name ) );
   }
 
@@ -1166,6 +1218,8 @@ class BranchAndXSolver : public Solver {
    return( strNameOfBlockSolverConfigurationFile );
   if( name == "strPBeFSScheme" )
    return( strPBeFSScheme );
+  if( name == "strAsyncRootBlockSolverConfigurationFile" )
+   return( strAsyncRootBlockSolverConfigurationFile );
   return( Solver::str_par_str2idx( name ) );
   }
 
@@ -1197,7 +1251,8 @@ class BranchAndXSolver : public Solver {
                                       "intPBeFSSplitShared" ,
                                       "intPBeFSRaceNodes" ,
                                       "intCutOffProbing" ,
-                                      "intCutOffProbingRuns" };
+                                      "intCutOffProbingRuns" ,
+                                      "intRampUpNodes" };
   if( ( idx >= intSolveMethod ) && ( idx < intLastBXSPar ) )
    return( pars[ idx - intSolveMethod ] );
   return( Solver::int_par_idx2str( idx ) );
@@ -1220,6 +1275,10 @@ class BranchAndXSolver : public Solver {
    }
   if( idx == strPBeFSScheme ) {
    static const std::string par = "strPBeFSScheme";
+   return( par );
+   }
+  if( idx == strAsyncRootBlockSolverConfigurationFile ) {
+   static const std::string par = "strAsyncRootBlockSolverConfigurationFile";
    return( par );
    }
   return( Solver::str_par_idx2str( idx ) );
@@ -1500,8 +1559,9 @@ class BranchAndXSolver : public Solver {
  /// parallel depth-first exploration with \p K workers
  /** Parallel depth-first exploration, used when the inherited intMaxThread
   * parameter is > 1: a serial, ordered (FIFO, i.e., discovery order)
-  * ramp-up expands the tree BestFS-style until enough open subtrees exist,
-  * then \p K workers, each driving its own private set of inner Solver
+  * ramp-up expands the tree BestFS-style until intRampUpNodes open
+  * subtrees per worker exist, then \p K workers, each driving its own
+  * private set of inner Solver
   * [see createWorkerSolvers()], repeatedly claim the OLDEST open subtree
   * (preserving the sequential search order, which is what keeps parallel
   * performance replicable) and explore it depth-first, sharing only the
@@ -1662,6 +1722,21 @@ class BranchAndXSolver : public Solver {
   * and from the bound f_probeBound. */
 
  int runExploration( std::mutex & globalMutex );
+
+/*--------------------------------------------------------------------------*/
+ /// one exploration with the Solver of the root alongside
+ /** Runs an exploration [see runExploration()] while a thread computes,
+  * once, the Solver of strAsyncRootBlockSolverConfigurationFile on an
+  * identical copy of f_Block with no Change applied; when they end, the
+  * best solution among those of their :RelaxationSolver [see
+  * RelaxationSolver::get_true_solution()] and of their heuristic
+  * :ChangeSolver lowers f_incumbentCell, if better, so that the
+  * exploration prunes by it from then on, the exploration itself only
+  * ever lowering f_incumbentCell. Once both are done, the solution is the
+  * incumbent if it is better than that of the exploration; an exception
+  * of the thread is thrown after the exploration has ended. */
+
+ int runWithAsyncRoot( std::mutex & globalMutex );
 
 /*--------------------------------------------------------------------------*/
  /// the sequence of explorations of the cutoff probing
@@ -1871,6 +1946,7 @@ class BranchAndXSolver : public Solver {
  bool pbefsSplitShared = false;  ///< see intPBeFSSplitShared
 
  int pbefsRaceNodes = 0;   ///< see intPBeFSRaceNodes
+ int rampUpNodes = 4;      ///< see intRampUpNodes
 
  std::vector< int > pbefsRace;  ///< see vintPBeFSRace
 
@@ -1891,6 +1967,13 @@ class BranchAndXSolver : public Solver {
  double f_probeBound = 0;
 
  BlockSolverConfig * configurationRS;  ///< the inner BlockSolverConfig
+
+ /// the BlockSolverConfig of strAsyncRootBlockSolverConfigurationFile,
+ /// owned, nullptr for none
+ BlockSolverConfig * configurationAsyncRS = nullptr;
+
+ /// the name of strAsyncRootBlockSolverConfigurationFile
+ std::string nameAsyncRS;
 
  /// the names of vstrWorkerBlockSolverConfigurationFile
  std::vector< std::string > v_nameWorkerRS;

@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after which the scheme `budget` spawns tasks, whose defaults (those of
   PBeFS) leave most of the workers idle on more than 4 of them
 
+- `strAsyncRootBlockSolverConfigurationFile`, the BlockSolverConfig of
+  Solver that a thread of their own computes once at the root, on a copy of
+  the Block, while the exploration goes on, so that an expensive heuristic
+  of the root does not hold it up: their solution, as soon as they end, is
+  the incumbent if it is better, which prunes the nodes from then on
+
+- the parameter `intRampUpNodes`, the open nodes per worker that the
+  ramp-up of the parallel depth-first exploration evaluates, one at a time,
+  before the workers start, 4 by default as before
+
 - the parameter `intPBeFSSplitShared`, by which the workers of the scheme
   `selfsplit` of PBeFS share their incumbent
 

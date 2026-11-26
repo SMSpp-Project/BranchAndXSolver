@@ -91,6 +91,19 @@ static bool improves( double value , double best , bool minimizing )
  return( minimizing ? value < best : value > best );
  }
 
+/// lowers (raises, when maximizing) the incumbent \p cell to \p value
+/** The value is stored only while it improves the one in the cell, which
+ * another thread may lower meanwhile [see
+ * BranchAndXSolver::runWithAsyncRoot()]. */
+
+static void lower_incumbent( std::atomic< double > * cell , double value ,
+                             bool minimizing )
+{
+ double old = cell->load();
+ while( improves( value , old , minimizing ) &&
+        ( ! cell->compare_exchange_weak( old , value ) ) ) {}
+ }
+
 /// whether the evaluation of a node has ended inconclusively
 /** True for the return codes with which a relaxation says that it has
  * neither solved nor failed (stopped by a budget of its own, or unable to
@@ -386,7 +399,7 @@ static int computeRelaxations(
      delete bestSol;
      bestSol = candidate.release();
      bestBound = primal;
-     incumbentCell->store( primal );
+     lower_incumbent( incumbentCell , primal , minimizing );
      }
     }
    }
@@ -491,7 +504,7 @@ static int computeHeuristic(
    if( s->has_var_solution() && s->is_var_feasible() &&
        improves( primal_bound , incumbentCell->load() , minimizing ) ) {
     bestBound = primal_bound;
-    incumbentCell->store( bestBound );
+    lower_incumbent( incumbentCell , bestBound , minimizing );
     delete bestSol;
     bestSol = solution_of( s );
     }
@@ -521,7 +534,7 @@ static int computeHeuristic(
     guard = std::unique_lock< std::mutex >( *incumbentMutex );
    if( improves( primal_bound , incumbentCell->load() , minimizing ) ) {
     bestBound = primal_bound;
-    incumbentCell->store( bestBound );
+    lower_incumbent( incumbentCell , bestBound , minimizing );
     delete bestSol;
     bestSol = solution_of( s );
     }
@@ -1456,8 +1469,12 @@ int BranchAndXSolver::compute( bool changedvars )
     int result = Solver::kError;
     ~SolveStateGuard() { state = result; }
     } stateGuard{ f_state };
-   stateGuard.result = probing ? probeCutOff( globalMutex )
-                               : runExploration( globalMutex );
+   if( probing )
+    stateGuard.result = probeCutOff( globalMutex );
+   else
+    stateGuard.result = configurationAsyncRS ?
+                        runWithAsyncRoot( globalMutex ) :
+                        runExploration( globalMutex );
    }
 
   const bool minimizing = f_Block->get_objective_sense() != Objective::eMax;
@@ -1510,6 +1527,106 @@ int BranchAndXSolver::runExploration( std::mutex & globalMutex )
  if( ( solveType == DFS ) && ( get_int_par( intMaxThread ) > 1 ) )
   return( ParallelDFSSolve( globalMutex , get_int_par( intMaxThread ) ) );
  return( treeSolve( globalMutex ) );
+ }
+
+/*--------------------------------------------------------------------------*/
+
+int BranchAndXSolver::runWithAsyncRoot( std::mutex & globalMutex )
+{
+ const bool minimizing =
+  ( f_Block->get_objective_sense() != Objective::eMax );
+
+ // the copy of the Block and its Solver, owned until the end
+ struct AsyncRoot {
+  Block * block = nullptr;
+  std::vector< Solver * > solvers;
+  std::thread thread;
+  Solution * solution = nullptr;     // the best one found, owned
+  double value = 0;
+  std::exception_ptr error;
+  ~AsyncRoot() {
+   if( thread.joinable() )
+    thread.join();
+   delete solution;
+   if( block ) {
+    block->unregister_Solvers( true );
+    delete block;
+    }
+   }
+  } async;
+
+ async.block = copy_of_Block();
+ const auto rs = configurationAsyncRS;
+ for( Index i = 0 ; i < rs->num_ComputeConfig() ; ++i ) {
+  std::unique_ptr< Solver > s( Solver::new_Solver( rs->get_SolverName( i ) ) );
+  if( auto cfg = rs->get_SolverConfig( i ) )
+   s->set_ComputeConfig( cfg );
+  async.block->register_Solver( s.get() );
+  async.solvers.push_back( s.release() );
+  }
+
+ // the thread computes the Solver and keeps the best solution, lowering
+ // the incumbent by its value; the Solver have none of the Changes of the
+ // tree, nor the GlobalInformation of its explorations
+ async.thread = std::thread( [ this , & async , minimizing ]() {
+  try {
+   for( auto s : async.solvers ) {
+    bool ran;
+    const int z = compute_by( s , f_deadline , ran );
+    if( ( ! ran ) || ( z < Solver::kOK ) ||
+	( ( z >= Solver::kError ) && ( z != Solver::kLowPrecision ) ) )
+     continue;
+    double primal;
+    std::unique_ptr< Solution > sol;
+    if( auto r = dynamic_cast< RelaxationSolver * >( s ) ) {
+     if( ! r->has_true_var_solution() )
+      continue;
+     primal = minimizing ? r->get_true_ub() : r->get_true_lb();
+     if( ( ! std::isfinite( primal ) ) ||
+	 ( async.solution && ( ! improves( primal , async.value ,
+					   minimizing ) ) ) )
+      continue;
+     sol.reset( r->get_true_solution() );
+     }
+    else {
+     if( ! ( s->has_var_solution() && s->is_var_feasible() ) )
+      continue;
+     primal = minimizing ? s->get_ub() : s->get_lb();
+     if( async.solution && ( ! improves( primal , async.value ,
+					 minimizing ) ) )
+      continue;
+     sol.reset( solution_of( s ) );
+     }
+    if( ! sol )
+     continue;
+    delete async.solution;
+    async.solution = sol.release();
+    async.value = primal;
+    lower_incumbent( f_incumbentCell , primal , minimizing );
+    }
+   }
+  catch( ... ) {
+   async.error = std::current_exception();
+   }
+  } );
+
+ const int res = runExploration( globalMutex );
+ async.thread.join();
+ if( async.error )
+  std::rethrow_exception( async.error );
+
+ // the solution of the thread, if better than that of the exploration,
+ // which then has proven it optimal or has been stopped
+ if( async.solution &&
+     ( ( bestBound == no_incumbent() ) ||
+       improves( async.value , bestBound , minimizing ) ) ) {
+  delete bestSolution;
+  bestSolution = async.solution;
+  async.solution = nullptr;
+  bestBound = async.value;
+  f_incumbentCell->store( bestBound );
+  }
+ return( res );
  }
 
 /*--------------------------------------------------------------------------*/
@@ -2307,7 +2424,7 @@ int BranchAndXSolver::ParallelDFSSolve( std::mutex & globalMutex , int K )
  std::deque< ExploringNode * > pool;
  pool.push_back( rootNode );
  ExploringNode * currentNode = rootNode;
- const std::size_t target = std::size_t( 4 * K );
+ const std::size_t target = std::size_t( rampUpNodes ) * std::size_t( K );
 
  // the bound of the search [see publish_bound()]: the best among those of
  // the nodes of the pool and of the subtrees that the workers have claimed,
