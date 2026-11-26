@@ -803,10 +803,12 @@ class BranchAndXSolver : public Solver {
   *   expensive, so that the exploration, whose inner Solver have a cheap
   *   one, need not wait for it. As soon as they end, a solution of theirs
   *   better than the incumbent is the incumbent, which prunes the nodes
-  *   from then on and is the cutoff of the inner Solver; the solve ends
-  *   when both the exploration and they have ended. The empty name (the
-  *   default) means none; it is not used by the cutoff probing [see
-  *   intCutOffProbing].
+  *   from then on and is the cutoff of the inner Solver (but in the
+  *   branch-and-bound of PBeFS, whose workers prune by incumbents of their
+  *   own, where it is the solution only if better at the end); the solve
+  *   ends when both the exploration and they have ended, the time limit of
+  *   their own included. The empty name (the default) means none; it is
+  *   not used by the cutoff probing [see intCutOffProbing].
   *
   * The string parameters are taken by the rvalue version, which the one
   * taking a const reference forwards to [see ThinComputeInterface]. */
