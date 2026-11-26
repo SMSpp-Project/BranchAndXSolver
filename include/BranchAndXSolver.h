@@ -2199,21 +2199,28 @@ class ExploringNode : public Node {
   std::vector< ExploringNode * > toDescend;
   toDescend.swap( buffer );
   toDescend.clear();
-  while( sourceNode->level != destNode->level ) {
-   if( sourceNode->level > destNode->level ) {
+  // a single solver, the most frequent case, is called with no walk of the
+  // list for each step
+  ChangeSolver * const only = ( solvers->size() == 1 ) ? solvers->front()
+                                                       : nullptr;
+  const auto climb = [ & ]( ExploringNode * node ) {
+   if( only )
+    only->apply( node->toFather , false );
+   else
     for( const auto s : *solvers )
-     s->apply( sourceNode->toFather , false );
-    sourceNode = sourceNode->parent;
-    }
+     s->apply( node->toFather , false );
+   return( node->parent );
+   };
+  while( sourceNode->level != destNode->level ) {
+   if( sourceNode->level > destNode->level )
+    sourceNode = climb( sourceNode );
    else {
     toDescend.push_back( destNode );
     destNode = destNode->parent;
     }
    }
   while( sourceNode != destNode ) {
-   for( const auto s : *solvers )
-    s->apply( sourceNode->toFather , false );
-   sourceNode = sourceNode->parent;
+   sourceNode = climb( sourceNode );
    toDescend.push_back( destNode );
    destNode = destNode->parent;
    }
@@ -2223,6 +2230,13 @@ class ExploringNode : public Node {
   // lazily is created without the solvers ever descending into it]
   for( auto it = toDescend.rbegin() ; it != toDescend.rend() ; ++it ) {
    auto node = *it;
+   if( only ) {
+    if( node->toFather )
+     only->apply( node->f_change , false );
+    else
+     node->set_toFather( only->apply( node->f_change , true ) );
+    continue;
+    }
    bool modified = false;
    for( const auto s : *solvers ) {
     if( ( ! modified ) && ( ! node->toFather ) )
