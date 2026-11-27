@@ -136,10 +136,11 @@ namespace SMSpp_di_unipi_it
  * \f$ t \f$. A :ChangeSolver may intercept the Changes it understands and
  * apply them to its own internal state rather than to the Block, which is
  * where the efficiency of the enumeration (possibly) comes from, since
- * moving along the tree then never locks nor reads the Block. The
- * depth-first exploration needs no explicit links (the recursion is the
- * path to the root), while the others keep the father of each node, so as
- * to jump between any two open nodes.
+ * moving along the tree then never locks nor reads the Block. The workers
+ * of the parallel depth-first exploration need no explicit links (the
+ * recursion is the path to the root), while the serial explorations, the
+ * depth-first one included, keep the father of each node, so as to jump
+ * between any two open nodes.
  *
  * \par Bounding and pruning.
  * Since \f$ X_\nu \subseteq \hat{X}_\nu \f$, no solution in \f$ X_\nu \f$
@@ -382,8 +383,7 @@ class BranchAndXSolver : public Solver {
                       relTol( 0 ) , absTol( 0 ) ,
                       configurationRS( nullptr ) ,
                       changes( Modification::eModAll ) ,
-                      subOptimalNodes() , infeasibleNodes() ,
-                      integerNodes() { }
+                      subOptimalNodes() , infeasibleNodes() { }
 
 /*--------------------------------------------------------------------------*/
  /// destructor
@@ -1024,10 +1024,11 @@ class BranchAndXSolver : public Solver {
 
 /*--------------------------------------------------------------------------*/
  /// parallel depth-first exploration with \p K workers
- /** Parallel depth-first exploration, used when the inherited intMaxThread
-  * parameter is > 1: a serial, ordered (FIFO, i.e., discovery order)
-  * ramp-up expands the tree BestFS-style until enough open subtrees exist,
-  * then \p K workers, each driving its own private set of inner Solver
+ /** Parallel depth-first exploration, used when intSolveMethod is DFS and
+  * the inherited intMaxThread parameter is > 1: a serial ramp-up expands
+  * the tree breadth-first, the open nodes being taken in the order of their
+  * discovery (FIFO), until enough open subtrees exist, then \p K workers,
+  * each driving its own private set of inner Solver
   * [see createWorkerSolvers()], repeatedly claim the OLDEST open subtree
   * (preserving the sequential search order, which is what keeps parallel
   * performance replicable) and explore it depth-first, sharing only the
@@ -1282,9 +1283,6 @@ class BranchAndXSolver : public Solver {
  /// nodes pruned as infeasible, to be revisited on a r.h.s. change
  std::list< ExploringNode * > infeasibleNodes;
 
- /// nodes pruned as integer-feasible, to be revisited on reoptimization
- std::list< ExploringNode * > integerNodes;
-
  /// the relaxation bounds of the nodes set aside unresolved in this solve
  /** A node whose interrupted relaxation provides no usable branching
   * solution and cannot be fenced is set aside. Its bound (that of its father,
@@ -1486,9 +1484,9 @@ class Node {
 /*--------------------------------------------------------------------------*/
 /*----------------------------- CLASS DFSNode ------------------------------*/
 /*--------------------------------------------------------------------------*/
-/// the Node used in the depth-first exploration of the tree
-/** In the recursive depth-first exploration no explicit tree structure is
- * needed (the recursion stack is the path to the root), so a DFSNode is
+/// the Node used by the workers of the parallel depth-first exploration
+/** In the recursive depth-first exploration of the workers of
+ * ParallelDFSSolve() no explicit tree structure is needed (the recursion stack is the path to the root), so a DFSNode is
  * just a plain Node. */
 
 class DFSNode : public Node {

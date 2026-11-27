@@ -996,7 +996,6 @@ void BranchAndXSolver::discardTree( ExploringNode * root , OpenList & open ,
  f_treeRoot = nullptr;
  subOptimalNodes.clear();
  infeasibleNodes.clear();
- integerNodes.clear();
  }
 
 /*--------------------------------------------------------------------------*/
@@ -1907,7 +1906,6 @@ void BranchAndXSolver::discardRetainedTree( void )
  f_treeRoot = nullptr;
  subOptimalNodes.clear();
  infeasibleNodes.clear();
- integerNodes.clear();
 
  }  // end( BranchAndXSolver::discardRetainedTree )
 
