@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- with the lazy bounding protocol, a node extracted from the open set whose
+  inherited bound cannot improve the incumbent is fenced, or pruned, without
+  the solvers descending into it and climbing back
+
 - the makefiles give the shared library of the module by default, a DLL on
   Windows, as CMake does, and its objects with `SMSppSTATIC` [see
   `lib/makefile-shared` of SMS++]

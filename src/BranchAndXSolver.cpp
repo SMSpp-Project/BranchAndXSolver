@@ -1121,6 +1121,24 @@ int BranchAndXSolver::explore( OpenList & open , std::mutex & globalMutex ,
   ++iterations;
   oldNode = currentNode;
   currentNode = open.pop();
+
+  // a node not evaluated yet whose inherited bound cannot improve the
+  // incumbent is fenced, or pruned, as it is: the solvers do not descend
+  // into it, and no evaluation is logged
+  if( currentNode->get_parent() && ( ! currentNode->is_evaluated() ) &&
+      cannot_improve( currentNode->get_bound() , f_incumbentCell->load() ,
+		      minimizing , relTol , absTol ) ) {
+   record_fenced( currentNode->get_bound() , minimizing );
+   if( retain ) {  // it belongs to the fenced frontier
+    subOptimalNodes.push_back( currentNode );
+    currentNode = oldNode;
+    }
+   else
+    currentNode =
+      ExploringNode::pruneUnvisited( currentNode , oldNode , solvers );
+   continue;
+   }
+
   if( currentNode->get_parent() )   // the root: the solvers are already there
    ExploringNode::moveBetweenNodes( oldNode , currentNode , solvers );
 

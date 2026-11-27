@@ -1626,6 +1626,33 @@ class ExploringNode : public Node {
   }
 
 /*--------------------------------------------------------------------------*/
+ /// prune a node the :ChangeSolver have never descended into
+ /** Prunes \p nodeToPrune, and recursively any parent left childless, as
+  * prune() does, while the :ChangeSolver sit at \p current, another node of
+  * the tree: they are moved straight from \p current to the parent of the
+  * last pruned node, without descending into \p nodeToPrune.
+  *  @return the node the :ChangeSolver is left at */
+
+ static ExploringNode *
+ pruneUnvisited( ExploringNode * nodeToPrune , ExploringNode * current ,
+		 std::list< ChangeSolver * > * solvers ) {
+  // the topmost node that prune() deletes along with nodeToPrune
+  auto top = nodeToPrune;
+  for( ; ; ) {
+   auto parentNode = top->get_parent();
+   if( ! parentNode->get_parent() )
+    break;
+   auto & ch = parentNode->get_children();
+   if( ! ( ch.empty() || ( ( ch.size() == 1 ) && ( ch.front() == top ) ) ) )
+    break;
+   top = parentNode;
+   }
+  moveBetweenNodes( current , top->get_parent() , solvers );
+  std::list< ChangeSolver * > none;  // the solvers are already there
+  return( prune( nodeToPrune , &none ) );
+  }
+
+/*--------------------------------------------------------------------------*/
 /*--------------------- PROTECTED PART OF THE CLASS ------------------------*/
 /*--------------------------------------------------------------------------*/
 
