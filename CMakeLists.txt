@@ -58,44 +58,11 @@ if (NOT hasParent)
 endif ()
 
 # PBeFS, whose branch-and-bound may explore the tree [see
-# intTreeExplorer], and ADS, on which its parallel searches run: the
-# library takes only their headers, so nothing of them is linked, nor
-# needed by whoever finds the module. They are those installed, or else
-# the sources of the commit BXS_PBEFS_COMMIT and of the commit of ADS that
-# it pins, downloaded and not built (a release tarball of the umbrella
-# carries both in third-party/).
-set(BXS_PBEFS_COMMIT 3fc57057e54ca77edfb50d7d2dbe1a876f5ce12c
-    CACHE STRING "The commit of PBeFS to download")
-find_package(PBeFS CONFIG QUIET)
-if (PBeFS_FOUND)
-    get_target_property(_pbefsInc PBeFS::PBeFS INTERFACE_INCLUDE_DIRECTORIES)
-    get_target_property(_adsInc ADS::ADS INTERFACE_INCLUDE_DIRECTORIES)
-else ()
-    include(FetchContent)
-    FetchContent_Declare(
-            PBeFS
-            GIT_REPOSITORY https://github.com/dmeoli/PBeFS.git
-            GIT_TAG ${BXS_PBEFS_COMMIT}
-            SOURCE_SUBDIR none)
-    FetchContent_MakeAvailable(PBeFS)
-    file(STRINGS ${pbefs_SOURCE_DIR}/CMakeLists.txt _adsPin
-         REGEX "^[a-z_]+\\(PBEFS_ADS_COMMIT +[0-9a-f]+$")
-    string(REGEX MATCH "[0-9a-f]+$" _adsCommit "${_adsPin}")
-    if (NOT _adsCommit)
-        message(FATAL_ERROR "the commit of ADS that PBeFS "
-                "${BXS_PBEFS_COMMIT} pins is not in its CMakeLists.txt")
-    endif ()
-    FetchContent_Declare(
-            ADS
-            GIT_REPOSITORY https://github.com/dmeoli/ADS.git
-            GIT_TAG ${_adsCommit}
-            SOURCE_SUBDIR none)
-    FetchContent_MakeAvailable(ADS)
-    set(_pbefsInc ${pbefs_SOURCE_DIR}/include)
-    set(_adsInc ${ads_SOURCE_DIR}/include)
-    unset(_adsPin)
-    unset(_adsCommit)
-endif ()
+# intTreeExplorer], and ADS, on which its parallel searches run: only their
+# headers are used, so nothing of them is linked, nor needed by whoever
+# finds the module [see cmake/PBeFS.cmake]
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PBeFS.cmake)
+bxs_fetch_pbefs()
 
 # ----- Configuration header ------------------------------------------------ #
 # This will generate a *Config.h header in the build directory.
@@ -152,9 +119,7 @@ target_include_directories(
 # library.
 target_link_libraries(${modName} PUBLIC ${modNamespace}::SMS++)
 target_include_directories(${modName} SYSTEM PRIVATE
-        ${_pbefsInc} ${_adsInc})
-unset(_pbefsInc)
-unset(_adsInc)
+        ${pbefs_SOURCE_DIR}/include ${ads_SOURCE_DIR}/include)
 
 # This alias is defined so that executables in this same project can use
 # the library with this notation.

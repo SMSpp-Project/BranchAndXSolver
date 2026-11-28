@@ -172,9 +172,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the scheme, also when the scheme makes it the same at every run; only the
   headers of PBeFS and of ADS, on which its parallel searches run, are
   used, so the library links neither and whoever finds it needs neither:
-  they are found with `find_package`, or else the sources of the commit of
-  PBeFS and of the commit of ADS that it pins are downloaded and not built,
-  and in the makefiles they come from `extlib/makefile-libPBeFS` and
+  `cmake/PBeFS.cmake` downloads, and does not build, the sources of the
+  commit of PBeFS and of the commit of ADS that it pins, unless
+  `FETCHCONTENT_SOURCE_DIR_PBEFS` and `FETCHCONTENT_SOURCE_DIR_ADS` give
+  them, and in the makefiles they come from `extlib/makefile-libPBeFS` and
   `extlib/makefile-libADS`
 
 - the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
