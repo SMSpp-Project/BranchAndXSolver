@@ -169,9 +169,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounding protocols, tolerances and budgets; each worker moves its own
   inner Solver along the Changes of the path of a node and evaluates it
   against the incumbent that PBeFS gives it, so that the outcome is that of
-  the scheme, also when the scheme makes it the same at every run; PBeFS is
-  found with `find_package` or downloaded at a fixed commit, and in the
-  makefiles through `extlib/makefile-libPBeFS`
+  the scheme, also when the scheme makes it the same at every run; only the
+  headers of PBeFS and of ADS, on which its parallel searches run, are
+  used, so the library links neither and whoever finds it needs neither:
+  they are found with `find_package`, or else the sources of the commit of
+  PBeFS and of the commit of ADS that it pins are downloaded and not built,
+  and in the makefiles they come from `extlib/makefile-libPBeFS` and
+  `extlib/makefile-libADS`
 
 - the C++20 module `smspp.branchandxsolver` (`src/BranchAndXSolver.cppm`),
   which exports every name that the headers declare at namespace scope and

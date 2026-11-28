@@ -36,9 +36,11 @@
 # *H   is the list of all include files
 # *INC is the -I< include directories >
 
-# include the makefile of libPBeFS, whose branch-and-bound may explore
-# the tree
+# include the makefiles of PBeFS, whose branch-and-bound may explore the
+# tree, and of ADS, on which its parallel searches run: only their headers
+# are used
 include $(BAXSLVSDR)/../extlib/makefile-libPBeFS
+include $(BAXSLVSDR)/../extlib/makefile-libADS
 
 # include the makefile requiring all external modules in input
 include $(BAXSLVSDR)/makefile
@@ -48,10 +50,10 @@ include $(BAXSLVSDR)/makefile
 # append external -I directives to BAXSLVINC, BAXSLVOBJ and BAXSLVH as defined
 # by the makefile, thus the := assignment has to be used (use GNU make)
 BAXSLVOBJ := $(BAXSLVOBJ)
-BAXSLVINC := $(BAXSLVINC) $(libPBeFSINC)
+BAXSLVINC := $(BAXSLVINC) $(libPBeFSINC) $(libADSINC)
 BAXSLVH   := $(BAXSLVH)
 
 # external libraries for BranchAndXSolver
-BAXSLVLIB = $(libPBeFSLIB)
+BAXSLVLIB =
 
 ############################ End of makefile #################################

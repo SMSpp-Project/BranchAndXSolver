@@ -58,23 +58,43 @@ if (NOT hasParent)
 endif ()
 
 # PBeFS, whose branch-and-bound may explore the tree [see
-# intTreeExplorer]: installed, or else the sources of the commit
-# BXS_PBEFS_COMMIT, added as a subproject with the C++ threads only and
-# without the symbolic searches
+# intTreeExplorer], and ADS, on which its parallel searches run: the
+# library takes only their headers, so nothing of them is linked, nor
+# needed by whoever finds the module. They are those installed, or else
+# the sources of the commit BXS_PBEFS_COMMIT and of the commit of ADS that
+# it pins, downloaded and not built (a release tarball of the umbrella
+# carries both in third-party/).
 set(BXS_PBEFS_COMMIT 3fc57057e54ca77edfb50d7d2dbe1a876f5ce12c
     CACHE STRING "The commit of PBeFS to download")
 find_package(PBeFS CONFIG QUIET)
-if (NOT PBeFS_FOUND)
-    set(PBEFS_WITH_OPENMP OFF)
-    set(PBEFS_WITH_MPI OFF)
-    set(PBEFS_WITH_FASTFLOW OFF)
-    set(PBEFS_WITH_SYLVAN OFF)
+if (PBeFS_FOUND)
+    get_target_property(_pbefsInc PBeFS::PBeFS INTERFACE_INCLUDE_DIRECTORIES)
+    get_target_property(_adsInc ADS::ADS INTERFACE_INCLUDE_DIRECTORIES)
+else ()
     include(FetchContent)
     FetchContent_Declare(
             PBeFS
             GIT_REPOSITORY https://github.com/dmeoli/PBeFS.git
-            GIT_TAG ${BXS_PBEFS_COMMIT})
+            GIT_TAG ${BXS_PBEFS_COMMIT}
+            SOURCE_SUBDIR none)
     FetchContent_MakeAvailable(PBeFS)
+    file(STRINGS ${pbefs_SOURCE_DIR}/CMakeLists.txt _adsPin
+         REGEX "^[a-z_]+\\(PBEFS_ADS_COMMIT +[0-9a-f]+$")
+    string(REGEX MATCH "[0-9a-f]+$" _adsCommit "${_adsPin}")
+    if (NOT _adsCommit)
+        message(FATAL_ERROR "the commit of ADS that PBeFS "
+                "${BXS_PBEFS_COMMIT} pins is not in its CMakeLists.txt")
+    endif ()
+    FetchContent_Declare(
+            ADS
+            GIT_REPOSITORY https://github.com/dmeoli/ADS.git
+            GIT_TAG ${_adsCommit}
+            SOURCE_SUBDIR none)
+    FetchContent_MakeAvailable(ADS)
+    set(_pbefsInc ${pbefs_SOURCE_DIR}/include)
+    set(_adsInc ${ads_SOURCE_DIR}/include)
+    unset(_adsPin)
+    unset(_adsCommit)
 endif ()
 
 # ----- Configuration header ------------------------------------------------ #
@@ -131,7 +151,10 @@ target_include_directories(
 # PUBLIC means they will be linked also to the targets that depend on this
 # library.
 target_link_libraries(${modName} PUBLIC ${modNamespace}::SMS++)
-target_link_libraries(${modName} PRIVATE PBeFS::PBeFS)
+target_include_directories(${modName} SYSTEM PRIVATE
+        ${_pbefsInc} ${_adsInc})
+unset(_pbefsInc)
+unset(_adsInc)
 
 # This alias is defined so that executables in this same project can use
 # the library with this notation.

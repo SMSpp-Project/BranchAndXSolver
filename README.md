@@ -48,6 +48,11 @@ SMS++ lists. What follows is about building it yourself.
 
 - The [SMS++ core library](https://gitlab.com/smspp/smspp) and its
   requirements.
+- The headers of [PBeFS](https://github.com/dmeoli/PBeFS) and of
+  [ADS](https://github.com/dmeoli/ADS), on which its parallel searches run:
+  CMake uses those installed, or else downloads their sources at the commits
+  of PBeFS that `BXS_PBEFS_COMMIT` gives and of ADS that PBeFS pins, without
+  building them; the makefiles find them at `PBeFS_ROOT` and `ADS_ROOT`.
 
 ### Build and install with CMake
 

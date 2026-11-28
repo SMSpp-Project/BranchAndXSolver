@@ -18,7 +18,6 @@ include(CMakeFindDependencyMacro)
 
 # ----- Requirements -------------------------------------------------------- #
 find_dependency(SMS++)
-find_dependency(PBeFS)
 
 # ----- Import target ------------------------------------------------------- #
 if (NOT TARGET @modNamespace@::@modName@)

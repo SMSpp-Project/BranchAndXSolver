@@ -13,6 +13,8 @@
 #           $(SW)        = compiler options                                  #
 #           $(SMS++INC)  = the -I$( core SMS++ directory )                   #
 #           $(SMS++OBJ)  = the libSMS++ library itself                       #
+#           $(libPBeFSINC) = the -I$( include directory of PBeFS )           #
+#           $(libADSINC) = the -I$( include directory of ADS )               #
 #           $(BAXSLVSDR) = the directory where the source is                 #
 #                                                                            #
 #   Output: $(BAXSLVOBJ)  = the final object(s) / library                    #
@@ -49,7 +51,7 @@ clean::
 $(BAXSLVSDR)/obj/BranchAndXSolver.o: \
 	$(BAXSLVSDR)/src/BranchAndXSolver.cpp $(BAXSLVH) $(SMS++OBJ)
 	$(CC) -c $(BAXSLVSDR)/src/BranchAndXSolver.cpp -o $@ \
-	$(BAXSLVINC) $(SMS++INC) $(libPBeFSINC) $(SW)
+	$(BAXSLVINC) $(SMS++INC) $(libPBeFSINC) $(libADSINC) $(SW)
 
 
 ############################ End of makefile #################################
